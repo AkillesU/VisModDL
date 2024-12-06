@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from torchvision import transforms
 from PIL import Image
 from torchsummary import summary
+import yaml
 
 
 def load_model(model_info: dict, pretrained=True, layer_name='IT'):
@@ -156,7 +157,7 @@ def compute_correlations(activations_df_sorted):
     correlation_matrix = np.corrcoef(activations_df_sorted.drop(columns='numeric_index').values)
     return correlation_matrix, sorted_image_names
 
-def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name):
+def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):
     """
     Plot a heatmap of the correlation matrix.
 
@@ -175,7 +176,11 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
     plt.xticks(rotation=90)
     plt.yticks(rotation=0)
     plt.tight_layout()
-    plt.savefig(f"figures/haupt_stim_activ/{model_name}/{layer_name}.png", dpi=400)
+    # Save figure
+    save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}.png"
+    # Create the directories if they don't already exist
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=400)
     plt.show()
 
 def assign_categories(sorted_image_names):
@@ -204,6 +209,7 @@ def assign_categories(sorted_image_names):
         categories.append(category)
 
     return np.array(categories)
+
 
 def bootstrap_correlations(correlation_matrix, categories_array, n_bootstrap=10000):
     """
@@ -268,7 +274,26 @@ def bootstrap_correlations(correlation_matrix, categories_array, n_bootstrap=100
 
     return results
 
-def print_within_between(results):
+
+def convert_np_to_native(value):
+    if isinstance(value, np.generic):
+        # Convert numpy scalar to Python scalar
+        return value.item()
+    elif isinstance(value, np.ndarray):
+        # Convert numpy array to Python list
+        return value.tolist()
+    elif isinstance(value, dict):
+        # Recursively convert dictionary values
+        return {k: convert_np_to_native(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        # Recursively convert list elements
+        return [convert_np_to_native(v) for v in value]
+    else:
+        # Return the value as is if it's already a native type
+        return value
+
+
+def print_within_between(results, layer_name, model_name):
     """
     Print the bootstrap results in a readable format.
 
@@ -289,3 +314,13 @@ def print_within_between(results):
         print(f"  Observed difference (within - between): {observed_difference:.4f}")
         print(f"  95% Confidence interval for difference: [{ci_lower:.4f}, {ci_upper:.4f}]")
         print(f"  P-value (one-tailed test): {p_value:.4f}\n")
+    # Write the dictionary to a YAML file
+    # Save figure
+    save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}_within-between.yaml"
+    # Create the directories if they don't already exist
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+    results = convert_np_to_native(results)
+
+    with open(save_path, "w") as f:
+        yaml.safe_dump(results, f)
