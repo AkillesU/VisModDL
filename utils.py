@@ -7,8 +7,10 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from torchvision import transforms
 from PIL import Image
+from torchsummary import summary
 
-def load_model(model_info, pretrained=True, layer_name='IT'):
+
+def load_model(model_info: dict, pretrained=True, layer_name='IT'):
     """
     Load a specified pretrained model and register a forward hook to capture activations.
 
@@ -42,7 +44,7 @@ def load_model(model_info, pretrained=True, layer_name='IT'):
             model = cornet_rt(pretrained=pretrained)
 
         else:
-            raise ValueError(f"CORnet model {model_info["name"]} not found. Check config file.")
+            raise ValueError(f"CORnet model {model_name} not found. Check config file.")
 
     elif model_source == "pytorch_hub":
         if model_weights == "":
@@ -52,6 +54,8 @@ def load_model(model_info, pretrained=True, layer_name='IT'):
     else:
         raise ValueError(f"Check model source: {model_source}")
 
+    summary(model, input_size=(3, 224, 224))
+    print(model)
     model.eval()
 
     activations = {}
@@ -61,7 +65,7 @@ def load_model(model_info, pretrained=True, layer_name='IT'):
         activations[layer_name] = output.cpu().detach().numpy()
 
     # Access the target layer and register forward hook
-    target_layer = model.module._modules[layer_name]._modules['pool']
+    target_layer = model.module._modules[layer_name]._modules['output']
     target_layer.register_forward_hook(hook_fn)
 
     return model, activations
@@ -152,7 +156,7 @@ def compute_correlations(activations_df_sorted):
     correlation_matrix = np.corrcoef(activations_df_sorted.drop(columns='numeric_index').values)
     return correlation_matrix, sorted_image_names
 
-def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4):
+def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name):
     """
     Plot a heatmap of the correlation matrix.
 
@@ -171,6 +175,7 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
     plt.xticks(rotation=90)
     plt.yticks(rotation=0)
     plt.tight_layout()
+    plt.savefig(f"figures/haupt_stim_activ/{model_name}/{layer_name}.png", dpi=400)
     plt.show()
 
 def assign_categories(sorted_image_names):
