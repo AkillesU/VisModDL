@@ -34,17 +34,18 @@ def main():
 
     image_dir = config.get("image_dir", "stimuli")
     layer_name = config.get("layer_name", "IT")
+    layer_path = config.get("layer_path", "")
     n_bootstrap = config.get("n_bootstrap", 10000)
     model_info = {}
     model_info["source"] = config.get("model_source", "cornet")
     model_info["repo"] = config.get("model_repo", "-")
     model_info["name"] = config.get("model_name", "cornet_z")
-    model_info["weights"] = config.get("weights", "")
+    model_info["weights"] = config.get("model_weights", "")
     vmax = config.get("vmax", 0.4)
     pretrained = config.get("pretrained", True)
 
     # Load model and register hook
-    model, activations = load_model(model_info, pretrained=pretrained, layer_name=layer_name)
+    model, activations = load_model(model_info, pretrained=pretrained, layer_name=layer_name, layer_path=layer_path)
 
     # Extract activations
     activations_df = extract_activations(model, activations, image_dir, layer_name=layer_name)
