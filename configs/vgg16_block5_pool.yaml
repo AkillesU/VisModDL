@@ -1,0 +1,10 @@
+image_dir: "stimuli"
+layer_name: "block5_pool"
+layer_path: "features.30"
+n_bootstrap: 10000
+model_source: "pytorch_hub"
+model_repo: "pytorch/vision"
+model_name: "vgg16"
+model_weights: "DEFAULT" # torch.hub weights (not necesssary for cornet models). Leave empty for untrained.
+pretrained: True
+vmax: 0.4

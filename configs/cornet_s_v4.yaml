@@ -1,6 +1,6 @@
 image_dir: "stimuli"
-layer_name: "IT"
-layer_path: "module._modules.IT._modules.pool"
+layer_name: "V4"
+layer_path: "module._modules.V4._modules.pool"
 n_bootstrap: 10000
 model_source: "cornet"
 model_repo: "-"
