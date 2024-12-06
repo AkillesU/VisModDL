@@ -7,11 +7,32 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from torchvision import transforms
 from PIL import Image
-from torchsummary import summary
+from torchinfo import summary
 import yaml
 
 
-def load_model(model_info: dict, pretrained=True, layer_name='IT'):
+def get_layer_from_path(model, layer_path):
+    current = model
+    for step in layer_path.split('.'):
+        # If step is an integer, treat current as a sequence (e.g., nn.Sequential)
+        if step.isdigit():
+            current = current[int(step)]
+        else:
+            # First try getattr if current is a module
+            if hasattr(current, step):
+                current = getattr(current, step)
+            # If current is a module and step is in its submodules, access via _modules
+            elif isinstance(current, torch.nn.Module) and step in current._modules:
+                current = current._modules[step]
+            # If current is a dictionary, just index into it
+            elif isinstance(current, dict) and step in current:
+                current = current[step]
+            else:
+                raise AttributeError(f"Cannot find '{step}' in {current}. Make sure the path is correct.")
+    return current
+
+
+def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""):
     """
     Load a specified pretrained model and register a forward hook to capture activations.
 
@@ -30,6 +51,11 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT'):
     model_repo = model_info["repo"]
     model_name = model_info["name"]
     model_weights = model_info["weights"]
+
+    # Hook function to capture layer outputs
+    def hook_fn(module, input, output):
+        activations[layer_name] = output.cpu().detach().numpy()
+
 
     if model_source == "cornet":
         if model_name == "cornet_z":
@@ -54,19 +80,15 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT'):
             model = torch.hub.load(model_repo, model_name, weights=model_weights)
     else:
         raise ValueError(f"Check model source: {model_source}")
-
-    summary(model, input_size=(3, 224, 224))
+    
+    # Print model summary
     print(model)
+
     model.eval()
-
-    activations = {}
-
-    # Hook function to capture layer outputs
-    def hook_fn(module, input, output):
-        activations[layer_name] = output.cpu().detach().numpy()
+    activations = {} # Init activations dictionary for hook registration
 
     # Access the target layer and register forward hook
-    target_layer = model.module._modules[layer_name]._modules['output']
+    target_layer = get_layer_from_path(model, layer_path)
     target_layer.register_forward_hook(hook_fn)
 
     return model, activations
@@ -169,7 +191,7 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
     """
     plt.figure(figsize=(12, 10))
     sns.heatmap(correlation_matrix, annot=False, cmap="viridis",
-                xticklabels=sorted_image_names, yticklabels=sorted_image_names, vmax=vmax)
+                xticklabels=sorted_image_names, yticklabels=sorted_image_names, vmax=vmax, vmin=0)
     plt.title(f"Correlation of Activations Between Images (Layer: {layer_name})")
     plt.xlabel("Images")
     plt.ylabel("Images")
