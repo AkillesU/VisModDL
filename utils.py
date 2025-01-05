@@ -32,6 +32,39 @@ def get_layer_from_path(model, layer_path):
     return current
 
 
+def get_all_weight_layers(model, base_path=""):
+    """
+    Recursively find all submodules under the given model that have a 'weight' parameter.
+    Returns a list of layer paths (dot-separated) that lead to layers with weights.
+
+    Parameters:
+        model (nn.Module): The model or module to search.
+        base_path (str): The starting path. If empty, we assume 'model' is the root.
+
+    Returns:
+        List[str]: A list of dot-separated paths to each module with weights.
+    """
+    weight_layers = []
+    # Check if current module has a 'weight' parameter
+    if hasattr(model, 'weight') and model.weight is not None:
+        # 'model' itself is a leaf layer with weights
+        weight_layers.append(base_path)
+
+    # If not, or in addition, iterate through submodules
+    for name, submodule in model._modules.items():
+        if submodule is None:
+            continue
+        # If base_path is empty, just use the name. Otherwise, append it with a dot.
+        if base_path == "":
+            new_path = name
+        else:
+            new_path = base_path + "." + "_modules" + "." + name
+
+        weight_layers.extend(get_all_weight_layers(submodule, new_path))
+
+    return weight_layers
+
+
 def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""):
     """
     Load a specified pretrained model and register a forward hook to capture activations.
@@ -93,6 +126,7 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
 
     return model, activations
 
+
 def preprocess_image(image_path):
     """
     Preprocess a single image for model input.
@@ -114,6 +148,7 @@ def preprocess_image(image_path):
     img = Image.open(image_path).convert('RGB')
     input_tensor = preprocess(img).unsqueeze(0)  # Add batch dimension
     return input_tensor
+
 
 def extract_activations(model, activations, image_dir, layer_name='IT'):
     """
@@ -145,6 +180,118 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
     activations_df = pd.DataFrame(all_activations, index=image_names)
     return activations_df
 
+
+def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers=False, masking_level='connections'):
+    """
+    Apply masking to either units or connections.
+    If masking_level='connections', randomly zero out a fraction of weights individually.
+    If masking_level='units', randomly zero out entire units.
+    """
+    param_masks = {}
+
+    with torch.no_grad():
+        if apply_to_all_layers:
+            for name, param in model.named_parameters():
+                if 'weight' in name and param.requires_grad:
+                    mask = create_mask(param, fraction_to_mask, masking_level=masking_level)
+                    param_masks[name] = mask
+        else:
+            # For each specified path, find all sub-layers that have weights
+            for path in layer_paths:
+                target_layer = get_layer_from_path(model, path)
+                weight_layer_paths = get_all_weight_layers(target_layer, path)
+            
+                # weight_layer_paths is a list of layer-path strings
+                for w_path in weight_layer_paths:
+                    w_layer = get_layer_from_path(model, w_path)
+                    if hasattr(w_layer, 'weight') and w_layer.weight is not None:
+                        mask = create_mask(w_layer.weight, fraction_to_mask, masking_level=masking_level)
+                        param_masks[w_path] = mask
+                    else:
+                        raise AttributeError(f"layer {w_path} does not have weights")
+    # For simplicity, as previously discussed, if apply_to_all_layers is complex, let's just handle layer_paths case well.
+    if not apply_to_all_layers:
+        for path in layer_paths:
+            # Get all weight-bearing sub-layers under this path
+            weight_layer_paths = get_all_weight_layers(get_layer_from_path(model, path), path)
+        
+            for w_path in weight_layer_paths:
+                layer = get_layer_from_path(model, w_path)
+                mask = param_masks[w_path]  # Access the mask using w_path, not path
+            
+                def layer_mask_hook(module, input, mask=mask):
+                    if hasattr(module, 'weight'):
+                        module.weight.data = module.weight.data * mask
+                    return None
+
+                layer.register_forward_pre_hook(layer_mask_hook)
+    else:
+        # Global masking approach for all layers:
+        param_to_mask = {}
+        for name, param in model.named_parameters():
+            if name in param_masks:
+                param_to_mask[param] = param_masks[name]
+
+        def global_mask_hook(module, input):
+            for name, param in module.named_parameters(recurse=False):
+                if param in param_to_mask:
+                    param.data = param.data * param_to_mask[param]
+            return None
+
+        for m in model.modules():
+            if len(list(m.parameters(recurse=False))) > 0:
+                m.register_forward_pre_hook(global_mask_hook)
+
+
+def create_mask(param, fraction, masking_level='connections'):
+    """
+    Create a mask for the given parameter (weight tensor).
+    If masking_level == 'connections', randomly zero out a fraction of all weight entries.
+    If masking_level == 'units', randomly zero out a fraction of entire units (rows in linear layers or filters in conv layers).
+    """
+    shape = param.shape
+    device = param.device
+    if fraction <= 0:
+        return torch.ones_like(param)
+
+    # Flatten the weights to pick indices easily
+    if masking_level == 'connections':
+        param_data = param.view(-1)
+        n = param_data.numel()
+        k = int(fraction * n)
+        if k == 0:
+            return torch.ones_like(param)
+        indices = torch.randperm(n, device=device)[:k]
+        mask_flat = torch.ones(n, device=device)
+        mask_flat[indices] = 0
+        return mask_flat.view(shape)
+
+    elif masking_level == 'units':
+        # For a Linear layer: weight shape is [out_features, in_features]
+        # Each out_feature is considered a unit
+        # For a Conv layer: weight shape might be [out_channels, in_channels, ...]
+        # We'll consider out_channels as units.
+        
+        # Identify dimension representing units: 
+        # For Linear: dim 0 is out_features.
+        # For Conv2d: dim 0 is out_channels.
+        # We'll assume standard layers where first dimension corresponds to units.
+        units_dim = 0
+        num_units = param.shape[units_dim]
+        k = int(fraction * num_units)
+        if k == 0:
+            return torch.ones_like(param)
+        unit_indices = torch.randperm(num_units, device=device)[:k]
+        # Create a mask of ones, then zero entire units
+        mask = torch.ones_like(param)
+        # zero out rows (units)
+        mask[unit_indices, ...] = 0
+        return mask
+
+    else:
+        raise ValueError(f"masking_level {masking_level} not recognized.")
+
+
 def sort_activations_by_numeric_index(activations_df):
     """
     Extract a numeric index from image names, sort the DataFrame by that index, and return sorted DataFrame.
@@ -164,6 +311,7 @@ def sort_activations_by_numeric_index(activations_df):
     activations_df_sorted = activations_df.sort_values('numeric_index')
     return activations_df_sorted
 
+
 def compute_correlations(activations_df_sorted):
     """
     Compute correlation matrix between activation vectors.
@@ -178,6 +326,7 @@ def compute_correlations(activations_df_sorted):
     sorted_image_names = activations_df_sorted.index.tolist()
     correlation_matrix = np.corrcoef(activations_df_sorted.drop(columns='numeric_index').values)
     return correlation_matrix, sorted_image_names
+
 
 def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):
     """
@@ -204,6 +353,7 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=400)
     plt.show()
+
 
 def assign_categories(sorted_image_names):
     """
@@ -315,7 +465,7 @@ def convert_np_to_native(value):
         return value
 
 
-def print_within_between(results, layer_name, model_name):
+def print_within_between(results, layer_name, model_name, output_path=None):
     """
     Print the bootstrap results in a readable format.
 
@@ -338,7 +488,10 @@ def print_within_between(results, layer_name, model_name):
         print(f"  P-value (one-tailed test): {p_value:.4f}\n")
     # Write the dictionary to a YAML file
     # Save figure
-    save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}_within-between.yaml"
+    if output_path is None:
+        save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}_within-between.yaml"
+    else:
+        save_path = output_path
     # Create the directories if they don't already exist
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
