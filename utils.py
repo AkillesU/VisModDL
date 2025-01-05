@@ -499,3 +499,85 @@ def print_within_between(results, layer_name, model_name, output_path=None):
 
     with open(save_path, "w") as f:
         yaml.safe_dump(results, f)
+
+
+def run_alteration(
+    model_info, 
+    pretrained,
+    fraction_to_mask_list, 
+    layer_paths_to_mask,
+    apply_to_all_layers,
+    masking_level,
+    n_bootstrap,
+    layer_name,
+    layer_path,
+    image_dir,
+    vmax
+):
+    """
+    Run the masking experiment for a list of fractions to mask, 
+    and generate RDMs + within/between correlations.
+    """
+    from utils import (
+        load_model,
+        extract_activations,
+        sort_activations_by_numeric_index,
+        compute_correlations,
+        assign_categories,
+        bootstrap_correlations,
+        print_within_between,
+        apply_masking
+    )
+
+    num_permutations = len(fraction_to_mask_list)
+    fig, axes = plt.subplots(1, num_permutations, figsize=(5 * num_permutations, 5))
+
+    for i, fraction_to_mask in enumerate(fraction_to_mask_list):
+        # Load a fresh model for each mask level
+        model, activations = load_model(model_info, pretrained=pretrained, 
+                                        layer_name=layer_name, layer_path=layer_path)
+
+        if fraction_to_mask > 0.0:
+            apply_masking(
+                model, 
+                fraction_to_mask, 
+                layer_paths=layer_paths_to_mask, 
+                apply_to_all_layers=apply_to_all_layers, 
+                masking_level=masking_level
+            )
+
+        # Extract activations
+        activations_df = extract_activations(model, activations, image_dir, layer_name=layer_name)
+        activations_df_sorted = sort_activations_by_numeric_index(activations_df)
+        correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
+
+        # Plot RDM for this fraction_to_mask
+        ax = axes[i] if num_permutations > 1 else axes
+        im = ax.imshow(correlation_matrix, cmap="viridis", vmax=vmax, vmin=0)
+        ax.set_title(f"RDM (Fraction={fraction_to_mask})")
+        ax.set_xticks(range(len(sorted_image_names)))
+        ax.set_yticks(range(len(sorted_image_names)))
+        ax.set_xticklabels(sorted_image_names, rotation=90)
+        ax.set_yticklabels(sorted_image_names)
+        ax.set_xlabel("Images")
+        ax.set_ylabel("Images")
+
+        # Compute within-between metrics
+        categories_array = assign_categories(sorted_image_names)
+        results = bootstrap_correlations(correlation_matrix, categories_array, n_bootstrap=n_bootstrap)
+
+        # Print & save results
+        yaml_filename = (
+            f"figures/haupt_stim_activ/damaged/{model_info['name']}/"
+            f"{layer_name}_within-between_{fraction_to_mask}_{masking_level}.yaml"
+        )
+        print_within_between(results, layer_name=layer_name, model_name=model_info["name"], output_path=yaml_filename)
+
+    # Final figure formatting
+    plt.tight_layout()
+    figure_path = (
+        f"figures/haupt_stim_activ/damaged/{model_info['name']}/{layer_name}_RDMs.png"
+    )
+    os.makedirs(os.path.dirname(figure_path), exist_ok=True)
+    plt.savefig(figure_path, dpi=300)
+    plt.show()
