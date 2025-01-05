@@ -1,0 +1,10 @@
+image_dir: "stimuli"
+layer_name: "IT"
+layer_path: "module._modules.IT._modules.output"
+n_bootstrap: 10000
+model_source: "cornet"
+model_repo: "-"
+model_name: "cornet_s"
+model_weights: "" # torch.hub weights (not necesssary for cornet models). Leave empty for untrained.
+pretrained: True
+vmax: 0.4
