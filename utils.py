@@ -209,7 +209,7 @@ def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers
                         param_masks[w_path] = mask
                     else:
                         raise AttributeError(f"layer {w_path} does not have weights")
-    # For simplicity, as previously discussed, if apply_to_all_layers is complex, let's just handle layer_paths case well.
+    # For simplicity if apply_to_all_layers is complex, let's just handle layer_paths case well.
     if not apply_to_all_layers:
         for path in layer_paths:
             # Get all weight-bearing sub-layers under this path
@@ -294,21 +294,43 @@ def create_mask(param, fraction, masking_level='connections'):
 
 def sort_activations_by_numeric_index(activations_df):
     """
-    Extract a numeric index from image names, sort the DataFrame by that index, and return sorted DataFrame.
+    Extract a string prefix and numeric index from image names, sort the DataFrame
+    alphabetically by the prefix and numerically by the numeric index. Keep the
+    'numeric_index' column, and optionally create a 'sorted_numeric_index' column.
+
+    Example indices: "face1", "face2", "face11", "object1", "object2"
 
     Parameters:
         activations_df (pd.DataFrame): DataFrame with image names as index.
 
     Returns:
-        activations_df_sorted (pd.DataFrame): DataFrame sorted by extracted numeric index.
+        pd.DataFrame: DataFrame sorted and with the 'numeric_index' column retained.
     """
-    # Ensure index is string
+    # Ensure the index is string
     activations_df.index = activations_df.index.astype(str)
-    # Extract numeric part of the filename
-    activations_df['numeric_index'] = activations_df.index.str.extract(r'^(\d+)', expand=False)
-    # Convert to int and handle any NaN
-    activations_df['numeric_index'] = activations_df['numeric_index'].astype(int)
-    activations_df_sorted = activations_df.sort_values('numeric_index')
+    
+    # Extract the string part (all non-digits at the start).
+    # This will be used for alphabetical sorting of the prefix.
+    activations_df['string_part'] = activations_df.index.str.extract(r'^([^\d]+)', expand=False).fillna('')
+    
+    # Extract the numeric part (digits) -> 'numeric_index'.
+    # Fallback to '0' if no digits found (i.e., purely alphabetic name).
+    activations_df['numeric_index'] = (
+        activations_df.index
+            .str.extract(r'(\d+)', expand=False)
+            .fillna('0')
+            .astype(int)
+    )
+    
+    # Sort first by string_part (alphabetical), then by numeric_index (numerical)
+    activations_df_sorted = activations_df.sort_values(['string_part', 'numeric_index'])
+    
+    # (Optional) create a sorted numeric index to reflect the new order:
+    activations_df_sorted['numeric_index'] = range(1, len(activations_df_sorted) + 1)
+
+    # Drop 'string_part' if you no longer need it
+    activations_df_sorted.drop(columns=['string_part'], inplace=True)
+
     return activations_df_sorted
 
 
@@ -357,29 +379,26 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
 
 def assign_categories(sorted_image_names):
     """
-    Assign category labels to images based on their numeric index.
+    Assign category labels to images based on the non-numeric part of each filename.
+
+    Example:
+        "face1.jpg"   -> category "face"
+        "object12.png" -> category "object"
 
     Parameters:
         sorted_image_names (list): Sorted list of image filenames.
 
     Returns:
-        categories_array (np.ndarray): Array of category labels.
+        np.ndarray: Array of category labels (strings).
     """
     categories = []
     for image_name in sorted_image_names:
-        image_number = int(image_name.split('.')[0])
-        if 1 <= image_number <= 16:
-            category = 1
-        elif 17 <= image_number <= 32:
-            category = 2
-        elif 33 <= image_number <= 48:
-            category = 3
-        elif 49 <= image_number <= 64:
-            category = 4
-        else:
-            raise ValueError(f"Image number {image_number} is out of expected range")
-        categories.append(category)
-
+        # Split off the extension, e.g. "animal1.jpg" -> "animal1"
+        base_name = image_name.rsplit('.', 1)[0]
+        # Remove all digits from the base name using a regex
+        category_name = re.sub(r'\d+', '', base_name)
+        categories.append(category_name)
+    
     return np.array(categories)
 
 
