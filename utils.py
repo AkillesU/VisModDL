@@ -405,25 +405,27 @@ def assign_categories(sorted_image_names):
 def bootstrap_correlations(correlation_matrix, categories_array, n_bootstrap=10000):
     """
     Perform bootstrap analysis comparing within-category and between-category correlations.
-
+    
     Parameters:
         correlation_matrix (np.ndarray): Correlation matrix of image activations.
-        categories_array (np.ndarray): Array of category labels for each image.
+        categories_array (np.ndarray): Array of category labels for each image (strings).
         n_bootstrap (int): Number of bootstrap iterations.
-
+    
     Returns:
-        results (dict): Dictionary containing analysis results for each category.
+        results (dict): Dictionary containing analysis results for each category (string).
     """
     results = {}
+    unique_categories = np.unique(categories_array)  # e.g. ["animal", "face", "object"]
 
-    for category_number in range(1, 5):
+    for category_name in unique_categories:
         # Indices of images in current category
-        category_indices = np.where(categories_array == category_number)[0]
-        other_indices = np.where(categories_array != category_number)[0]
+        category_indices = np.where(categories_array == category_name)[0]
+        other_indices = np.where(categories_array != category_name)[0]
 
         # Within-category correlations
         submatrix_within = correlation_matrix[np.ix_(category_indices, category_indices)]
         n_within = len(category_indices)
+        # Exclude diagonal from within-category to avoid self-correlation
         mask_within = np.ones((n_within, n_within), dtype=bool)
         np.fill_diagonal(mask_within, False)
         within_correlations = submatrix_within[mask_within]
@@ -454,7 +456,8 @@ def bootstrap_correlations(correlation_matrix, categories_array, n_bootstrap=100
         ci_lower = np.percentile(bootstrap_differences, 2.5)
         ci_upper = np.percentile(bootstrap_differences, 97.5)
 
-        results[category_number] = {
+        # Store the results under the string-based category key
+        results[category_name] = {
             'avg_within': avg_within,
             'avg_between': avg_between,
             'observed_difference': observed_difference,
@@ -474,8 +477,19 @@ def convert_np_to_native(value):
         # Convert numpy array to Python list
         return value.tolist()
     elif isinstance(value, dict):
-        # Recursively convert dictionary values
-        return {k: convert_np_to_native(v) for k, v in value.items()}
+        # Recursively convert dictionary KEYS and VALUES
+        new_dict = {}
+        for k, v in value.items():
+            # Convert key if it's a NumPy type
+            if isinstance(k, np.generic):
+                k = k.item()
+            # Ensure the key is a Python string (or something YAML can handle)
+            if not isinstance(k, str):
+                k = str(k)
+
+            # Recursively convert the value
+            new_dict[k] = convert_np_to_native(v)
+        return new_dict
     elif isinstance(value, list):
         # Recursively convert list elements
         return [convert_np_to_native(v) for v in value]
@@ -487,37 +501,38 @@ def convert_np_to_native(value):
 def print_within_between(results, layer_name, model_name, output_path=None):
     """
     Print the bootstrap results in a readable format.
-
-    Parameters:
-        results (dict): Dictionary containing analysis results for each category.
     """
-    for category_number in range(1, 5):
-        avg_within = results[category_number]['avg_within']
-        avg_between = results[category_number]['avg_between']
-        observed_difference = results[category_number]['observed_difference']
-        p_value = results[category_number]['p_value']
-        ci_lower = results[category_number]['ci_lower']
-        ci_upper = results[category_number]['ci_upper']
 
-        print(f"Category {category_number}:")
+    # 1) Convert results (including dictionary keys) to native Python types
+    native_results = convert_np_to_native(results)
+
+    # 2) Now iterate over the keys in native_results (not results)
+    for category_name in native_results.keys():
+        avg_within = native_results[category_name]['avg_within']
+        avg_between = native_results[category_name]['avg_between']
+        observed_difference = native_results[category_name]['observed_difference']
+        p_value = native_results[category_name]['p_value']
+        ci_lower = native_results[category_name]['ci_lower']
+        ci_upper = native_results[category_name]['ci_upper']
+
+        print(f"Category '{category_name}':")
         print(f"  Average within-category correlation: {avg_within:.4f}")
         print(f"  Average between-category correlation: {avg_between:.4f}")
         print(f"  Observed difference (within - between): {observed_difference:.4f}")
-        print(f"  95% Confidence interval for difference: [{ci_lower:.4f}, {ci_upper:.4f}]")
+        print(f"  95% Confidence interval: [{ci_lower:.4f}, {ci_upper:.4f}]")
         print(f"  P-value (one-tailed test): {p_value:.4f}\n")
-    # Write the dictionary to a YAML file
-    # Save figure
+
+    # 3) Save to YAML
     if output_path is None:
         save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}_within-between.yaml"
     else:
         save_path = output_path
-    # Create the directories if they don't already exist
+
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-    results = convert_np_to_native(results)
-
+    # 4) Dump the *native* version of results to YAML
     with open(save_path, "w") as f:
-        yaml.safe_dump(results, f)
+        yaml.safe_dump(native_results, f, sort_keys=False)
 
 
 def run_alteration(
