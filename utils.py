@@ -9,6 +9,7 @@ from torchvision import transforms
 from PIL import Image
 from torchinfo import summary
 import yaml
+from tqdm import tqdm
 
 
 def get_layer_from_path(model, layer_path):
@@ -179,6 +180,29 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
 
     activations_df = pd.DataFrame(all_activations, index=image_names)
     return activations_df
+
+
+def apply_noise(model, noise_level, layer_paths=None, apply_to_all_layers=False):
+    """
+    Add Gaussian noise with std = noise_level to the specified layers' weights.
+    """
+    with torch.no_grad():
+        if apply_to_all_layers:
+            for name, param in model.named_parameters():
+                if 'weight' in name and param.requires_grad:
+                    noise = torch.randn_like(param) * noise_level
+                    param += noise
+        else:
+            for path in layer_paths:
+                target_layer = get_layer_from_path(model, path)
+                weight_layer_paths = get_all_weight_layers(target_layer, path)
+                for w_path in weight_layer_paths:
+                    w_layer = get_layer_from_path(model, w_path)
+                    if hasattr(w_layer, 'weight') and w_layer.weight is not None:
+                        noise = torch.randn_like(w_layer.weight) * noise_level
+                        w_layer.weight += noise
+                    else:
+                        raise AttributeError(f"layer {w_path} does not have weights")
 
 
 def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers=False, masking_level='connections'):
@@ -402,6 +426,7 @@ def assign_categories(sorted_image_names):
     return np.array(categories)
 
 
+# POSSIBLY DEPRECATED FUNCTION. SEE calc_within_between() BELOW
 def bootstrap_correlations(correlation_matrix, categories_array, n_bootstrap=10000):
     """
     Perform bootstrap analysis comparing within-category and between-category correlations.
@@ -465,6 +490,73 @@ def bootstrap_correlations(correlation_matrix, categories_array, n_bootstrap=100
             'ci_lower': ci_lower,
             'ci_upper': ci_upper
         }
+
+    return results
+
+
+def calc_within_between(correlation_matrix, categories_array):
+    """
+    Compute within-category and between-category correlations for each category,
+    and also compute the grand averages across all categories.
+    
+    Parameters:
+        correlation_matrix (np.ndarray): Correlation matrix of image activations.
+        categories_array (np.ndarray): Array of category labels for each image (strings).
+    
+    Returns:
+        results (dict): Dictionary containing analysis results for each category,
+                        plus an "all_categories" subdictionary with overall stats.
+    """
+    results = {}
+    unique_categories = np.unique(categories_array)
+    
+    # To store all within- and between-category values across ALL categories
+    all_within_correlations = []
+    all_between_correlations = []
+
+    for category_name in unique_categories:
+        # Indices for current category vs. other categories
+        category_indices = np.where(categories_array == category_name)[0]
+        other_indices = np.where(categories_array != category_name)[0]
+
+        # Within-category correlations (excluding diagonal)
+        submatrix_within = correlation_matrix[np.ix_(category_indices, category_indices)]
+        n_within = len(category_indices)
+        mask_within = np.ones((n_within, n_within), dtype=bool)
+        np.fill_diagonal(mask_within, False)
+        within_correlations = submatrix_within[mask_within]
+
+        # Between-category correlations
+        submatrix_between = correlation_matrix[np.ix_(category_indices, other_indices)]
+        between_correlations = submatrix_between.flatten()
+
+        # Mean values
+        avg_within = np.mean(within_correlations)
+        avg_between = np.mean(between_correlations)
+        observed_difference = avg_within - avg_between
+
+        # Save category-specific stats
+        results[category_name] = {
+            'avg_within': avg_within,
+            'avg_between': avg_between,
+            'observed_difference': observed_difference
+        }
+
+        # Collect for overall stats
+        all_within_correlations.extend(within_correlations)
+        all_between_correlations.extend(between_correlations)
+
+    # Compute grand-average stats across all categories
+    avg_within_all = np.mean(all_within_correlations) if len(all_within_correlations) > 0 else float('nan')
+    avg_between_all = np.mean(all_between_correlations) if len(all_between_correlations) > 0 else float('nan')
+    observed_diff_all = avg_within_all - avg_between_all
+
+    # Store them in a subdictionary
+    results['total'] = {
+        'avg_within': avg_within_all,
+        'avg_between': avg_between_all,
+        'observed_difference': observed_diff_all
+    }
 
     return results
 
@@ -552,16 +644,7 @@ def run_alteration(
     Run the masking experiment for a list of fractions to mask, 
     and generate RDMs + within/between correlations.
     """
-    from utils import (
-        load_model,
-        extract_activations,
-        sort_activations_by_numeric_index,
-        compute_correlations,
-        assign_categories,
-        bootstrap_correlations,
-        print_within_between,
-        apply_masking
-    )
+    
 
     num_permutations = len(fraction_to_mask_list)
     fig, axes = plt.subplots(1, num_permutations, figsize=(5 * num_permutations, 5))
@@ -615,3 +698,129 @@ def run_alteration(
     os.makedirs(os.path.dirname(figure_path), exist_ok=True)
     plt.savefig(figure_path, dpi=300)
     plt.show()
+
+
+def generate_params_list(params=[0.1,10,0.1]):
+    # Unpack the parameters
+    start, length, step = params
+    
+    # Generate the values
+    return [start + i * step for i in range(length)]
+
+       
+def run_damage(
+    model_info,
+    pretrained,
+    fraction_to_mask_params,
+    noise_levels_params,
+    layer_paths_to_damage,
+    apply_to_all_layers,
+    manipulation_method,   # "connections" or "noise"
+    mc_permutations,
+    layer_name,
+    layer_path,
+    image_dir
+):
+    """
+    Loads a model, damages it (masking or noise) multiple times,
+    computes and saves correlation matrices + within/between metrics.
+
+    Parameters:
+    -----------
+    model_info : dict
+    pretrained : bool
+    fraction_to_mask_params : list  # [start, length, step] if "connections"
+    noise_levels_params : list      # [start, length, step] if "noise"
+    layer_paths_to_damage : list    # Which layers to damage
+    apply_to_all_layers : bool
+    manipulation_method : str       # "connections" or "noise"
+    mc_permutations : int           # Number of Monte Carlo permutations
+    layer_name : str                # For hooking activations
+    layer_path : str                # For hooking activations
+    image_dir : str                 # Directory of images
+    """
+
+    # Determine the list of damage levels
+    if manipulation_method == "connections":
+        damage_levels_list = generate_params_list(fraction_to_mask_params)
+    elif manipulation_method == "noise":
+        damage_levels_list = generate_params_list(noise_levels_params)
+    else:
+        raise ValueError("manipulation_method must be 'connections' or 'noise'.")
+
+    # We'll have len(damage_levels_list) * mc_permutations total loops
+    total_iterations = len(damage_levels_list) * mc_permutations
+
+    with tqdm(total=total_iterations, desc="Running alteration") as pbar:
+        # Outer loop over each damage level (fraction or noise STD)
+        for damage_level in damage_levels_list:
+            # Inner loop over Monte Carlo permutations
+            for permutation_index in range(mc_permutations):
+                # 1) Load fresh model & activations dict
+                model, activations = load_model(
+                    model_info,
+                    pretrained=pretrained,
+                    layer_name=layer_name,
+                    layer_path=layer_path
+                )
+
+                # 2) Apply the chosen damage
+                if manipulation_method == "connections":
+                    apply_masking(
+                        model,
+                        fraction_to_mask=damage_level,
+                        layer_paths=layer_paths_to_damage,
+                        apply_to_all_layers=apply_to_all_layers,
+                        masking_level='connections'
+                    )
+                else:  # "noise"
+                    apply_noise(
+                        model,
+                        noise_level=damage_level,
+                        layer_paths=layer_paths_to_damage,
+                        apply_to_all_layers=apply_to_all_layers
+                    )
+
+                # 3) Forward pass on images to get activations
+                activations_df = extract_activations(
+                    model, activations, image_dir, layer_name=layer_name
+                )
+                activations_df_sorted = sort_activations_by_numeric_index(activations_df)
+
+                # 4) Compute correlation matrix
+                correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
+
+                # 5) Save correlation matrix
+                corrmat_dir = (
+                    f"figures/haupt_stim_activ/damaged/{model_info['name']}/"
+                    f"{manipulation_method}/{layer_name}/RDM/damaged_{damage_level}"
+                )
+                os.makedirs(corrmat_dir, exist_ok=True)
+                corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}.yaml")
+
+                with open(corrmat_path, "w") as f:
+                    yaml.dump(correlation_matrix.tolist(), f)
+
+                # 6) Compute within-between metrics
+                categories_array = assign_categories(sorted_image_names)
+                results = calc_within_between(correlation_matrix, categories_array)
+
+                # 7) Save within-between metrics
+                selectivity_dir = (
+                    f"figures/haupt_stim_activ/damaged/{model_info['name']}/"
+                    f"{manipulation_method}/{layer_name}/selectivity"
+                )
+                os.makedirs(selectivity_dir, exist_ok=True)
+                selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.yaml")
+
+                with open(selectivity_path, "w") as f:
+                    yaml.dump(results, f)
+
+                """#  print summary
+                print(f"[Damage: {damage_level}, Perm: {permutation_index}] -> "
+                      f"RDM saved: {corrmat_path} | Selectivity saved: {selectivity_path}")
+"""
+                # Update the progress bar
+                pbar.update(1)
+
+    print("All damage permutations completed!")

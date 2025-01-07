@@ -11,16 +11,7 @@ import sys
 import yaml
 import torch
 from utils import (
-    load_model, 
-    extract_activations, 
-    sort_activations_by_numeric_index,
-    compute_correlations,
-    plot_correlation_heatmap,
-    assign_categories,
-    bootstrap_correlations,
-    print_within_between,
-    apply_masking,
-    run_alteration
+    run_damage
 )
 
 random.seed(1234)
@@ -53,56 +44,27 @@ def main():
     pretrained = config.get("pretrained", True)
 
     manipulation_method = config.get("manipulation_method", None)
-    fraction_to_mask_list = config.get("fraction_to_mask", 0.0)
-    layer_paths_to_mask = config.get("layer_paths_to_mask", [])
+    fraction_to_mask_params = config.get("fraction_to_mask", [0.05, 10, 0.05])
+    layer_paths_to_damage = config.get("layer_paths_to_damage", [])
     apply_to_all_layers = config.get("apply_to_all_layers", False)
     masking_level = config.get("masking_level", "connections")  # "units" or "connections"
+    mc_permutations = config.get("mc_permutations", 100) # N of Monte Carlo permutations
+    noise_levels_params = config.get("noise_levels", [0.1, 10, 0.1])
     # -----------------------------------------------------------------------
 
 
-    # Prepare a figure with subplots for RDMs, one subplot per fraction or permutation
-    num_permutations = len(fraction_to_mask_list)
-    fig, axes = plt.subplots(1, num_permutations, figsize=(5 * num_permutations, 5))
 
-    # If we are masking, just call the new function
-    if manipulation_method == "masking":
-        run_alteration(
-            model_info=model_info, 
-            pretrained=pretrained,
-            fraction_to_mask_list=fraction_to_mask_list,
-            layer_paths_to_mask=layer_paths_to_mask,
-            apply_to_all_layers=apply_to_all_layers,
-            masking_level=masking_level,
-            n_bootstrap=n_bootstrap,
-            layer_name=layer_name,
-            layer_path=layer_path,
-            image_dir=image_dir,
-            vmax=vmax
-        )
-
-    # Load model and register hook
-    model, activations = load_model(model_info, pretrained=pretrained, layer_name=layer_name, layer_path=layer_path)
-
-    # Extract activations
-    activations_df = extract_activations(model, activations, image_dir, layer_name=layer_name)
-
-    # Sort activations by numeric index in filename
-    activations_df_sorted = sort_activations_by_numeric_index(activations_df)
-
-    # Compute correlations
-    correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
-
-    # Plot correlation heatmap
-    plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=layer_name, vmax=vmax, model_name=model_info["name"])
-
-    # Assign categories to images
-    categories_array = assign_categories(sorted_image_names)
-
-    # Bootstrap correlations for each category
-    results = bootstrap_correlations(correlation_matrix, categories_array, n_bootstrap=n_bootstrap)
-
-    # Print and save results 
-    print_within_between(results, model_name=model_info["name"], layer_name=layer_name)
+    run_damage(model_info=model_info, 
+        pretrained=pretrained,
+        fraction_to_mask_params=fraction_to_mask_params,
+        noise_levels_params=noise_levels_params,
+        layer_paths_to_damage=layer_paths_to_damage,
+        apply_to_all_layers=apply_to_all_layers,
+        manipulation_method="noise",
+        mc_permutations=mc_permutations,
+        layer_name=layer_name,
+        layer_path=layer_path,
+        image_dir=image_dir)
 
 
 if __name__ == "__main__":
