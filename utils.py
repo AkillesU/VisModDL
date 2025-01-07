@@ -591,8 +591,8 @@ def run_alteration(
         ax.set_title(f"RDM (Fraction={fraction_to_mask})")
         ax.set_xticks(range(len(sorted_image_names)))
         ax.set_yticks(range(len(sorted_image_names)))
-        ax.set_xticklabels(sorted_image_names, rotation=90)
-        ax.set_yticklabels(sorted_image_names)
+        ax.set_xticklabels(sorted_image_names, rotation=90, fontsize=6)
+        ax.set_yticklabels(sorted_image_names, fontsize=6)
         ax.set_xlabel("Images")
         ax.set_ylabel("Images")
 
