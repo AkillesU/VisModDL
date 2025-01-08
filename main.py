@@ -66,6 +66,17 @@ def main():
         layer_path=layer_path,
         image_dir=image_dir)
 
+    run_damage(model_info=model_info, 
+        pretrained=pretrained,
+        fraction_to_mask_params=fraction_to_mask_params,
+        noise_levels_params=noise_levels_params,
+        layer_paths_to_damage=layer_paths_to_damage,
+        apply_to_all_layers=apply_to_all_layers,
+        manipulation_method="connections",
+        mc_permutations=mc_permutations,
+        layer_name=layer_name,
+        layer_path=layer_path,
+        image_dir=image_dir)
 
 if __name__ == "__main__":
     main()
