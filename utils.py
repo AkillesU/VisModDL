@@ -116,7 +116,7 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
         raise ValueError(f"Check model source: {model_source}")
     
     # Print model summary
-    print(model)
+    #print(model)
 
     model.eval()
     activations = {} # Init activations dictionary for hook registration
@@ -804,11 +804,11 @@ def run_damage(
                 # 6) Compute within-between metrics
                 categories_array = assign_categories(sorted_image_names)
                 results = calc_within_between(correlation_matrix, categories_array)
-
+                results = convert_np_to_native(results)
                 # 7) Save within-between metrics
                 selectivity_dir = (
                     f"figures/haupt_stim_activ/damaged/{model_info['name']}/"
-                    f"{manipulation_method}/{layer_name}/selectivity"
+                    f"{manipulation_method}/{layer_name}/selectivity/damaged_{damage_level}"
                 )
                 os.makedirs(selectivity_dir, exist_ok=True)
                 selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.yaml")
@@ -824,3 +824,106 @@ def run_damage(
                 pbar.update(1)
 
     print("All damage permutations completed!")
+
+
+def categ_corr_lineplot(
+    main_dir,
+    categories=["animal", "face", "object", "place", "total"],
+    metric="observed_difference",
+    subdir_regex=r"damaged_([\d\.]+)$"
+):
+    """
+    1. For each subdirectory matching subdir_regex (e.g. "damaged_0.1"),
+       parse the numeric fraction (e.g., 0.1).
+    2. For each category in `categories`, read all .yaml files in that
+       subdirectory and collect the specified `metric` values.
+    3. Compute the mean and std of those values across the .yaml files.
+    4. Store exactly one (mean, std) per fraction and category (rather than a list).
+    5. Plot them on a single figure, with one line per category.
+    """
+
+    # data[category] will be a dict: { fraction_value : (mean, std) }
+    data = {cat: {} for cat in categories}
+
+    # 1) Loop over all subdirectories in main_dir
+    for subdir_name in os.listdir(main_dir):
+        subdir_path = os.path.join(main_dir, subdir_name)
+        if not os.path.isdir(subdir_path):
+            continue
+
+        # Extract the numeric portion from the subdirectory name
+        match = re.search(subdir_regex, subdir_name)
+        if not match:
+            continue  # subdir doesn't match, skip it
+
+        fraction_raw = float(match.group(1))
+        fraction_rounded = round(fraction_raw, 3)
+
+        # For each category, collect the metric values from .yaml files
+        cat_to_values = {cat: [] for cat in categories}
+
+        # 2) Look for .yaml files in the subdirectory
+        for fname in os.listdir(subdir_path):
+            if fname.lower().endswith(".yaml"):
+                yaml_path = os.path.join(subdir_path, fname)
+                with open(yaml_path, "r") as f:
+                    content = yaml.safe_load(f)
+
+                # 3) If the category and metric exist in the file, store the value
+                for cat in categories:
+                    if cat in content and metric in content[cat]:
+                        val = content[cat][metric]
+                        cat_to_values[cat].append(val)
+
+        # Now compute the mean & std for each category in this subdirectory
+        for cat in categories:
+            vals = cat_to_values[cat]
+            if len(vals) == 0:
+                continue
+
+            mean_val = np.mean(vals)
+            std_val = np.std(vals)
+
+            # Instead of storing multiple (mean, std) pairs, we store just one
+            # (mean, std) for this fraction.
+            data[cat][fraction_rounded] = (mean_val, std_val)
+
+    # 4) Prepare a single figure with one line per category
+    plt.figure(figsize=(8, 6))
+
+    for cat in categories:
+        # data[cat] is a dict: { fraction_value : (mean_val, std_val) }
+        if len(data[cat]) == 0:
+            # This category had no data at all, skip plotting
+            continue
+
+        # Sort the fractions in ascending order
+        fractions_sorted = sorted(data[cat].keys())
+
+        x_vals = []
+        y_means = []
+        y_stds = []
+
+        # Extract the (mean, std) directly
+        for frac in fractions_sorted:
+            mean_val, std_val = data[cat][frac]
+            x_vals.append(frac)
+            y_means.append(mean_val)
+            y_stds.append(std_val)
+
+        # Plot error bars for this category
+        plt.errorbar(
+            x_vals, 
+            y_means, 
+            yerr=y_stds, 
+            fmt='-o', 
+            capsize=4, 
+            label=f"{cat} ({metric})"
+        )
+
+    plt.xlabel("Damage Parameter value")
+    plt.ylabel("Correlation")
+    plt.title("Multiple Categories over Subdirectory Fractions")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
