@@ -10,7 +10,6 @@ from PIL import Image
 from torchinfo import summary
 import yaml
 from tqdm import tqdm
-import math
 
 
 def get_layer_from_path(model, layer_path):
@@ -316,47 +315,48 @@ def create_mask(param, fraction, masking_level='connections'):
     else:
         raise ValueError(f"masking_level {masking_level} not recognized.")
 
-def extract_string_numeric_parts(name):
-    """Extract the string prefix and numeric index (integer or float) from a name."""
-    match = re.match(r"^([^\d]+)([\d\.]+)$", name)
-    if match:
-        prefix, num_str = match.groups()
-        try:
-            # Convert numeric part to float if possible
-            num = float(num_str) if "." in num_str else int(num_str)
-        except ValueError:
-            num = 0
-        return prefix, num
-    return name, 0
 
 def sort_activations_by_numeric_index(activations_df):
     """
-    Sort a DataFrame index by alphabetical prefix and numeric suffix.
-    """
-    activations_df.index = activations_df.index.astype(str)
-    extracted = [extract_string_numeric_parts(name) for name in activations_df.index]
-    activations_df['string_part'], activations_df['numeric_index'] = zip(*extracted)
+    Extract a string prefix and numeric index from image names, sort the DataFrame
+    alphabetically by the prefix and numerically by the numeric index. Keep the
+    'numeric_index' column, and optionally create a 'sorted_numeric_index' column.
 
-    # Sort and re-index
-    activations_df_sorted = activations_df.sort_values(['string_part', 'numeric_index']).copy()
+    Example indices: "face1", "face2", "face11", "object1", "object2"
+
+    Parameters:
+        activations_df (pd.DataFrame): DataFrame with image names as index.
+
+    Returns:
+        pd.DataFrame: DataFrame sorted and with the 'numeric_index' column retained.
+    """
+    # Ensure the index is string
+    activations_df.index = activations_df.index.astype(str)
+    
+    # Extract the string part (all non-digits at the start).
+    # This will be used for alphabetical sorting of the prefix.
+    activations_df['string_part'] = activations_df.index.str.extract(r'^([^\d]+)', expand=False).fillna('')
+    
+    # Extract the numeric part (digits) -> 'numeric_index'.
+    # Fallback to '0' if no digits found (i.e., purely alphabetic name).
+    activations_df['numeric_index'] = (
+        activations_df.index
+            .str.extract(r'(\d+)', expand=False)
+            .fillna('0')
+            .astype(int)
+    )
+    
+    # Sort first by string_part (alphabetical), then by numeric_index (numerical)
+    activations_df_sorted = activations_df.sort_values(['string_part', 'numeric_index'])
+    
+    # (Optional) create a sorted numeric index to reflect the new order:
     activations_df_sorted['numeric_index'] = range(1, len(activations_df_sorted) + 1)
 
-    return activations_df_sorted.drop(columns=['string_part'])
+    # Drop 'string_part' if you no longer need it
+    activations_df_sorted.drop(columns=['string_part'], inplace=True)
 
+    return activations_df_sorted
 
-def get_sorted_filenames(image_dir):
-    """
-    List and sort image filenames in a directory by alphabetical prefix and numeric suffix.
-    """
-    valid_exts = {".png", ".jpg", ".jpeg", ".bmp"}
-    all_files = os.listdir(image_dir)
-
-    # Extract valid filenames and their base names
-    base_names = [os.path.splitext(f)[0] for f in all_files 
-                  if os.path.splitext(f)[1].lower() in valid_exts]
-
-    # Sort using a helper function
-    return sorted(base_names, key=lambda name: extract_string_numeric_parts(name))
 
 def compute_correlations(activations_df_sorted):
     """
@@ -372,6 +372,33 @@ def compute_correlations(activations_df_sorted):
     sorted_image_names = activations_df_sorted.index.tolist()
     correlation_matrix = np.corrcoef(activations_df_sorted.drop(columns='numeric_index').values)
     return correlation_matrix, sorted_image_names
+
+
+def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):
+    """
+    Plot a heatmap of the correlation matrix.
+
+    Parameters:
+        correlation_matrix (np.ndarray): The correlation matrix.
+        sorted_image_names (list): List of image names corresponding to matrix indices.
+        layer_name (str): Name of the layer used in the title.
+        vmax (float): Upper bound for colormap.
+    """
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(correlation_matrix, annot=False, cmap="viridis",
+                xticklabels=sorted_image_names, yticklabels=sorted_image_names, vmax=vmax, vmin=0)
+    plt.title(f"Correlation of Activations Between Images (Layer: {layer_name})")
+    plt.xlabel("Images")
+    plt.ylabel("Images")
+    plt.xticks(rotation=90)
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    # Save figure
+    save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}.png"
+    # Create the directories if they don't already exist
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=400)
+    plt.show()
 
 
 def assign_categories(sorted_image_names):
@@ -598,6 +625,79 @@ def print_within_between(results, layer_name, model_name, output_path=None):
     # 4) Dump the *native* version of results to YAML
     with open(save_path, "w") as f:
         yaml.safe_dump(native_results, f, sort_keys=False)
+
+
+def run_alteration(
+    model_info, 
+    pretrained,
+    fraction_to_mask_list, 
+    layer_paths_to_mask,
+    apply_to_all_layers,
+    masking_level,
+    n_bootstrap,
+    layer_name,
+    layer_path,
+    image_dir,
+    vmax
+):
+    """
+    Run the masking experiment for a list of fractions to mask, 
+    and generate RDMs + within/between correlations.
+    """
+    
+
+    num_permutations = len(fraction_to_mask_list)
+    fig, axes = plt.subplots(1, num_permutations, figsize=(5 * num_permutations, 5))
+
+    for i, fraction_to_mask in enumerate(fraction_to_mask_list):
+        # Load a fresh model for each mask level
+        model, activations = load_model(model_info, pretrained=pretrained, 
+                                        layer_name=layer_name, layer_path=layer_path)
+
+        if fraction_to_mask > 0.0:
+            apply_masking(
+                model, 
+                fraction_to_mask, 
+                layer_paths=layer_paths_to_mask, 
+                apply_to_all_layers=apply_to_all_layers, 
+                masking_level=masking_level
+            )
+
+        # Extract activations
+        activations_df = extract_activations(model, activations, image_dir, layer_name=layer_name)
+        activations_df_sorted = sort_activations_by_numeric_index(activations_df)
+        correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
+
+        # Plot RDM for this fraction_to_mask
+        ax = axes[i] if num_permutations > 1 else axes
+        im = ax.imshow(correlation_matrix, cmap="viridis", vmax=vmax, vmin=0)
+        ax.set_title(f"RDM (Fraction={fraction_to_mask})")
+        ax.set_xticks(range(len(sorted_image_names)))
+        ax.set_yticks(range(len(sorted_image_names)))
+        ax.set_xticklabels(sorted_image_names, rotation=90, fontsize=6)
+        ax.set_yticklabels(sorted_image_names, fontsize=6)
+        ax.set_xlabel("Images")
+        ax.set_ylabel("Images")
+
+        # Compute within-between metrics
+        categories_array = assign_categories(sorted_image_names)
+        results = bootstrap_correlations(correlation_matrix, categories_array, n_bootstrap=n_bootstrap)
+
+        # Print & save results
+        yaml_filename = (
+            f"figures/haupt_stim_activ/damaged/{model_info['name']}/"
+            f"{layer_name}_within-between_{fraction_to_mask}_{masking_level}.yaml"
+        )
+        print_within_between(results, layer_name=layer_name, model_name=model_info["name"], output_path=yaml_filename)
+
+    # Final figure formatting
+    plt.tight_layout()
+    figure_path = (
+        f"figures/haupt_stim_activ/damaged/{model_info['name']}/{layer_name}_RDMs.png"
+    )
+    os.makedirs(os.path.dirname(figure_path), exist_ok=True)
+    plt.savefig(figure_path, dpi=300)
+    plt.show()
 
 
 def generate_params_list(params=[0.1,10,0.1]):
@@ -827,482 +927,3 @@ def categ_corr_lineplot(
     plt.legend()
     plt.tight_layout()
     plt.show()
-
-
-def plot_avg_corr_mat(
-    main_dir,
-    image_dir,
-    output_dir="average_RDMs",
-    subdir_regex=r"damaged_([\d\.]+)$",
-    vmax=1.0
-):
-    """
-    1. Loop over subdirectories in `main_dir` that match subdir_regex 
-       (e.g. "damaged_0.01" -> fraction=0.01).
-    2. For each subdir:
-       - Check if an averaged RDM YAML (avg_RDM_xxx.yaml) already exists
-         in `output_dir`.
-       - If yes, load it directly.
-       - If not, read all .yaml correlation matrices, compute & save the average.
-    3. Collect these averaged RDMs in fraction_to_matrix.
-    4. Plot them as subplots in a single figure, labeled on both axes by
-       sorted filenames from `image_dir`.
-    """
-
-    # Create the output directory (if missing)
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Build axis labels once
-    sorted_image_names = get_sorted_filenames(image_dir)
-    n_images = len(sorted_image_names)
-
-    # fraction_to_matrix -> dict of fraction -> averaged matrix
-    fraction_to_matrix = {}
-
-    # -----------------------------
-    # 1) Iterate over subdirectories
-    # -----------------------------
-    for subdir_name in os.listdir(main_dir):
-        subdir_path = os.path.join(main_dir, subdir_name)
-        if not os.path.isdir(subdir_path):
-            continue
-
-        # Check if subdir matches something like "damaged_0.01"
-        match = re.search(subdir_regex, subdir_name)
-        if not match:
-            continue
-        # Get damage parameter value from subdir name
-        fraction = float(match.group(1))  # e.g. 0.01
-
-        # Look for an existing averaged RDM file
-        out_fname = f"avg_RDM_{fraction:.3f}.yaml"
-        out_path = os.path.join(output_dir, out_fname)
-
-        if os.path.exists(out_path):
-            # 2a) The averaged RDM file already exists
-            print(f"Found existing average RDM for fraction={fraction:.3f}; loading it.")
-            with open(out_path, "r") as f:
-                matrix_list = yaml.safe_load(f)
-            avg_mat = np.array(matrix_list, dtype=np.float32)
-            fraction_to_matrix[fraction] = avg_mat
-        else:
-            # 2b) We need to compute the averaged RDM
-            print(f"No precomputed average RDM for fraction={fraction:.3f}; computing now.")
-            all_mats = []
-            for fname in os.listdir(subdir_path):
-                if fname.lower().endswith(".yaml"):
-                    yaml_path = os.path.join(subdir_path, fname)
-                    with open(yaml_path, "r") as f:
-                        matrix_list = yaml.safe_load(f)
-                    mat = np.array(matrix_list, dtype=np.float32)
-                    # Check shape
-                    if mat.shape[0] != n_images or mat.shape[1] != n_images:
-                        print(
-                            f"Warning: matrix {yaml_path} shape {mat.shape} "
-                            f"doesn't match expected {n_images}x{n_images}. Skipping."
-                        )
-                        continue
-                    all_mats.append(mat)
-
-            if len(all_mats) > 0:
-                avg_mat = np.mean(all_mats, axis=0)
-                fraction_to_matrix[fraction] = avg_mat
-
-                # Save the averaged matrix
-                with open(out_path, "w") as f:
-                    yaml.safe_dump(avg_mat.tolist(), f)
-            else:
-                print(f"No correlation matrices found in {subdir_path} to average.")
-
-    # -----------------------------
-    # 3) Plot the subplots
-    # -----------------------------
-    sorted_fractions = sorted(fraction_to_matrix.keys())
-    n_subplots = len(sorted_fractions)
-    if n_subplots == 0:
-        print("No matching subdirectories or no correlation matrices found.")
-        return
-
-    # Grid layout for subplots
-    n_cols = int(math.ceil(n_subplots ** 0.5))
-    n_rows = int(math.ceil(n_subplots / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(4*n_cols, 4*n_rows),
-                             squeeze=False)
-    axes = axes.ravel()
-
-    for i, fraction in enumerate(sorted_fractions):
-        avg_mat = fraction_to_matrix[fraction]
-        ax = axes[i]
-
-        # Display the averaged correlation matrix
-        im = ax.imshow(avg_mat, cmap="viridis", vmin=0, vmax=vmax)
-        ax.set_title(f"Fraction={fraction:.3f}")
-
-        # Label the ticks with sorted filenames
-        ax.set_xticks(range(n_images))
-        ax.set_yticks(range(n_images))
-        ax.set_xticklabels(sorted_image_names, rotation=90, fontsize=4)
-        ax.set_yticklabels(sorted_image_names, fontsize=4)
-
-        ax.set_xlabel("Images")
-        ax.set_ylabel("Images")
-
-        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-
-    # Hide any extra subplot axes if n_subplots < n_rows*n_cols
-    for j in range(i+1, len(axes)):
-        axes[j].axis("off")
-
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):
-    """
-    Plot a heatmap of the correlation matrix.
-
-    Parameters:
-        correlation_matrix (np.ndarray): The correlation matrix.
-        sorted_image_names (list): List of image names corresponding to matrix indices.
-        layer_name (str): Name of the layer used in the title.
-        vmax (float): Upper bound for colormap.
-    """
-    plt.figure(figsize=(12, 10))
-    sns.heatmap(correlation_matrix, annot=False, cmap="viridis",
-                xticklabels=sorted_image_names, yticklabels=sorted_image_names, vmax=vmax, vmin=0)
-    plt.title(f"Correlation of Activations Between Images (Layer: {layer_name})")
-    plt.xlabel("Images")
-    plt.ylabel("Images")
-    plt.xticks(rotation=90)
-    plt.yticks(rotation=0)
-    plt.tight_layout()
-    # Save figure
-    save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}.png"
-    # Create the directories if they don't already exist
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path, dpi=400)
-    plt.show()
-
-
-def plot_categ_differences(
-    parent_dir,
-    image_dir,
-    mode='files',
-    file_prefix='avg_RDM_',
-    file_suffixes=(".yaml",)
-):
-    """
-    Plot mean (with std error bars) of within-vs-between-category correlations,
-    excluding the diagonal. Each "item" becomes a row in the final plot.
-
-    Parameters
-    ----------
-    parent_dir : str
-        Path to a directory that either contains:
-          (mode='files') -> YAML files themselves
-          (mode='dirs')  -> Subdirectories, each of which contains YAML files
-    image_dir : str
-        Directory containing image filenames (used to determine categories).
-    mode : {'files', 'dirs'}
-        If 'files', each matching file in 'parent_dir' is treated as one item (row).
-        If 'dirs', each subdirectory in 'parent_dir' that contains matching files
-        is treated as one item (row).
-    file_prefix : str, optional
-        We look for files starting with this prefix.
-    file_suffixes : tuple or list of str, optional
-        We look for files ending with any of these suffixes.
-
-    Raises
-    ------
-    FileNotFoundError:
-        If no matching files are found (in 'files' mode)
-        or no subdirectories contain matching files (in 'dirs' mode).
-    ValueError:
-        If any correlation matrix is non-square or doesn't match the number of image filenames.
-    """
-
-    # -------------------------------------------------------------------------
-    # 1. Gather "items" based on the chosen mode
-    #    - If mode='files', each YAML file in parent_dir is one item.
-    #    - If mode='dirs', each subdirectory with matching files is one item.
-    # -------------------------------------------------------------------------
-    if not os.path.isdir(parent_dir):
-        raise FileNotFoundError(f"Parent directory '{parent_dir}' does not exist.")
-
-    items = []
-    if mode == 'files':
-        # Look for files in parent_dir that match file_prefix + file_suffixes
-        for f in os.listdir(parent_dir):
-            fullpath = os.path.join(parent_dir, f)
-            if os.path.isfile(fullpath):
-                if f.startswith(file_prefix) and any(f.endswith(f"{suf}.yaml") for suf in file_suffixes):
-                    items.append(fullpath)
-
-        if not items:
-            raise FileNotFoundError(
-                f"No matching files found in '{parent_dir}' with prefix '{file_prefix}' "
-                f"and suffixes {file_suffixes}."
-            )
-
-    elif mode == 'dirs':
-        # Look for subdirectories in parent_dir
-        for d in os.listdir(parent_dir):
-            full_dpath = os.path.join(parent_dir, d)
-            if os.path.isdir(full_dpath):
-                if d.startswith(file_prefix) and any(d.endswith(suf) for suf in file_suffixes):
-                    items.append(full_dpath)
-
-        if not items:
-            raise FileNotFoundError(
-                f"No subdirectories found in '{parent_dir}' that contain files "
-                f"with prefix '{file_prefix}' and suffixes {file_suffixes}."
-            )
-    else:
-        raise ValueError("mode must be either 'files' or 'dirs'.")
-
-    # -------------------------------------------------------------------------
-    # 2. Load and sort all image filenames, then group by category
-    # -------------------------------------------------------------------------
-    sorted_filenames = get_sorted_filenames(image_dir)  # user-defined function
-    n_files = len(sorted_filenames)
-
-    # Create a dict: {category: [filenames]}
-    categories = {}
-    for fname in sorted_filenames:
-        cat = extract_string_numeric_parts(fname)[0]  # e.g. ("catName", 123)
-        categories.setdefault(cat, []).append(fname)
-
-    categories_list = sorted(categories.keys())
-    n_categories = len(categories_list)
-
-    # -------------------------------------------------------------------------
-    # 3. Helpers to load correlation matrices from an "item"
-    # -------------------------------------------------------------------------
-    def load_matrices_from_item(item_path):
-        """
-        If 'item_path' is a file -> load that single YAML file, return [one matrix].
-        If 'item_path' is a directory -> load all matching YAML files in it, return list of matrices.
-        """
-        if os.path.isfile(item_path):
-            # Single file
-            with open(item_path, 'r') as f:
-                mat = yaml.safe_load(f)
-            _validate_matrix(mat, item_path)
-            return [mat]
-        elif os.path.isdir(item_path):
-            # Directory with possibly multiple files
-            allfiles = sorted(os.listdir(item_path))
-            matching = [
-                os.path.join(item_path, x)
-                for x in allfiles
-                if x.endswith(".yaml")
-            ]
-            matrices = []
-            for mfile in matching:
-                with open(mfile, 'r') as f:
-                    mat = yaml.safe_load(f)
-                _validate_matrix(mat, mfile)
-                matrices.append(mat)
-            return matrices
-        else:
-            raise FileNotFoundError(f"'{item_path}' is neither a file nor directory.")
-
-    def _validate_matrix(mat, path_str):
-        """
-        Ensures 'mat' is square and matches the number of sorted_filenames.
-        """
-        if len(mat) != n_files:
-            raise ValueError(
-                f"Matrix in '{path_str}' has {len(mat)} rows, but there are {n_files} image files."
-            )
-        for row in mat:
-            if len(row) != n_files:
-                raise ValueError(f"Non-square row in '{path_str}'.")
-
-    # -------------------------------------------------------------------------
-    # 4. Compute mean ± std differences across multiple matrices
-    # -------------------------------------------------------------------------
-    def compute_differences_across_matrices(matrices):
-        """
-        For a list of correlation matrices, compute the within-vs-between difference
-        for each matrix (excluding diagonals). Then return the mean std across all.
-        
-        Returns: dict[category] = (other_cats, mean_diffs, std_diffs)
-        """
-        # accum[cat][other_cat] = list of difference values (one per matrix)
-        accum = {
-            cat: {oc: [] for oc in categories_list if oc != cat}
-            for cat in categories_list
-        }
-
-        for mat in matrices:
-            # Compute single-run differences
-            single_res = {}
-            for cat in categories_list:
-                within = []
-                between = {oc: [] for oc in categories_list if oc != cat}
-                for r_i, row in enumerate(mat):
-                    cat_r = extract_string_numeric_parts(sorted_filenames[r_i])[0]
-                    for c_i, val in enumerate(row):
-                        if r_i == c_i:
-                            continue  # exclude diagonal
-                        cat_c = extract_string_numeric_parts(sorted_filenames[c_i])[0]
-                        if cat_r == cat and cat_c == cat:
-                            within.append(val)
-                        elif cat_r == cat and cat_c != cat:
-                            between[cat_c].append(val)
-                        elif cat_c == cat and cat_r != cat:
-                            between[cat_r].append(val)
-                w_avg = np.mean(within) if within else 0.0
-                b_avg = {k: (np.mean(v) if v else 0.0) for k, v in between.items()}
-                oc_list = [x for x in categories_list if x != cat]
-                diffs = [w_avg - b_avg[x] for x in oc_list]
-                single_res[cat] = (oc_list, diffs)
-
-            # Add to accum
-            for cat, (ocs, diffvals) in single_res.items():
-                for oc, dv in zip(ocs, diffvals):
-                    accum[cat][oc].append(dv)
-
-        # Now compute mean std
-        result = {}
-        for cat in accum:
-            other_cats = sorted(accum[cat].keys())
-            mean_vals = []
-            std_vals = []
-            for oc in other_cats:
-                arr = np.array(accum[cat][oc])
-                mean_vals.append(arr.mean())
-                std_vals.append(arr.std()*1.96) # 95 CI instead of STD
-            result[cat] = (other_cats, mean_vals, std_vals)
-        return result
-
-    # -------------------------------------------------------------------------
-    # 5. Load the matrices and compute differences for each item
-    # -------------------------------------------------------------------------
-    all_results = []
-    for item_path in items:
-        mats = load_matrices_from_item(item_path)            # one or many matrices
-        diffs_dict = compute_differences_across_matrices(mats)
-        all_results.append((item_path, diffs_dict))
-
-    # -------------------------------------------------------------------------
-    # 6. Plot layout: #rows = #items, #cols = #categories
-    # -------------------------------------------------------------------------
-    num_rows = len(all_results)
-    fig, axes = plt.subplots(num_rows, n_categories,
-                             figsize=(3*n_categories, 3*num_rows),
-                             sharey=True)
-    axes = np.array(axes, ndmin=2)  # force 2D
-
-    # One row per item, one column per category
-    for i, (item_path, diffs_dict) in enumerate(all_results):
-        # item_path is either a file or directory
-        label = os.path.basename(item_path.rstrip("/\\"))  # for subplot title
-
-        for j, cat in enumerate(categories_list):
-            ax = axes[i, j]
-            if cat not in diffs_dict:
-                ax.set_visible(False)
-                continue
-
-            other_cats, mean_vals, std_vals = diffs_dict[cat]
-            x_pos = np.arange(len(other_cats))
-
-            # Bar plot with error bars
-            ax.bar(x_pos, mean_vals, yerr=std_vals, 
-                   color='skyblue', edgecolor='black', capsize=4)
-            ax.set_xticks(x_pos)
-            ax.set_xticklabels(other_cats, rotation=45, ha='right')
-
-            ax.set_title(f"{label}\nCategory: {cat}")
-            if j == 0:
-                ax.set_ylabel("Avg(Within) - Avg(Between)")
-
-    plt.tight_layout()
-    plt.show()
-
-
-def aggregate_permutations(
-    main_dir,
-    output_dir,
-    yaml_ext=".yaml"
-):
-    """
-    For each subdirectory in `main_dir`, this script:
-      1) Looks for all files ending with `yaml_ext` (default: ".yaml").
-      2) Reads each file as a dict of categories -> metrics -> value
-      3) Aggregates (mean, std) across all files in that subdir
-      4) Saves a single YAML named after subdir to output_dir with the aggregate stats.
-
-    Example subdirectory structure:
-      main_dir/
-        damaged_0.01/
-          file1.yaml
-          file2.yaml
-          ...
-        damaged_0.02/
-          ...
-    """
-
-    # Loop over everything in main_dir
-    for subdir_name in os.listdir(main_dir):
-        
-        subdir_path = os.path.join(main_dir, subdir_name)
-        if not os.path.isdir(subdir_path):
-            continue  # skip if it's not a directory
-
-        # We'll store: aggregated_data[category][metric] = list of float values
-        aggregated_data = {}
-
-        # Look for .yaml files in the subdir
-        yaml_files = [
-            f for f in os.listdir(subdir_path)
-            if f.lower().endswith(yaml_ext)
-        ]
-        if not yaml_files:
-            # no yaml files found in this subdir
-            continue
-
-        for yf in yaml_files:
-            yaml_path = os.path.join(subdir_path, yf)
-            with open(yaml_path, "r") as f:
-                content = yaml.safe_load(f)  # a dict like {"animal": {"avg_between": ...}}
-
-            # Walk through the categories/metrics in this file and store values
-            for category_name, metrics_dict in content.items():
-                if category_name not in aggregated_data:
-                    aggregated_data[category_name] = {}
-                # metrics_dict = {"avg_between": val, "avg_within": val, "observed_difference": val, ...}
-                for metric_name, value in metrics_dict.items():
-                    if metric_name not in aggregated_data[category_name]:
-                        aggregated_data[category_name][metric_name] = []
-                    aggregated_data[category_name][metric_name].append(value)
-
-        # Compute mean & std for each category/metric
-        
-        results_dict = {}
-        for category_name, metric_dict in aggregated_data.items():
-            results_dict[category_name] = {}
-            for metric_name, values_list in metric_dict.items():
-                arr = np.array(values_list, dtype=float)
-                mean_val = float(np.mean(arr))
-                std_val  = float(np.std(arr))
-                results_dict[category_name][metric_name] = {
-                    "mean": mean_val,
-                    "std":  std_val
-                }
-            
-        # 5) Save the aggregated stats to a single YAML in the same subdirectory
-
-        # Define output_filename as numeric part from 
-        _, damage_value = extract_string_numeric_parts(subdir_name)
-        output_filename = f"aggr_stats_{damage_value}.yaml"
-        # Create output directory and save file
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, output_filename)
-        with open(output_path, "w") as f:
-            yaml.safe_dump(results_dict, f, sort_keys=False)
-
-        print(f"Aggregated stats saved -> {output_path}")
