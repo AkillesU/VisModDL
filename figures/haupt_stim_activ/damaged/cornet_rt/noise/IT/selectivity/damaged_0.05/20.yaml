@@ -1,0 +1,20 @@
+animal:
+  avg_between: 0.3120902137371105
+  avg_within: 0.33901829148078755
+  observed_difference: 0.02692807774367706
+face:
+  avg_between: 0.29958455127351824
+  avg_within: 0.558323718825905
+  observed_difference: 0.2587391675523868
+object:
+  avg_between: 0.3182655847165798
+  avg_within: 0.3453612533297157
+  observed_difference: 0.027095668613135893
+place:
+  avg_between: 0.29433512392604816
+  avg_within: 0.3444578686642946
+  observed_difference: 0.05012274473824646
+total:
+  avg_between: 0.30606886841331415
+  avg_within: 0.3967902830751757
+  observed_difference: 0.09072141466186157
