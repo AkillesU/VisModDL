@@ -727,78 +727,94 @@ def run_damage(
 
 
 def categ_corr_lineplot(
-    main_dir,
+    layers,
+    damage_type,
+    main_dir="figures/haupt_stim_activ/damaged/cornet_rt/",
     categories=["animal", "face", "object", "place", "total"],
     metric="observed_difference",
     subdir_regex=r"damaged_([\d\.]+)$"
 ):
     """
-    1. For each subdirectory matching subdir_regex (e.g. "damaged_0.1"),
+    1. For each layer in `layers`, build the directory path:
+         {main_dir}{damage_type}/{layer}/selectivity/
+    2. In that directory, for each subdirectory matching subdir_regex (e.g. "damaged_0.1"),
        parse the numeric fraction (e.g., 0.1).
-    2. For each category in `categories`, read all .yaml files in that
-       subdirectory and collect the specified `metric` values.
-    3. Compute the mean and std of those values across the .yaml files.
-    4. Store exactly one (mean, std) per fraction and category (rather than a list).
-    5. Plot them on a single figure, with one line per category.
+    3. For each category in `categories`, read all .yaml files in that subdirectory and
+       collect the specified `metric` values.
+    4. Compute the mean and std of those values across the .yaml files.
+    5. Store exactly one (mean, std) per fraction and category (rather than a list).
+    6. Plot them on a single figure, with one line per (layer, category).
     """
 
-    # data[category] will be a dict: { fraction_value : (mean, std) }
-    data = {cat: {} for cat in categories}
+    # data[(layer, category)] will be a dict: { fraction_value : (mean, std) }
+    data = {}
 
-    # 1) Loop over all subdirectories in main_dir
-    for subdir_name in os.listdir(main_dir):
-        subdir_path = os.path.join(main_dir, subdir_name)
-        if not os.path.isdir(subdir_path):
+    # -- Loop over each layer to gather data --
+    for layer in layers:
+        # Construct the directory for this layer
+        layer_path = os.path.join(main_dir, damage_type, layer, "selectivity")
+
+        if not os.path.isdir(layer_path):
+            # If the path doesn't exist, skip this layer
             continue
 
-        # Extract the numeric portion from the subdirectory name
-        match = re.search(subdir_regex, subdir_name)
-        if not match:
-            continue  # subdir doesn't match, skip it
-
-        fraction_raw = float(match.group(1))
-        fraction_rounded = round(fraction_raw, 3)
-
-        # For each category, collect the metric values from .yaml files
-        cat_to_values = {cat: [] for cat in categories}
-
-        # 2) Look for .yaml files in the subdirectory
-        for fname in os.listdir(subdir_path):
-            if fname.lower().endswith(".yaml"):
-                yaml_path = os.path.join(subdir_path, fname)
-                with open(yaml_path, "r") as f:
-                    content = yaml.safe_load(f)
-
-                # 3) If the category and metric exist in the file, store the value
-                for cat in categories:
-                    if cat in content and metric in content[cat]:
-                        val = content[cat][metric]
-                        cat_to_values[cat].append(val)
-
-        # Now compute the mean & std for each category in this subdirectory
+        # Initialize data dict for each (layer, cat) combination
         for cat in categories:
-            vals = cat_to_values[cat]
-            if len(vals) == 0:
+            data[(layer, cat)] = {}
+
+        # 1) Loop over all subdirectories in layer_path
+        for subdir_name in os.listdir(layer_path):
+            subdir_path = os.path.join(layer_path, subdir_name)
+            if not os.path.isdir(subdir_path):
                 continue
 
-            mean_val = np.mean(vals)
-            std_val = np.std(vals)
+            # Extract the numeric portion from the subdirectory name
+            match = re.search(subdir_regex, subdir_name)
+            if not match:
+                continue  # subdir doesn't match, skip it
 
-            # Instead of storing multiple (mean, std) pairs, we store just one
-            # (mean, std) for this fraction.
-            data[cat][fraction_rounded] = (mean_val, std_val)
+            fraction_raw = float(match.group(1))
+            fraction_rounded = round(fraction_raw, 3)
 
-    # 4) Prepare a single figure with one line per category
+            # For each category, collect the metric values from .yaml files
+            cat_to_values = {cat: [] for cat in categories}
+
+            # 2) Look for .yaml files in the subdirectory
+            for fname in os.listdir(subdir_path):
+                if fname.lower().endswith(".yaml"):
+                    yaml_path = os.path.join(subdir_path, fname)
+                    with open(yaml_path, "r") as f:
+                        content = yaml.safe_load(f)
+
+                    # 3) If the category and metric exist in the file, store the value
+                    for cat in categories:
+                        if cat in content and metric in content[cat]:
+                            val = content[cat][metric]
+                            cat_to_values[cat].append(val)
+
+            # Now compute the mean & std for each category in this subdirectory
+            for cat in categories:
+                vals = cat_to_values[cat]
+                if len(vals) == 0:
+                    continue
+
+                mean_val = np.mean(vals)
+                std_val = np.std(vals)
+
+                # Instead of storing multiple (mean, std) pairs, we store just one
+                # (mean, std) for this fraction.
+                data[(layer, cat)][fraction_rounded] = (mean_val, std_val)
+
+    # 4) Prepare a single figure with one line per (layer, category)
     plt.figure(figsize=(8, 6))
 
-    for cat in categories:
-        # data[cat] is a dict: { fraction_value : (mean_val, std_val) }
-        if len(data[cat]) == 0:
-            # This category had no data at all, skip plotting
+    for (layer, cat), fraction_dict in data.items():
+        if len(fraction_dict) == 0:
+            # This (layer, category) had no data at all, skip plotting
             continue
 
         # Sort the fractions in ascending order
-        fractions_sorted = sorted(data[cat].keys())
+        fractions_sorted = sorted(fraction_dict.keys())
 
         x_vals = []
         y_means = []
@@ -806,24 +822,24 @@ def categ_corr_lineplot(
 
         # Extract the (mean, std) directly
         for frac in fractions_sorted:
-            mean_val, std_val = data[cat][frac]
+            mean_val, std_val = fraction_dict[frac]
             x_vals.append(frac)
             y_means.append(mean_val)
             y_stds.append(std_val)
 
-        # Plot error bars for this category
+        # Plot error bars for this (layer, category)
         plt.errorbar(
             x_vals, 
             y_means, 
             yerr=y_stds, 
             fmt='-o', 
             capsize=4, 
-            label=f"{cat} ({metric})"
+            label=f"{layer} - {cat} ({metric})"
         )
 
     plt.xlabel("Damage Parameter value")
-    plt.ylabel("Correlation")
-    plt.title("Multiple Categories over Subdirectory Fractions")
+    plt.ylabel(metric)
+    plt.title("Correlation metric across damage parameter values")
     plt.legend()
     plt.tight_layout()
     plt.show()
@@ -1121,7 +1137,7 @@ def plot_categ_differences(
                 raise ValueError(f"Non-square row in '{path_str}'.")
 
     # -------------------------------------------------------------------------
-    # 4. Compute mean ± std differences across multiple matrices
+    # 4. Compute mean std differences across multiple matrices
     # -------------------------------------------------------------------------
     def compute_differences_across_matrices(matrices):
         """
