@@ -10,7 +10,6 @@ from PIL import Image
 from torchinfo import summary
 import yaml
 from tqdm import tqdm
-import math
 
 
 def get_layer_from_path(model, layer_path):
@@ -316,47 +315,48 @@ def create_mask(param, fraction, masking_level='connections'):
     else:
         raise ValueError(f"masking_level {masking_level} not recognized.")
 
-def extract_string_numeric_parts(name):
-    """Extract the string prefix and numeric index (integer or float) from a name."""
-    match = re.match(r"^([^\d]+)([\d\.]+)$", name)
-    if match:
-        prefix, num_str = match.groups()
-        try:
-            # Convert numeric part to float if possible
-            num = float(num_str) if "." in num_str else int(num_str)
-        except ValueError:
-            num = 0
-        return prefix, num
-    return name, 0
 
 def sort_activations_by_numeric_index(activations_df):
     """
-    Sort a DataFrame index by alphabetical prefix and numeric suffix.
-    """
-    activations_df.index = activations_df.index.astype(str)
-    extracted = [extract_string_numeric_parts(name) for name in activations_df.index]
-    activations_df['string_part'], activations_df['numeric_index'] = zip(*extracted)
+    Extract a string prefix and numeric index from image names, sort the DataFrame
+    alphabetically by the prefix and numerically by the numeric index. Keep the
+    'numeric_index' column, and optionally create a 'sorted_numeric_index' column.
 
-    # Sort and re-index
-    activations_df_sorted = activations_df.sort_values(['string_part', 'numeric_index']).copy()
+    Example indices: "face1", "face2", "face11", "object1", "object2"
+
+    Parameters:
+        activations_df (pd.DataFrame): DataFrame with image names as index.
+
+    Returns:
+        pd.DataFrame: DataFrame sorted and with the 'numeric_index' column retained.
+    """
+    # Ensure the index is string
+    activations_df.index = activations_df.index.astype(str)
+    
+    # Extract the string part (all non-digits at the start).
+    # This will be used for alphabetical sorting of the prefix.
+    activations_df['string_part'] = activations_df.index.str.extract(r'^([^\d]+)', expand=False).fillna('')
+    
+    # Extract the numeric part (digits) -> 'numeric_index'.
+    # Fallback to '0' if no digits found (i.e., purely alphabetic name).
+    activations_df['numeric_index'] = (
+        activations_df.index
+            .str.extract(r'(\d+)', expand=False)
+            .fillna('0')
+            .astype(int)
+    )
+    
+    # Sort first by string_part (alphabetical), then by numeric_index (numerical)
+    activations_df_sorted = activations_df.sort_values(['string_part', 'numeric_index'])
+    
+    # (Optional) create a sorted numeric index to reflect the new order:
     activations_df_sorted['numeric_index'] = range(1, len(activations_df_sorted) + 1)
 
-    return activations_df_sorted.drop(columns=['string_part'])
+    # Drop 'string_part' if you no longer need it
+    activations_df_sorted.drop(columns=['string_part'], inplace=True)
 
+    return activations_df_sorted
 
-def get_sorted_filenames(image_dir):
-    """
-    List and sort image filenames in a directory by alphabetical prefix and numeric suffix.
-    """
-    valid_exts = {".png", ".jpg", ".jpeg", ".bmp"}
-    all_files = os.listdir(image_dir)
-
-    # Extract valid filenames and their base names
-    base_names = [os.path.splitext(f)[0] for f in all_files 
-                  if os.path.splitext(f)[1].lower() in valid_exts]
-
-    # Sort using a helper function
-    return sorted(base_names, key=lambda name: extract_string_numeric_parts(name))
 
 def compute_correlations(activations_df_sorted):
     """
@@ -372,6 +372,33 @@ def compute_correlations(activations_df_sorted):
     sorted_image_names = activations_df_sorted.index.tolist()
     correlation_matrix = np.corrcoef(activations_df_sorted.drop(columns='numeric_index').values)
     return correlation_matrix, sorted_image_names
+
+
+def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):
+    """
+    Plot a heatmap of the correlation matrix.
+
+    Parameters:
+        correlation_matrix (np.ndarray): The correlation matrix.
+        sorted_image_names (list): List of image names corresponding to matrix indices.
+        layer_name (str): Name of the layer used in the title.
+        vmax (float): Upper bound for colormap.
+    """
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(correlation_matrix, annot=False, cmap="viridis",
+                xticklabels=sorted_image_names, yticklabels=sorted_image_names, vmax=vmax, vmin=0)
+    plt.title(f"Correlation of Activations Between Images (Layer: {layer_name})")
+    plt.xlabel("Images")
+    plt.ylabel("Images")
+    plt.xticks(rotation=90)
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    # Save figure
+    save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}.png"
+    # Create the directories if they don't already exist
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=400)
+    plt.show()
 
 
 def assign_categories(sorted_image_names):
@@ -598,6 +625,79 @@ def print_within_between(results, layer_name, model_name, output_path=None):
     # 4) Dump the *native* version of results to YAML
     with open(save_path, "w") as f:
         yaml.safe_dump(native_results, f, sort_keys=False)
+
+
+def run_alteration(
+    model_info, 
+    pretrained,
+    fraction_to_mask_list, 
+    layer_paths_to_mask,
+    apply_to_all_layers,
+    masking_level,
+    n_bootstrap,
+    layer_name,
+    layer_path,
+    image_dir,
+    vmax
+):
+    """
+    Run the masking experiment for a list of fractions to mask, 
+    and generate RDMs + within/between correlations.
+    """
+    
+
+    num_permutations = len(fraction_to_mask_list)
+    fig, axes = plt.subplots(1, num_permutations, figsize=(5 * num_permutations, 5))
+
+    for i, fraction_to_mask in enumerate(fraction_to_mask_list):
+        # Load a fresh model for each mask level
+        model, activations = load_model(model_info, pretrained=pretrained, 
+                                        layer_name=layer_name, layer_path=layer_path)
+
+        if fraction_to_mask > 0.0:
+            apply_masking(
+                model, 
+                fraction_to_mask, 
+                layer_paths=layer_paths_to_mask, 
+                apply_to_all_layers=apply_to_all_layers, 
+                masking_level=masking_level
+            )
+
+        # Extract activations
+        activations_df = extract_activations(model, activations, image_dir, layer_name=layer_name)
+        activations_df_sorted = sort_activations_by_numeric_index(activations_df)
+        correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
+
+        # Plot RDM for this fraction_to_mask
+        ax = axes[i] if num_permutations > 1 else axes
+        im = ax.imshow(correlation_matrix, cmap="viridis", vmax=vmax, vmin=0)
+        ax.set_title(f"RDM (Fraction={fraction_to_mask})")
+        ax.set_xticks(range(len(sorted_image_names)))
+        ax.set_yticks(range(len(sorted_image_names)))
+        ax.set_xticklabels(sorted_image_names, rotation=90, fontsize=6)
+        ax.set_yticklabels(sorted_image_names, fontsize=6)
+        ax.set_xlabel("Images")
+        ax.set_ylabel("Images")
+
+        # Compute within-between metrics
+        categories_array = assign_categories(sorted_image_names)
+        results = bootstrap_correlations(correlation_matrix, categories_array, n_bootstrap=n_bootstrap)
+
+        # Print & save results
+        yaml_filename = (
+            f"figures/haupt_stim_activ/damaged/{model_info['name']}/"
+            f"{layer_name}_within-between_{fraction_to_mask}_{masking_level}.yaml"
+        )
+        print_within_between(results, layer_name=layer_name, model_name=model_info["name"], output_path=yaml_filename)
+
+    # Final figure formatting
+    plt.tight_layout()
+    figure_path = (
+        f"figures/haupt_stim_activ/damaged/{model_info['name']}/{layer_name}_RDMs.png"
+    )
+    os.makedirs(os.path.dirname(figure_path), exist_ok=True)
+    plt.savefig(figure_path, dpi=300)
+    plt.show()
 
 
 def generate_params_list(params=[0.1,10,0.1]):
