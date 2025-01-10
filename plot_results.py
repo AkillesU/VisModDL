@@ -1,7 +1,5 @@
 from utils import categ_corr_lineplot, plot_avg_corr_mat, plot_categ_differences
 
-main_directory = "figures/haupt_stim_activ/damaged/cornet_rt/noise/V1/selectivity/"
-
 # TODO: Fix this code, make it more modular 
 
 # Categories and metrics we want to plot
@@ -10,9 +8,9 @@ metrics_to_use = "observed_difference"
 image_directory = "stimuli/"
 
 categ_corr_lineplot(
-    main_dir=main_directory,
-    categories=categories_to_use,
-    metric=metrics_to_use
+    layers=["IT","V4","V2","V1"],
+    damage_type="noise",
+    categories=["total"]
 )
 
 plot_avg_corr_mat(
