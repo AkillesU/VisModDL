@@ -720,7 +720,7 @@ def run_damage(
                 # 5) Save correlation matrix
                 corrmat_dir = (
                     f"figures/haupt_stim_activ/damaged/{model_info['name']}/"
-                    f"{manipulation_method}/{layer_name}/RDM/damaged_{damage_level}"
+                    f"{manipulation_method}/{layer_name}/RDM/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(corrmat_dir, exist_ok=True)
                 corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}.yaml")
@@ -735,7 +735,7 @@ def run_damage(
                 # 7) Save within-between metrics
                 selectivity_dir = (
                     f"figures/haupt_stim_activ/damaged/{model_info['name']}/"
-                    f"{manipulation_method}/{layer_name}/selectivity/damaged_{damage_level}"
+                    f"{manipulation_method}/{layer_name}/selectivity/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(selectivity_dir, exist_ok=True)
                 selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.yaml")
@@ -899,131 +899,99 @@ def categ_corr_lineplot(
     plt.show()
 
 
+    # TODO: Make this function more dynamic and flexible (Merge main and output dir arguments )
 def plot_avg_corr_mat(
-    main_dir,
-    image_dir,
+    layers,
+    damage_type,
+    image_dir="stimuli/",
     output_dir="average_RDMs",
     subdir_regex=r"damaged_([\d\.]+)$",
+    damage_levels=None, # List
+    main_dir="figures/haupt_stim_activ/damaged/cornet_rt/",
     vmax=1.0
 ):
     """
-    1. Loop over subdirectories in `main_dir` that match subdir_regex 
-       (e.g. "damaged_0.01" -> fraction=0.01).
-    2. For each subdir:
-       - Check if an averaged RDM YAML (avg_RDM_xxx.yaml) already exists
-         in `output_dir`.
-       - If yes, load it directly.
-       - If not, read all .yaml correlation matrices, compute & save the average.
-    3. Collect these averaged RDMs in fraction_to_matrix.
-    4. Plot them as subplots in a single figure, labeled on both axes by
-       sorted filenames from `image_dir`.
+    1. Loop over subdirectories matching the damage type and layers.
+    2. For each match, compute the average correlation matrix if not already saved.
+    3. Collect and plot the matrices as subplots, allowing multiple layers and damage types.
     """
-
-    # Create the output directory (if missing)
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Build axis labels once
-    sorted_image_names = get_sorted_filenames(image_dir)
-    n_images = len(sorted_image_names)
-
-    # fraction_to_matrix -> dict of fraction -> averaged matrix
+    # Prepare data structure
     fraction_to_matrix = {}
 
-    # -----------------------------
-    # 1) Iterate over subdirectories
-    # -----------------------------
-    for subdir_name in os.listdir(main_dir):
-        subdir_path = os.path.join(main_dir, subdir_name)
-        if not os.path.isdir(subdir_path):
+    # Loop over layers and damage types
+    for layer in layers:
+        layer_output_dir = os.path.join(main_dir, damage_type, layer, output_dir)
+        os.makedirs(layer_output_dir, exist_ok=True)
+
+        layer_path = os.path.join(main_dir, damage_type, layer, "RDM")
+
+        if not os.path.isdir(layer_path):
             continue
 
-        # Check if subdir matches something like "damaged_0.01"
-        match = re.search(subdir_regex, subdir_name)
-        if not match:
-            continue
-        # Get damage parameter value from subdir name
-        fraction = float(match.group(1))  # e.g. 0.01
+        for subdir_name in os.listdir(layer_path):
+            subdir_path = os.path.join(layer_path, subdir_name)
+            if not os.path.isdir(subdir_path):
+                continue
 
-        # Look for an existing averaged RDM file
-        out_fname = f"avg_RDM_{fraction:.3f}.yaml"
-        out_path = os.path.join(output_dir, out_fname)
-
-        if os.path.exists(out_path):
-            # 2a) The averaged RDM file already exists
-            print(f"Found existing average RDM for fraction={fraction:.3f}; loading it.")
-            with open(out_path, "r") as f:
-                matrix_list = yaml.safe_load(f)
-            avg_mat = np.array(matrix_list, dtype=np.float32)
-            fraction_to_matrix[fraction] = avg_mat
-        else:
-            # 2b) We need to compute the averaged RDM
-            print(f"No precomputed average RDM for fraction={fraction:.3f}; computing now.")
-            all_mats = []
-            for fname in os.listdir(subdir_path):
-                if fname.lower().endswith(".yaml"):
-                    yaml_path = os.path.join(subdir_path, fname)
-                    with open(yaml_path, "r") as f:
-                        matrix_list = yaml.safe_load(f)
-                    mat = np.array(matrix_list, dtype=np.float32)
-                    # Check shape
-                    if mat.shape[0] != n_images or mat.shape[1] != n_images:
-                        print(
-                            f"Warning: matrix {yaml_path} shape {mat.shape} "
-                            f"doesn't match expected {n_images}x{n_images}. Skipping."
-                        )
-                        continue
-                    all_mats.append(mat)
-
-            if len(all_mats) > 0:
-                avg_mat = np.mean(all_mats, axis=0)
-                fraction_to_matrix[fraction] = avg_mat
-
-                # Save the averaged matrix
-                with open(out_path, "w") as f:
-                    yaml.safe_dump(avg_mat.tolist(), f)
+            # Check for suffix or regex match
+            if damage_levels:
+                if not any(subdir_name.endswith(f"damaged_{suffix}") for suffix in damage_levels):
+                    continue
             else:
-                print(f"No correlation matrices found in {subdir_path} to average.")
+                match = re.search(subdir_regex, subdir_name)
+                if not match:
+                    continue
 
-    # -----------------------------
-    # 3) Plot the subplots
-    # -----------------------------
+            fraction = round(float(match.group(1)) if not damage_levels else extract_string_numeric_parts(subdir_name)[1],3)
+            
+            # Prepare output file name
+            out_fname = f"avg_RDM_{fraction}.yaml"
+            out_path = os.path.join(layer_output_dir, out_fname)
+            print(out_path)
+            # Check for precomputed matrix
+            if os.path.exists(out_path):
+                print(f"Found existing average RDM for fraction={fraction}, layer={layer}; loading it.")
+                with open(out_path, "r") as f:
+                    avg_mat = np.array(yaml.safe_load(f), dtype=np.float32)
+            else:
+                all_mats = []
+                print(f"No precomputed average RDM for fraction={fraction}, layer={layer}; computing now.")
+                for fname in os.listdir(subdir_path):
+                    if fname.lower().endswith(".yaml"):
+                        yaml_path = os.path.join(subdir_path, fname)
+                        with open(yaml_path, "r") as f:
+                            matrix_list = yaml.safe_load(f)
+                        mat = np.array(matrix_list, dtype=np.float32)
+                        all_mats.append(mat)
+
+                avg_mat = np.mean(all_mats, axis=0) if all_mats else None
+                if avg_mat is not None:
+                    with open(out_path, "w") as f:
+                        yaml.safe_dump(avg_mat.tolist(), f)
+
+            if avg_mat is not None:
+                fraction_to_matrix[(fraction, layer)] = avg_mat
+
+    # Plot results
     sorted_fractions = sorted(fraction_to_matrix.keys())
     n_subplots = len(sorted_fractions)
-    if n_subplots == 0:
-        print("No matching subdirectories or no correlation matrices found.")
-        return
-
-    # Grid layout for subplots
     n_cols = int(math.ceil(n_subplots ** 0.5))
     n_rows = int(math.ceil(n_subplots / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(4*n_cols, 4*n_rows),
-                             squeeze=False)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows), squeeze=False)
     axes = axes.ravel()
+    
 
-    for i, fraction in enumerate(sorted_fractions):
-        avg_mat = fraction_to_matrix[fraction]
+    for i, (fraction, layer) in enumerate(sorted_fractions):
+        avg_mat = fraction_to_matrix[(fraction, layer)]
         ax = axes[i]
-
-        # Display the averaged correlation matrix
         im = ax.imshow(avg_mat, cmap="viridis", vmin=0, vmax=vmax)
-        ax.set_title(f"Fraction={fraction:.3f}")
-
-        # Label the ticks with sorted filenames
-        ax.set_xticks(range(n_images))
-        ax.set_yticks(range(n_images))
-        ax.set_xticklabels(sorted_image_names, rotation=90, fontsize=4)
-        ax.set_yticklabels(sorted_image_names, fontsize=4)
-
-        ax.set_xlabel("Images")
-        ax.set_ylabel("Images")
-
+        ax.set_title(f"Fraction={fraction}, Layer={layer}")
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    # Hide any extra subplot axes if n_subplots < n_rows*n_cols
-    for j in range(i+1, len(axes)):
+    for j in range(i + 1, len(axes)):
         axes[j].axis("off")
 
+    plt.title(damage_type)
     plt.tight_layout()
     plt.show()
 
