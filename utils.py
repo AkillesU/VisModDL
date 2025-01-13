@@ -780,33 +780,39 @@ def extract_string_numeric_parts(name):
         return prefix, num
     return name, 0
 
+
 def categ_corr_lineplot(
     layers,
     damage_type,
     main_dir="figures/haupt_stim_activ/damaged/cornet_rt/",
     categories=["animal", "face", "object", "place", "total"],
     metric="observed_difference",
-    subdir_regex=r"damaged_([\d\.]+)$"
+    subdir_regex=r"damaged_([\d\.]+)$",
+    plot_dir="plots/",
 ):
     """
     1. For each layer in `layers`, build the directory path:
          {main_dir}{damage_type}/{layer}/selectivity/
     2. In that directory, for each subdirectory matching subdir_regex (e.g. "damaged_0.1"),
        parse the numeric fraction (e.g., 0.1).
-    3. For each category in `categories`, read all .yaml files in that subdirectory and
-       collect the specified `metric` values.
-    4. Compute the mean and std of those values across the .yaml files.
-    5. Store exactly one (mean, std) per fraction and category (rather than a list).
-    6. Plot them on a single figure, with one line per (layer, category).
+    3. If an aggregated stats file "avg_selectivity_{fraction}.yaml" does not exist for
+       that fraction, compute *all* categories & metrics found in the raw .yaml files.
+       Save them to "avg_selectivity_{fraction}.yaml".
+    4. For plotting, read back those aggregated stats, but only use the specified
+       `categories` and single `metric` to populate `data[(layer, cat)]`.
+    5. Plot them on a single figure, with one line per (layer, category).
     """
 
-    # data[(layer, category)] will be a dict: { fraction_value : (mean, std) }
+    # data[(layer, category)] -> { fraction_value : (mean, std) }
     data = {}
 
     # -- Loop over each layer to gather data --
     for layer in layers:
         # Construct the directory for this layer
         layer_path = os.path.join(main_dir, damage_type, layer, "selectivity")
+        # Construct output file path to save aggregated YAML
+        output_path = os.path.join(main_dir, damage_type, layer, "avg_selectivity")
+        os.makedirs(output_path, exist_ok=True)
 
         if not os.path.isdir(layer_path):
             # If the path doesn't exist, skip this layer
@@ -830,36 +836,77 @@ def categ_corr_lineplot(
             fraction_raw = float(match.group(1))
             fraction_rounded = round(fraction_raw, 3)
 
-            # For each category, collect the metric values from .yaml files
-            cat_to_values = {cat: [] for cat in categories}
+            # The aggregated stats file name for this fraction
+            fraction_file_name = f"avg_selectivity_{fraction_rounded}.yaml"
+            fraction_file_path = os.path.join(output_path, fraction_file_name)
 
-            # 2) Look for .yaml files in the subdirectory
-            for fname in os.listdir(subdir_path):
-                if fname.lower().endswith(".yaml"):
-                    yaml_path = os.path.join(subdir_path, fname)
-                    with open(yaml_path, "r") as f:
-                        content = yaml.safe_load(f)
+            # Check if the aggregated file for this fraction exists
+            if not os.path.exists(fraction_file_path):
+                # If it doesn't exist, we aggregate *all* categories & metrics
+                # found in the .yaml files in this subdirectory.
+                aggregated_data = {}  # aggregated_data[cat][metric] = list of values
 
-                    # 3) If the category and metric exist in the file, store the value
-                    for cat in categories:
-                        if cat in content and metric in content[cat]:
-                            val = content[cat][metric]
-                            cat_to_values[cat].append(val)
+                # 2) Look for .yaml files in the subdirectory
+                for fname in os.listdir(subdir_path):
+                    if fname.lower().endswith(".yaml"):
+                        yaml_path = os.path.join(subdir_path, fname)
+                        with open(yaml_path, "r") as f:
+                            content = yaml.safe_load(f)
 
-            # Now compute the mean & std for each category in this subdirectory
+                        # Go through every category and metric in this file
+                        # and store them in aggregated_data
+                        if not isinstance(content, dict):
+                            continue
+                        for cat_name, metrics_dict in content.items():
+                            if not isinstance(metrics_dict, dict):
+                                continue
+                            # Initialize if needed
+                            if cat_name not in aggregated_data:
+                                aggregated_data[cat_name] = {}
+                            for metric_name, val in metrics_dict.items():
+                                # Ensure we have a list to accumulate values
+                                aggregated_data[cat_name].setdefault(metric_name, [])
+                                aggregated_data[cat_name][metric_name].append(val)
+
+                # Now compute the mean & std for every category and metric encountered
+                stats_dict = {}
+                for cat_name, metrics_map in aggregated_data.items():
+                    stats_dict[cat_name] = {}
+                    for metric_name, vals_list in metrics_map.items():
+                        if len(vals_list) == 0:
+                            continue
+                        arr = np.array(vals_list, dtype=float)
+                        mean_val = float(np.mean(arr))
+                        std_val = float(np.std(arr))
+                        stats_dict[cat_name][metric_name] = {
+                            "mean": mean_val,
+                            "std": std_val
+                        }
+
+                # Write these aggregated stats to the fraction_file_path
+                with open(fraction_file_path, "w") as f:
+                    yaml.safe_dump(stats_dict, f, sort_keys=False)
+
+            # 3) Now read back the aggregated file (either just written or previously existing)
+            with open(fraction_file_path, "r") as f:
+                aggregated_content = yaml.safe_load(f)
+
+            # 4) For plotting, we only care about the user-specified categories & single metric
+            if not isinstance(aggregated_content, dict):
+                continue
+
             for cat in categories:
-                vals = cat_to_values[cat]
-                if len(vals) == 0:
-                    continue
+                if cat in aggregated_content:
+                    # The aggregated file might have multiple metrics; we only use `metric`
+                    if (
+                        isinstance(aggregated_content[cat], dict)
+                        and metric in aggregated_content[cat]
+                    ):
+                        mean_val = aggregated_content[cat][metric]["mean"]
+                        std_val = aggregated_content[cat][metric]["std"]
+                        data[(layer, cat)][fraction_rounded] = (mean_val, std_val)
 
-                mean_val = np.mean(vals)
-                std_val = np.std(vals)
-
-                # Instead of storing multiple (mean, std) pairs, we store just one
-                # (mean, std) for this fraction.
-                data[(layer, cat)][fraction_rounded] = (mean_val, std_val)
-
-    # 4) Prepare a single figure with one line per (layer, category)
+    # 5) Prepare a single figure with one line per (layer, category)
     plt.figure(figsize=(8, 6))
 
     for (layer, cat), fraction_dict in data.items():
@@ -891,15 +938,31 @@ def categ_corr_lineplot(
             label=f"{layer} - {cat} ({metric})"
         )
 
-    plt.xlabel("Damage Parameter value")
+    plt.xlabel("Damage Parameter Value")
     plt.ylabel(metric)
     plt.title("Correlation metric across damage parameter values")
     plt.legend()
     plt.tight_layout()
+
+    # Saving plot
+    os.makedirs(plot_dir, exist_ok=True)
+
+    # Build a unique plot name
+    plot_name = f"lineplot_{damage_type}"
+    for layer in layers:
+        plot_name += f"_{layer}"
+    for category in categories:
+        plot_name += f"_{category[0]}"
+    plot_name += f"_{metric}.png"
+
+    save_path = os.path.join(plot_dir, plot_name)
+    save_plot = input(f"Save plot under {save_path}? Y/N: ")
+
+    if save_plot.capitalize() == "Y":
+        plt.savefig(save_path, dpi=500)
     plt.show()
 
 
-    # TODO: Make this function more dynamic and flexible (Merge main and output dir arguments )
 def plot_avg_corr_mat(
     layers,
     damage_type,
@@ -908,7 +971,8 @@ def plot_avg_corr_mat(
     subdir_regex=r"damaged_([\d\.]+)$",
     damage_levels=None, # List
     main_dir="figures/haupt_stim_activ/damaged/cornet_rt/",
-    vmax=1.0
+    vmax=1.0,
+    plot_dir="plots/"
 ):
     """
     1. Loop over subdirectories matching the damage type and layers.
@@ -917,6 +981,10 @@ def plot_avg_corr_mat(
     """
     # Prepare data structure
     fraction_to_matrix = {}
+
+    # Build axis labels once
+    sorted_image_names = get_sorted_filenames(image_dir)
+    n_images=len(sorted_image_names)
 
     # Loop over layers and damage types
     for layer in layers:
@@ -947,7 +1015,6 @@ def plot_avg_corr_mat(
             # Prepare output file name
             out_fname = f"avg_RDM_{fraction}.yaml"
             out_path = os.path.join(layer_output_dir, out_fname)
-            print(out_path)
             # Check for precomputed matrix
             if os.path.exists(out_path):
                 print(f"Found existing average RDM for fraction={fraction}, layer={layer}; loading it.")
@@ -985,14 +1052,34 @@ def plot_avg_corr_mat(
         avg_mat = fraction_to_matrix[(fraction, layer)]
         ax = axes[i]
         im = ax.imshow(avg_mat, cmap="viridis", vmin=0, vmax=vmax)
+        ax.set_xticks(range(n_images))
+        ax.set_yticks(range(n_images))
+        ax.set_xticklabels(sorted_image_names, rotation=90, fontsize=4)
+        ax.set_yticklabels(sorted_image_names, fontsize=4)
         ax.set_title(f"Fraction={fraction}, Layer={layer}")
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
     for j in range(i + 1, len(axes)):
         axes[j].axis("off")
-
-    plt.title(damage_type)
+    plt.suptitle(damage_type)
     plt.tight_layout()
+        # Saving plot
+    os.makedirs(plot_dir, exist_ok=True)
+
+    plot_name = f"RDM_{damage_type}"
+
+    for layer in layers:
+        plot_name = plot_name + f"_{layer}"
+
+    n_damages = len(damage_levels)
+    
+    plot_name = plot_name + f"_{n_damages}-levels"
+
+    save_path = os.path.join(plot_dir, plot_name)
+    save_plot = input(f"Save plot under {save_path}? Y/N: ")
+
+    if save_plot.capitalize() == "Y":
+        plt.savefig(save_path, dpi=500)
     plt.show()
 
 
