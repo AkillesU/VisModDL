@@ -1,0 +1,50 @@
+animal:
+  avg_between:
+    mean: 0.18289083855158156
+    std: 0.029450528054588945
+  avg_within:
+    mean: 0.23910848241729224
+    std: 0.031533303659834595
+  observed_difference:
+    mean: 0.05621764386571069
+    std: 0.011412655293586604
+face:
+  avg_between:
+    mean: 0.1631023820338274
+    std: 0.030539104233252855
+  avg_within:
+    mean: 0.4765230979878474
+    std: 0.0645289916645649
+  observed_difference:
+    mean: 0.31342071595402005
+    std: 0.06447161847094325
+object:
+  avg_between:
+    mean: 0.18027246846332393
+    std: 0.028910990955843294
+  avg_within:
+    mean: 0.21165847848442662
+    std: 0.03450579497927764
+  observed_difference:
+    mean: 0.03138601002110275
+    std: 0.009435833604951965
+place:
+  avg_between:
+    mean: 0.16115422844533078
+    std: 0.02798279339262463
+  avg_within:
+    mean: 0.23717894822540697
+    std: 0.03563372902610997
+  observed_difference:
+    mean: 0.07602471978007617
+    std: 0.025158014256846703
+total:
+  avg_between:
+    mean: 0.17185497937351593
+    std: 0.028420743592449275
+  avg_within:
+    mean: 0.29111725177874326
+    std: 0.02927849753407853
+  observed_difference:
+    mean: 0.11926227240522741
+    std: 0.01879986085586491
