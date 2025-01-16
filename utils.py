@@ -394,7 +394,7 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
     plt.yticks(rotation=0)
     plt.tight_layout()
     # Save figure
-    save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}.png"
+    save_path = f"data/haupt_stim_activ/{model_name}/{layer_name}.png"
     # Create the directories if they don't already exist
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=400)
@@ -616,7 +616,7 @@ def print_within_between(results, layer_name, model_name, output_path=None):
 
     # 3) Save to YAML
     if output_path is None:
-        save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}_within-between.yaml"
+        save_path = f"data/haupt_stim_activ/{model_name}/{layer_name}_within-between.yaml"
     else:
         save_path = output_path
 
@@ -719,7 +719,7 @@ def run_damage(
 
                 # 5) Save correlation matrix
                 corrmat_dir = (
-                    f"figures/haupt_stim_activ/damaged/{model_info['name']}/"
+                    f"data/haupt_stim_activ/damaged/{model_info['name']}/"
                     f"{manipulation_method}/{layer_name}/RDM/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(corrmat_dir, exist_ok=True)
@@ -734,7 +734,7 @@ def run_damage(
                 results = convert_np_to_native(results)
                 # 7) Save within-between metrics
                 selectivity_dir = (
-                    f"figures/haupt_stim_activ/damaged/{model_info['name']}/"
+                    f"data/haupt_stim_activ/damaged/{model_info['name']}/"
                     f"{manipulation_method}/{layer_name}/selectivity/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(selectivity_dir, exist_ok=True)
@@ -784,7 +784,7 @@ def extract_string_numeric_parts(name):
 def categ_corr_lineplot(
     layers,
     damage_type,
-    main_dir="figures/haupt_stim_activ/damaged/cornet_rt/",
+    main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
     categories=["animal", "face", "object", "place", "total"],
     metric="observed_difference",
     subdir_regex=r"damaged_([\d\.]+)$",
@@ -970,7 +970,7 @@ def plot_avg_corr_mat(
     output_dir="average_RDMs",
     subdir_regex=r"damaged_([\d\.]+)$",
     damage_levels=None, # List
-    main_dir="figures/haupt_stim_activ/damaged/cornet_rt/",
+    main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
     vmax=1.0,
     plot_dir="plots/"
 ):
@@ -1103,7 +1103,7 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
     plt.yticks(rotation=0)
     plt.tight_layout()
     # Save figure
-    save_path = f"figures/haupt_stim_activ/{model_name}/{layer_name}.png"
+    save_path = f"data/haupt_stim_activ/{model_name}/{layer_name}.png"
     # Create the directories if they don't already exist
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=400)
@@ -1111,7 +1111,7 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
 
 
 def plot_categ_differences(
-    main_dir="figures/haupt_stim_activ/damaged/cornet_rt/",
+    main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
     damage_type="connections",
     layers=["V1","V2","V4","IT"],
     image_dir="stimuli/",
@@ -1128,7 +1128,7 @@ def plot_categ_differences(
     Parameters
     ----------
     main_dir : str
-        Base directory. Default is "figures/haupt_stim_activ/damaged_cornet_rt/".
+        Base directory. Default is "data/haupt_stim_activ/damaged_cornet_rt/".
     damage_type : str
         Subdirectory under main_dir specifying a particular damage type.
     layers : list of str
