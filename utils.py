@@ -1287,7 +1287,7 @@ def plot_categ_differences(
                 for oc, dv in zip(ocs, diffvals):
                     accum[cat][oc].append(dv)
 
-        # Convert to mean ± 1.96*std
+        # Convert to mean 1.96*std
         result = {}
         for cat in accum:
             other_cats = sorted(accum[cat].keys())
