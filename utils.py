@@ -1111,103 +1111,113 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
 
 
 def plot_categ_differences(
-    parent_dir,
-    image_dir,
-    mode='files',
-    file_prefix='avg_RDM_',
-    file_suffixes=(".yaml",)
+    main_dir="figures/haupt_stim_activ/damaged/cornet_rt/",
+    damage_type="connections",
+    layers=["V1","V2","V4","IT"],
+    image_dir="stimuli/",
+    mode='dirs',
+    file_prefix='damaged_',
+    damage_levels=["0"],
+    comparison=False  # <--- NEW ARGUMENT
 ):
     """
     Plot mean (with std error bars) of within-vs-between-category correlations,
-    excluding the diagonal. Each "item" becomes a row in the final plot.
+    excluding the diagonal. Each "item" becomes a row in the final plot
+    unless comparison=True, in which case all items are plotted together.
 
     Parameters
     ----------
-    parent_dir : str
-        Path to a directory that either contains:
-          (mode='files') -> YAML files themselves
-          (mode='dirs')  -> Subdirectories, each of which contains YAML files
+    main_dir : str
+        Base directory. Default is "figures/haupt_stim_activ/damaged_cornet_rt/".
+    damage_type : str
+        Subdirectory under main_dir specifying a particular damage type.
+    layers : list of str
+        List of layer names to search within. Each layer becomes another 
+        subdirectory under damage_type.
     image_dir : str
         Directory containing image filenames (used to determine categories).
     mode : {'files', 'dirs'}
-        If 'files', each matching file in 'parent_dir' is treated as one item (row).
-        If 'dirs', each subdirectory in 'parent_dir' that contains matching files
-        is treated as one item (row).
-    file_prefix : str, optional
-        We look for files starting with this prefix.
-    file_suffixes : tuple or list of str, optional
-        We look for files ending with any of these suffixes.
+        If 'files', each matching file is one item. If 'dirs', each matching 
+        directory is one item.
+    file_prefix : str
+        Only consider files/subdirs that start with this prefix.
+    damage_levels : list of str
+        Only consider files/subdirs ending with these suffixes (e.g. multiple damage fractions).
+    comparison : bool
+        If False (default), each (layer, damage_level) combination is plotted 
+        as its own row of subplots (the original behavior).
+        If True, all (layer, damage_level) combinations share the same subplots, 
+        so there is only one subplot per category (grouped bar chart).
 
     Raises
     ------
-    FileNotFoundError:
-        If no matching files are found (in 'files' mode)
-        or no subdirectories contain matching files (in 'dirs' mode).
-    ValueError:
-        If any correlation matrix is non-square or doesn't match the number of image filenames.
+    FileNotFoundError
+        If directories or files do not exist.
+    ValueError
+        If any correlation matrix is non-square or doesn't match the image count.
     """
 
-    # -------------------------------------------------------------------------
-    # 1. Gather "items" based on the chosen mode
-    #    - If mode='files', each YAML file in parent_dir is one item.
-    #    - If mode='dirs', each subdirectory with matching files is one item.
-    # -------------------------------------------------------------------------
-    if not os.path.isdir(parent_dir):
-        raise FileNotFoundError(f"Parent directory '{parent_dir}' does not exist.")
+    # ------------- HELPER FUNCTIONS -------------
+    def extract_string_numeric_parts(fname):
+        """Extracts leading string and trailing numeric part from filename."""
+        import re
+        match = re.match(r"([^\d]+)([\d\.]*)", os.path.splitext(fname)[0])
+        if match:
+            return (match.group(1), match.group(2))
+        else:
+            return (fname, "")
 
-    items = []
-    if mode == 'files':
-        # Look for files in parent_dir that match file_prefix + file_suffixes
-        for f in os.listdir(parent_dir):
-            fullpath = os.path.join(parent_dir, f)
-            if os.path.isfile(fullpath):
-                if f.startswith(file_prefix) and any(f.endswith(f"{suf}.yaml") for suf in file_suffixes):
-                    items.append(fullpath)
+    def get_sorted_filenames(folder):
+        """Return sorted list of filenames, ignoring subdirectories."""
+        if not os.path.isdir(folder):
+            raise FileNotFoundError(f"Image directory '{folder}' does not exist.")
+        files = [
+            f for f in os.listdir(folder)
+            if os.path.isfile(os.path.join(folder, f))
+        ]
+        return sorted(files)
 
-        if not items:
-            raise FileNotFoundError(
-                f"No matching files found in '{parent_dir}' with prefix '{file_prefix}' "
-                f"and suffixes {file_suffixes}."
-            )
+    # --------------------------------------------
 
-    elif mode == 'dirs':
-        # Look for subdirectories in parent_dir
-        for d in os.listdir(parent_dir):
-            full_dpath = os.path.join(parent_dir, d)
-            if os.path.isdir(full_dpath):
-                if d.startswith(file_prefix) and any(d.endswith(suf) for suf in file_suffixes):
-                    items.append(full_dpath)
-
-        if not items:
-            raise FileNotFoundError(
-                f"No subdirectories found in '{parent_dir}' that contain files "
-                f"with prefix '{file_prefix}' and suffixes {file_suffixes}."
-            )
-    else:
-        raise ValueError("mode must be either 'files' or 'dirs'.")
+    if layers is None:
+        layers = []
 
     # -------------------------------------------------------------------------
-    # 2. Load and sort all image filenames, then group by category
+    # 1. Load and sort all image filenames, then group by category
     # -------------------------------------------------------------------------
+    if image_dir is None or not os.path.isdir(image_dir):
+        raise FileNotFoundError(f"Image directory '{image_dir}' does not exist.")
+
     sorted_filenames = get_sorted_filenames(image_dir)
     n_files = len(sorted_filenames)
 
     # Create a dict: {category: [filenames]}
     categories = {}
     for fname in sorted_filenames:
-        cat = extract_string_numeric_parts(fname)[0]  # e.g. ("catName", 123)
+        cat = extract_string_numeric_parts(fname)[0]
         categories.setdefault(cat, []).append(fname)
 
     categories_list = sorted(categories.keys())
     n_categories = len(categories_list)
 
     # -------------------------------------------------------------------------
-    # 3. Helpers to load correlation matrices from an "item"
+    # 2. Helpers to validate and load correlation matrices
     # -------------------------------------------------------------------------
+    def _validate_matrix(mat, path_str):
+        """Ensures 'mat' is square and matches the number of sorted_filenames."""
+        if len(mat) != n_files:
+            raise ValueError(
+                f"Matrix in '{path_str}' has {len(mat)} rows, "
+                f"but there are {n_files} image files."
+            )
+        for row in mat:
+            if len(row) != n_files:
+                raise ValueError(f"Non-square row in '{path_str}'.")
+
     def load_matrices_from_item(item_path):
         """
         If 'item_path' is a file -> load that single YAML file, return [one matrix].
-        If 'item_path' is a directory -> load all matching YAML files in it, return list of matrices.
+        If 'item_path' is a directory -> load all matching YAML files, return list of matrices.
         """
         if os.path.isfile(item_path):
             # Single file
@@ -1215,14 +1225,11 @@ def plot_categ_differences(
                 mat = yaml.safe_load(f)
             _validate_matrix(mat, item_path)
             return [mat]
+
         elif os.path.isdir(item_path):
-            # Directory with possibly multiple files
+            # Possibly multiple .yaml files in this directory
             allfiles = sorted(os.listdir(item_path))
-            matching = [
-                os.path.join(item_path, x)
-                for x in allfiles
-                if x.endswith(".yaml")
-            ]
+            matching = [os.path.join(item_path, x) for x in allfiles if x.endswith(".yaml")]
             matrices = []
             for mfile in matching:
                 with open(mfile, 'r') as f:
@@ -1230,67 +1237,57 @@ def plot_categ_differences(
                 _validate_matrix(mat, mfile)
                 matrices.append(mat)
             return matrices
+
         else:
             raise FileNotFoundError(f"'{item_path}' is neither a file nor directory.")
 
-    def _validate_matrix(mat, path_str):
-        """
-        Ensures 'mat' is square and matches the number of sorted_filenames.
-        """
-        if len(mat) != n_files:
-            raise ValueError(
-                f"Matrix in '{path_str}' has {len(mat)} rows, but there are {n_files} image files."
-            )
-        for row in mat:
-            if len(row) != n_files:
-                raise ValueError(f"Non-square row in '{path_str}'.")
-
     # -------------------------------------------------------------------------
-    # 4. Compute mean std differences across multiple matrices
+    # 3. Compute within-vs-between differences for a list of correlation matrices
     # -------------------------------------------------------------------------
     def compute_differences_across_matrices(matrices):
         """
         For a list of correlation matrices, compute the within-vs-between difference
-        for each matrix (excluding diagonals). Then return the mean std across all.
+        for each category (excluding diagonals), then return mean +- 1.96*std.
         
         Returns: dict[category] = (other_cats, mean_diffs, std_diffs)
         """
-        # accum[cat][other_cat] = list of difference values (one per matrix)
         accum = {
             cat: {oc: [] for oc in categories_list if oc != cat}
             for cat in categories_list
         }
 
         for mat in matrices:
-            # Compute single-run differences
             single_res = {}
             for cat in categories_list:
                 within = []
                 between = {oc: [] for oc in categories_list if oc != cat}
+
                 for r_i, row in enumerate(mat):
                     cat_r = extract_string_numeric_parts(sorted_filenames[r_i])[0]
                     for c_i, val in enumerate(row):
                         if r_i == c_i:
                             continue  # exclude diagonal
                         cat_c = extract_string_numeric_parts(sorted_filenames[c_i])[0]
+
                         if cat_r == cat and cat_c == cat:
                             within.append(val)
                         elif cat_r == cat and cat_c != cat:
                             between[cat_c].append(val)
                         elif cat_c == cat and cat_r != cat:
                             between[cat_r].append(val)
+
                 w_avg = np.mean(within) if within else 0.0
                 b_avg = {k: (np.mean(v) if v else 0.0) for k, v in between.items()}
                 oc_list = [x for x in categories_list if x != cat]
                 diffs = [w_avg - b_avg[x] for x in oc_list]
                 single_res[cat] = (oc_list, diffs)
 
-            # Add to accum
+            # Accumulate
             for cat, (ocs, diffvals) in single_res.items():
                 for oc, dv in zip(ocs, diffvals):
                     accum[cat][oc].append(dv)
 
-        # Now compute mean std
+        # Convert to mean ± 1.96*std
         result = {}
         for cat in accum:
             other_cats = sorted(accum[cat].keys())
@@ -1299,54 +1296,198 @@ def plot_categ_differences(
             for oc in other_cats:
                 arr = np.array(accum[cat][oc])
                 mean_vals.append(arr.mean())
-                std_vals.append(arr.std()*1.96) # 95 CI instead of STD
+                std_vals.append(arr.std() * 1.96)  # 95% CI
             result[cat] = (other_cats, mean_vals, std_vals)
         return result
 
     # -------------------------------------------------------------------------
-    # 5. Load the matrices and compute differences for each item
+    # 4. Gather all (layer, suffix, item_path, diffs_dict)
     # -------------------------------------------------------------------------
-    all_results = []
-    for item_path in items:
-        mats = load_matrices_from_item(item_path)            # one or many matrices
-        diffs_dict = compute_differences_across_matrices(mats)
-        all_results.append((item_path, diffs_dict))
+    if not layers:
+        raise ValueError("No layers specified. Provide at least one layer.")
+
+    all_results = []  # will hold tuples of (layer, suffix, item_path, diffs_dict)
+
+    for layer in layers:
+        base_path = os.path.join(main_dir, damage_type, layer, "RDM")
+        if not os.path.isdir(base_path):
+            raise FileNotFoundError(
+                f"Layer directory '{base_path}' does not exist. "
+                f"Check your 'damage_type' or 'layers' argument."
+            )
+
+        # Now loop over each suffix in damage_levels
+        for suffix in damage_levels:
+            items = []
+            if mode == 'files':
+                for f in os.listdir(base_path):
+                    fullpath = os.path.join(base_path, f)
+                    if os.path.isfile(fullpath):
+                        if f.startswith(file_prefix) and f.endswith(suffix):
+                            items.append(fullpath)
+            elif mode == 'dirs':
+                for d in os.listdir(base_path):
+                    full_dpath = os.path.join(base_path, d)
+                    if os.path.isdir(full_dpath):
+                        if d.startswith(file_prefix) and d.endswith(suffix):
+                            items.append(full_dpath)
+            else:
+                raise ValueError("mode must be either 'files' or 'dirs'.")
+
+            if not items:
+                raise FileNotFoundError(
+                    f"No matching items found in '{base_path}' "
+                    f"for layer='{layer}', suffix='{suffix}', "
+                    f"prefix='{file_prefix}', mode='{mode}'."
+                )
+
+            for item_path in items:
+                mats = load_matrices_from_item(item_path)
+                diffs_dict = compute_differences_across_matrices(mats)
+                all_results.append((layer, suffix, item_path, diffs_dict))
 
     # -------------------------------------------------------------------------
-    # 6. Plot layout: #rows = #items, #cols = #categories
+    # 5. Plot the results
     # -------------------------------------------------------------------------
-    num_rows = len(all_results)
-    fig, axes = plt.subplots(num_rows, n_categories,
-                             figsize=(3*n_categories, 3*num_rows),
-                             sharey=True)
-    axes = np.array(axes, ndmin=2)  # force 2D
+    if not comparison:
+        # ------------------------------------------------
+        # Original behavior: one row per (layer, suffix, item_path),
+        # one column per category
+        # ------------------------------------------------
+        num_rows = len(all_results)
+        fig, axes = plt.subplots(
+            num_rows, n_categories,
+            figsize=(3*n_categories, 3*num_rows),
+            sharey=True
+        )
+        axes = np.array(axes, ndmin=2)  # ensure 2D array
 
-    # One row per item, one column per category
-    for i, (item_path, diffs_dict) in enumerate(all_results):
-        # item_path is either a file or directory
-        label = os.path.basename(item_path.rstrip("/\\"))  # for subplot title
+        for i, (layer, suffix, item_path, diffs_dict) in enumerate(all_results):
+            label = os.path.basename(item_path.rstrip("/\\"))
+
+            for j, cat in enumerate(categories_list):
+                ax = axes[i, j]
+                if cat not in diffs_dict:
+                    ax.set_visible(False)
+                    continue
+
+                other_cats, mean_vals, std_vals = diffs_dict[cat]
+                x_pos = np.arange(len(other_cats))
+
+                ax.bar(
+                    x_pos, mean_vals,
+                    yerr=std_vals,
+                    color='skyblue',
+                    edgecolor='black',
+                    capsize=4
+                )
+                ax.set_xticks(x_pos)
+                ax.set_xticklabels(other_cats, rotation=45, ha='right')
+
+                # Show layer, suffix, and the item label in the subplot title
+                ax.set_title(f"{layer}, Damage={suffix}\n{cat}")
+                if j == 0:
+                    ax.set_ylabel("Avg(Within) - Avg(Between)")
+
+        plt.tight_layout()
+        plt.show()
+
+    else:
+        # ------------------------------------------------
+        # comparison=True: 
+        # Plot all (layer, suffix, item_path) combos in the SAME subplots,
+        # so there is only ONE subplot per category.
+        # We'll create grouped bars for each "other cat" across all combos.
+        # ------------------------------------------------
+        # 1) Build a dictionary: results_by_cat[cat][(layer, suffix, item_path)] = (other_cats, mean_vals, std_vals)
+        results_by_cat = {
+            cat: {} for cat in categories_list
+        }
+
+        # Store the combos in a stable order
+        combos = []  # list of (layer, suffix, item_path) to keep a consistent legend
+        for (layer, suffix, item_path, diffs_dict) in all_results:
+            combo_key = (layer, suffix, item_path)
+            if combo_key not in combos:
+                combos.append(combo_key)
+            # Insert into results_by_cat
+            for cat in categories_list:
+                if cat in diffs_dict:
+                    results_by_cat[cat][combo_key] = diffs_dict[cat]
+                else:
+                    # Possibly no data if cat wasn't in diffs_dict
+                    results_by_cat[cat][combo_key] = ([], [], [])
+
+        # 2) Create one subplot per category
+        fig, axes = plt.subplots(
+            1, n_categories,
+            figsize=(4*n_categories, 4),
+            sharey=True
+        )
+        if n_categories == 1:
+            axes = [axes]  # ensure iterable if only one category
 
         for j, cat in enumerate(categories_list):
-            ax = axes[i, j]
-            if cat not in diffs_dict:
-                ax.set_visible(False)
+            ax = axes[j]
+            ax.set_title(f"Comparison for Category: {cat}")
+            ax.set_ylabel("Avg(Within) - Avg(Between)")
+
+            # For this category, we have results_by_cat[cat], which is a dict:
+            #   {(layer, suffix, item_path) -> (other_cats, mean_vals, std_vals)}
+            # We'll assume the same "other_cats" in the same order for each combo,
+            # though they might differ if some combos have different categories.  
+            # We'll look at the first non-empty set to get the other_cats ordering.
+            # If everything is empty, we skip plotting.
+
+            # 2a) Find a consistent ordering of "other_cats"
+            all_other_cats = None
+            for combo_key in combos:
+                (oc_list, mvals, svals) = results_by_cat[cat][combo_key]
+                if oc_list:  # found a non-empty one
+                    all_other_cats = oc_list
+                    break
+
+            if not all_other_cats:
+                # No data found for this category
+                ax.text(0.5, 0.5, f"No data for category '{cat}'", 
+                        ha='center', va='center', transform=ax.transAxes)
                 continue
 
-            other_cats, mean_vals, std_vals = diffs_dict[cat]
-            x_pos = np.arange(len(other_cats))
+            x_pos = np.arange(len(all_other_cats))  # base x positions for each "other cat"
+            bar_width = 0.8 / len(combos)           # narrower bars for grouping
+            # We'll have each combo's bar slightly offset
 
-            # Bar plot with error bars
-            ax.bar(x_pos, mean_vals, yerr=std_vals, 
-                   color='skyblue', edgecolor='black', capsize=4)
-            ax.set_xticks(x_pos)
-            ax.set_xticklabels(other_cats, rotation=45, ha='right')
+            for i, combo_key in enumerate(combos):
+                (oc_list, mean_vals, std_vals) = results_by_cat[cat][combo_key]
+                # It's possible oc_list might be empty if that combo had no data
+                # or if it didn't compute differences for that category.
+                # So we must handle that carefully:
+                if len(oc_list) != len(all_other_cats):
+                    # We'll fill with zeros if missing
+                    # or skip plotting. Here we'll fill with zeros for demonstration:
+                    yvals = np.zeros(len(all_other_cats))
+                    yerrs = np.zeros(len(all_other_cats))
+                else:
+                    yvals = mean_vals
+                    yerrs = std_vals
 
-            ax.set_title(f"{label}\nCategory: {cat}")
-            if j == 0:
-                ax.set_ylabel("Avg(Within) - Avg(Between)")
+                # Create an offset for this combo:
+                offset = i * bar_width
+                ax.bar(
+                    x_pos + offset, 
+                    yvals, 
+                    yerr=yerrs, 
+                    width=bar_width, 
+                    label=f"{combo_key[0]}, dmg={combo_key[1]}", 
+                    capsize=4
+                )
 
-    plt.tight_layout()
-    plt.show()
+            ax.set_xticks(x_pos + bar_width*(len(combos)/2 - 0.5))
+            ax.set_xticklabels(all_other_cats, rotation=45, ha='right')
+
+        ax.legend(bbox_to_anchor=(1.05, 1.0), loc='upper left')
+        plt.tight_layout()
+        plt.show()
 
 
 def aggregate_permutations(
