@@ -52,7 +52,7 @@ def main():
     noise_levels_params = config.get("noise_levels", [0.1, 10, 0.1])
     # -----------------------------------------------------------------------
 
-
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     run_damage(model_info=model_info, 
         pretrained=pretrained,
