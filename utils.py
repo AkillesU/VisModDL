@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from torch.nn.modules import activation
 from torchvision import transforms
 from PIL import Image
 from torchinfo import summary
@@ -12,6 +13,7 @@ import yaml
 from tqdm import tqdm
 import math
 import torch.nn as nn
+import pickle
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -753,6 +755,18 @@ def run_damage(
                 )
                 activations_df_sorted = sort_activations_by_numeric_index(activations_df)
 
+                # 3.5) Save activations
+                activation_dir = (
+                    f"data/haupt_stim_activ/damaged/{model_info['name']}/"
+                    f"{manipulation_method}/{layer_name}/activations/damaged_{round(damage_level,3)}"
+                )
+                os.makedirs(activation_dir, exist_ok=True)
+                activation_dir_path = os.path.join(activation_dir, f"{permutation_index}.pkl")
+
+                # 1) Convert to float16 (optional)
+                reduced_df = activations_df_sorted.astype(np.float16)
+                reduced_df.to_pickle(activation_dir_path)
+
                 # 4) Compute correlation matrix
                 correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
 
@@ -762,10 +776,10 @@ def run_damage(
                     f"{manipulation_method}/{layer_name}/RDM/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(corrmat_dir, exist_ok=True)
-                corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}.yaml")
+                corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}.pkl")
 
-                with open(corrmat_path, "w") as f:
-                    yaml.dump(correlation_matrix.tolist(), f)
+                with open(corrmat_path, "wb") as f:
+                    pickle.dump(correlation_matrix.tolist(), f)
 
                 # 6) Compute within-between metrics
                 categories_array = assign_categories(sorted_image_names)
@@ -777,10 +791,10 @@ def run_damage(
                     f"{manipulation_method}/{layer_name}/selectivity/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(selectivity_dir, exist_ok=True)
-                selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.yaml")
+                selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.pkl")
 
-                with open(selectivity_path, "w") as f:
-                    yaml.dump(results, f)
+                with open(selectivity_path, "wb") as f:
+                    pickle.dump(results, f)
 
                 """#  print summary
                 print(f"[Damage: {damage_level}, Perm: {permutation_index}] -> "
