@@ -135,24 +135,24 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
     if model_source == "cornet":
         if model_name == "cornet_z":
             from cornet import cornet_z
-            model = cornet_z(pretrained=pretrained)
+            model = cornet_z(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
 
         elif model_name == "cornet_s":
             from cornet import cornet_s
-            model = cornet_s(pretrained=pretrained)
+            model = cornet_s(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
 
         elif model_name == "cornet_rt":
             from cornet import cornet_rt
-            model = cornet_rt(pretrained=pretrained)
+            model = cornet_rt(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
 
         else:
             raise ValueError(f"CORnet model {model_name} not found. Check config file.")
 
     elif model_source == "pytorch_hub":
         if model_weights == "":
-            model = torch.hub.load(model_repo, model_name)
+            model = torch.hub.load(model_repo, model_name, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
         else:
-            model = torch.hub.load(model_repo, model_name, weights=model_weights)
+            model = torch.hub.load(model_repo, model_name, weights=model_weights, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
     else:
         raise ValueError(f"Check model source: {model_source}")
     
