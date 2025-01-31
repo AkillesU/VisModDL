@@ -8,7 +8,7 @@ model_name: "cornet_rt"
 model_weights: "" # torch.hub weights (not necesssary for cornet models). Leave empty for untrained.
 pretrained: True
 vmax: 0.9
-mc_permutations: 21 # How many monte carlo permutations on damage to perform. Use 21 as in Haupt et al., 2024?
+mc_permutations: 200 # How many monte carlo permutations on damage to perform. Use 21 as in Haupt et al., 2024?
 
 layer_paths_to_damage: 
   - "module._modules.V4"
@@ -19,11 +19,11 @@ manipulation_method: "masking"
 masking_level: "connections"  # "connections" or "units"
 fraction_to_mask: # Start, N (int), interval [start,N*interval]
   - 0
-  - 19
+  - 21
   - 0.05
 
 # Noise damage parameters
 noise_levels: # Start, N (int), interval [start, N*interval]
   - 0
-  - 41
+  - 51
   - 0.005

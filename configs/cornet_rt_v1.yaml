@@ -8,7 +8,7 @@ model_name: "cornet_rt"
 model_weights: "" # torch.hub weights (not necesssary for cornet models). Leave empty for untrained.
 pretrained: True
 vmax: 0.4
-mc_permutations: 21 # How many monte carlo permutations on damage to perform. Use 21 as in Haupt et al., 2024?
+mc_permutations: 200 # How many monte carlo permutations on damage to perform. Use 21 as in Haupt et al., 2024?
 
 layer_paths_to_damage: 
   - "module._modules.V1"
