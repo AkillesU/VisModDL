@@ -834,6 +834,20 @@ def extract_string_numeric_parts(name):
     return name, 0
 
 
+def safe_load_pickle(file_path):
+    """Safely load a pickle file, checking if it's non-empty and catching any EOFError."""
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        try:
+            with open(file_path, "rb") as f:
+                return pickle.load(f)
+        except EOFError:
+            print(f"Warning: Encountered EOFError while loading {file_path}")
+            return None
+    else:
+        print(f"Warning: File {file_path} is empty or does not exist.")
+        return None
+
+
 def categ_corr_lineplot(
     layers,
     damage_type,
@@ -863,7 +877,7 @@ def categ_corr_lineplot(
     for layer in layers:
         # Construct the directory for this layer
         layer_path = os.path.join(main_dir, damage_type, layer, "selectivity")
-        # Construct output file path to save aggregated YAML
+        # Construct output file path to save aggregated Pickle
         output_path = os.path.join(main_dir, damage_type, layer, "avg_selectivity")
         os.makedirs(output_path, exist_ok=True)
 
@@ -890,21 +904,21 @@ def categ_corr_lineplot(
             fraction_rounded = round(fraction_raw, 3)
 
             # The aggregated stats file name for this fraction
-            fraction_file_name = f"avg_selectivity_{fraction_rounded}.yaml"
+            fraction_file_name = f"avg_selectivity_{fraction_rounded}.pkl"
             fraction_file_path = os.path.join(output_path, fraction_file_name)
 
             # Check if the aggregated file for this fraction exists
             if not os.path.exists(fraction_file_path):
                 # If it doesn't exist, we aggregate *all* categories & metrics
-                # found in the .yaml files in this subdirectory.
+                # found in the .pkl files in this subdirectory.
                 aggregated_data = {}  # aggregated_data[cat][metric] = list of values
 
-                # 2) Look for .yaml files in the subdirectory
+                # 2) Look for .pkl files in the subdirectory
                 for fname in os.listdir(subdir_path):
-                    if fname.lower().endswith(".yaml"):
-                        yaml_path = os.path.join(subdir_path, fname)
-                        with open(yaml_path, "r") as f:
-                            content = yaml.safe_load(f)
+                    if fname.lower().endswith(".pkl"):
+                        pkl_path = os.path.join(subdir_path, fname)
+                        with open(pkl_path, "rb") as f:
+                            content = pickle.load(f)
 
                         # Go through every category and metric in this file
                         # and store them in aggregated_data
@@ -937,12 +951,13 @@ def categ_corr_lineplot(
                         }
 
                 # Write these aggregated stats to the fraction_file_path
-                with open(fraction_file_path, "w") as f:
-                    yaml.safe_dump(stats_dict, f, sort_keys=False)
+                with open(fraction_file_path, "wb") as f:
+                    pickle.dump(stats_dict, f)
 
-            # 3) Now read back the aggregated file (either just written or previously existing)
-            with open(fraction_file_path, "r") as f:
-                aggregated_content = yaml.safe_load(f)
+            aggregated_content = safe_load_pickle(fraction_file_path)
+            """# 3) Now read back the aggregated file (either just written or previously existing)
+            with open(fraction_file_path, "rb") as f:
+                aggregated_content = pickle.load(f)"""
 
             # 4) For plotting, we only care about the user-specified categories & single metric
             if not isinstance(aggregated_content, dict):
@@ -1066,28 +1081,28 @@ def plot_avg_corr_mat(
             fraction = round(float(match.group(1)) if not damage_levels else extract_string_numeric_parts(subdir_name)[1],3)
             
             # Prepare output file name
-            out_fname = f"avg_RDM_{fraction}.yaml"
+            out_fname = f"avg_RDM_{fraction}.pkl"
             out_path = os.path.join(layer_output_dir, out_fname)
             # Check for precomputed matrix
             if os.path.exists(out_path):
                 print(f"Found existing average RDM for fraction={fraction}, layer={layer}; loading it.")
-                with open(out_path, "r") as f:
-                    avg_mat = np.array(yaml.safe_load(f), dtype=np.float32)
+                with open(out_path, "rb") as f:
+                    avg_mat = np.array(pickle.load(f), dtype=np.float32)
             else:
                 all_mats = []
                 print(f"No precomputed average RDM for fraction={fraction}, layer={layer}; computing now.")
                 for fname in os.listdir(subdir_path):
-                    if fname.lower().endswith(".yaml"):
-                        yaml_path = os.path.join(subdir_path, fname)
-                        with open(yaml_path, "r") as f:
-                            matrix_list = yaml.safe_load(f)
+                    if fname.lower().endswith(".pkl"):
+                        pkl_path = os.path.join(subdir_path, fname)
+                        with open(pkl_path, "rb") as f:
+                            matrix_list = pickle.load(f)
                         mat = np.array(matrix_list, dtype=np.float32)
                         all_mats.append(mat)
 
                 avg_mat = np.mean(all_mats, axis=0) if all_mats else None
                 if avg_mat is not None:
-                    with open(out_path, "w") as f:
-                        yaml.safe_dump(avg_mat.tolist(), f)
+                    with open(out_path, "wb") as f:
+                        pickle.dump(avg_mat.tolist(), f)
 
             if avg_mat is not None:
                 fraction_to_matrix[(fraction, layer)] = avg_mat
@@ -1274,19 +1289,19 @@ def plot_categ_differences(
         """
         if os.path.isfile(item_path):
             # Single file
-            with open(item_path, 'r') as f:
-                mat = yaml.safe_load(f)
+            with open(item_path, 'rb') as f:
+                mat = pickle.load(f)
             _validate_matrix(mat, item_path)
             return [mat]
 
         elif os.path.isdir(item_path):
-            # Possibly multiple .yaml files in this directory
+            # Possibly multiple .pkl files in this directory
             allfiles = sorted(os.listdir(item_path))
-            matching = [os.path.join(item_path, x) for x in allfiles if x.endswith(".yaml")]
+            matching = [os.path.join(item_path, x) for x in allfiles if x.endswith(".pkl")]
             matrices = []
             for mfile in matching:
-                with open(mfile, 'r') as f:
-                    mat = yaml.safe_load(f)
+                with open(mfile, 'rb') as f:
+                    mat = pickle.load(f)
                 _validate_matrix(mat, mfile)
                 matrices.append(mat)
             return matrices
@@ -1546,20 +1561,20 @@ def plot_categ_differences(
 def aggregate_permutations(
     main_dir,
     output_dir,
-    yaml_ext=".yaml"
+    pkl_ext=".pkl"
 ):
     """
     For each subdirectory in `main_dir`, this script:
-      1) Looks for all files ending with `yaml_ext` (default: ".yaml").
+      1) Looks for all files ending with `pkl_ext` (default: ".pkl").
       2) Reads each file as a dict of categories -> metrics -> value
       3) Aggregates (mean, std) across all files in that subdir
-      4) Saves a single YAML named after subdir to output_dir with the aggregate stats.
+      4) Saves a single Pickle named after subdir to output_dir with the aggregate stats.
 
     Example subdirectory structure:
       main_dir/
         damaged_0.01/
-          file1.yaml
-          file2.yaml
+          file1.pkl
+          file2.pkl
           ...
         damaged_0.02/
           ...
@@ -1575,19 +1590,19 @@ def aggregate_permutations(
         # We'll store: aggregated_data[category][metric] = list of float values
         aggregated_data = {}
 
-        # Look for .yaml files in the subdir
-        yaml_files = [
+        # Look for .pkl files in the subdir
+        pkl_files = [
             f for f in os.listdir(subdir_path)
-            if f.lower().endswith(yaml_ext)
+            if f.lower().endswith(pkl_ext)
         ]
-        if not yaml_files:
-            # no yaml files found in this subdir
+        if not pkl_files:
+            # no pkl files found in this subdir
             continue
 
-        for yf in yaml_files:
-            yaml_path = os.path.join(subdir_path, yf)
-            with open(yaml_path, "r") as f:
-                content = yaml.safe_load(f)  # a dict like {"animal": {"avg_between": ...}}
+        for yf in pkl_files:
+            pkl_path = os.path.join(subdir_path, yf)
+            with open(pkl_path, "rb") as f:
+                content = pickle.load(f)  # a dict like {"animal": {"avg_between": ...}}
 
             # Walk through the categories/metrics in this file and store values
             for category_name, metrics_dict in content.items():
@@ -1613,15 +1628,15 @@ def aggregate_permutations(
                     "std":  std_val
                 }
             
-        # 5) Save the aggregated stats to a single YAML in the same subdirectory
+        # 5) Save the aggregated stats to a single Pickle in the same subdirectory
 
         # Define output_filename as numeric part from 
         _, damage_value = extract_string_numeric_parts(subdir_name)
-        output_filename = f"aggr_stats_{damage_value}.yaml"
+        output_filename = f"aggr_stats_{damage_value}.pkl"
         # Create output directory and save file
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, output_filename)
-        with open(output_path, "w") as f:
-            yaml.safe_dump(results_dict, f, sort_keys=False)
+        with open(output_path, "wb") as f:
+            pickle.dump(results_dict, f)
 
         print(f"Aggregated stats saved -> {output_path}")
