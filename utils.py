@@ -11,6 +11,7 @@ from torchinfo import summary
 import yaml
 from tqdm import tqdm
 import math
+import torch.nn as nn
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -64,6 +65,44 @@ def get_all_weight_layers(model, base_path=""):
         weight_layers.extend(get_all_weight_layers(submodule, new_path))
 
     return weight_layers
+
+
+def get_all_conv_layers(model, base_path=""):
+    """
+    Recursively find all submodules under `model` that are nn.Conv2d,
+    returning a list of layer paths (dot-separated) where each layer has weights.
+
+    Parameters:
+        model (nn.Module): The model or module to search.
+        base_path (str): The starting path. If empty, we assume 'model' is the root.
+
+    Returns:
+        List[str]: A list of dot-separated paths to each Conv2d module.
+    """
+    conv_layers = []
+
+    # If the current module itself is a Conv2d, record its path
+    if isinstance(model, nn.Conv2d):
+        # Make sure it has a weight parameter (it should)
+        if getattr(model, 'weight', None) is not None:
+            conv_layers.append(base_path)
+        # Once we've identified this as a Conv2d, we typically don't recurse further
+        # because a single nn.Conv2d shouldn't have any of its own submodules.
+        return conv_layers
+
+    # Otherwise if base path is not Conv layer itself, recurse into children
+    for name, submodule in model._modules.items():
+        if submodule is None:
+            continue
+        if base_path == "":
+            new_path = name
+        else:
+            new_path = base_path + "." + "_modules" + "." + name
+
+        # Rerun function to check if child is conv layer...
+        conv_layers.extend(get_all_conv_layers(submodule, new_path))
+
+    return conv_layers
 
 
 def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""):
@@ -174,7 +213,7 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
 
             with torch.no_grad():
                 model(input_tensor)
-
+                
             all_activations.append(activations[layer_name].flatten())
             image_names.append(image_file)
 
@@ -195,7 +234,7 @@ def apply_noise(model, noise_level, layer_paths=None, apply_to_all_layers=False)
         else:
             for path in layer_paths:
                 target_layer = get_layer_from_path(model, path)
-                weight_layer_paths = get_all_weight_layers(target_layer, path)
+                weight_layer_paths = get_all_conv_layers(target_layer, path)
                 for w_path in weight_layer_paths:
                     w_layer = get_layer_from_path(model, w_path)
                     if hasattr(w_layer, 'weight') and w_layer.weight is not None:
@@ -223,7 +262,7 @@ def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers
             # For each specified path, find all sub-layers that have weights
             for path in layer_paths:
                 target_layer = get_layer_from_path(model, path)
-                weight_layer_paths = get_all_weight_layers(target_layer, path)
+                weight_layer_paths = get_all_conv_layers(target_layer, path)
             
                 # weight_layer_paths is a list of layer-path strings
                 for w_path in weight_layer_paths:
@@ -237,7 +276,7 @@ def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers
     if not apply_to_all_layers:
         for path in layer_paths:
             # Get all weight-bearing sub-layers under this path
-            weight_layer_paths = get_all_weight_layers(get_layer_from_path(model, path), path)
+            weight_layer_paths = get_all_conv_layers(get_layer_from_path(model, path), path)
         
             for w_path in weight_layer_paths:
                 layer = get_layer_from_path(model, w_path)
