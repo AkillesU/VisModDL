@@ -9,5 +9,5 @@ tasks:
       n_permutations: 5
       main_dir: "data/haupt_stim_activ/damaged/cornet_z/"
       verbose: 0
-      lower_limit: 0.1
-      use_log_scale: true
+      lower_limit: 0.05
+      use_log_scale: false
