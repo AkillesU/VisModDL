@@ -1811,7 +1811,7 @@ def pair_corr_scatter_subplots(
                 color = color_cycle[j]
                 corr = np.corrcoef(act1, act2)[0, 1]
                 label_str = f"{pkl_file}: r={corr:.2f}"
-                ax.plot(x_fit, y_fit, color=color, label=f"Line r={corr:.2f}")
+       
 
                 # Create a scatter plot with a label
                 ax.scatter(
@@ -1820,6 +1820,7 @@ def pair_corr_scatter_subplots(
                     color=color,
                     s=10,
                     label=label_str)  # This is crucial for legend
+
 
                 # Optionally fit a line in log space if use_log_scale
                 if use_log_scale:
@@ -1839,7 +1840,11 @@ def pair_corr_scatter_subplots(
                         y_fit = np.exp(log_y_fit)
 
                         ax.plot(x_fit, y_fit, color=color, linewidth=1.2, alpha=0.9)
-
+                else:
+                    slope, intercept = np.polyfit(act1, act2, 1)
+                    x_fit = np.linspace(act1.min(), act1.max(), 50)
+                    y_fit = slope * x_fit + intercept
+                    ax.plot(x_fit, y_fit, color=color, label=f"Line r={corr:.2f}")
                 # Optionally, you might also compute correlation in log space or linear space
                 # but we won't show that here unless you specifically need it.
 
