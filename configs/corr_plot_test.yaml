@@ -3,9 +3,9 @@ tasks:
     parameters:
       layers: ["V1"]
       damage_type: "noise"
-      damage_levels: ["0.0","0.1"] # List
+      damage_levels: ["0.0","0.1","0.22"] # List
       image1: "animal1"
-      image2: "animal2"
+      image2: "animal5"
       n_permutations: 5
       main_dir: "data/haupt_stim_activ/damaged/cornet_z/"
       verbose: 0
