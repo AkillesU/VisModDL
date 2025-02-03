@@ -1203,7 +1203,9 @@ def plot_categ_differences(
     mode='dirs',
     file_prefix='damaged_',
     damage_levels=["0"],
-    comparison=False
+    comparison=False,
+    plot_dir="plots/",
+    verbose=0
 ):
     """
     Plot mean (with std error bars) of within-vs-between-category correlations,
@@ -1475,7 +1477,33 @@ def plot_categ_differences(
                     ax.set_ylabel("Avg(Within) - Avg(Between)")
 
         plt.tight_layout()
-        plt.show()
+        # Saving plot
+        os.makedirs(plot_dir, exist_ok=True)
+        model_name = main_dir.split("/")[-2] # Assuming that there is a slash after the model name ("/cornet/")
+        plot_name = f"{model_name}_categ-diff_{damage_type}"
+
+        for layer in layers:
+            plot_name = plot_name + f"_{layer}"
+
+        n_damages = len(damage_levels)
+    
+        plot_name = plot_name + f"_{n_damages}-levels"
+
+        if comparison:
+            plot_name = plot_name + "comparison"
+
+        save_path = os.path.join(plot_dir, plot_name)
+
+        if verbose==1:
+            save_plot = input(f"Save plot under {save_path}? Y/N: ")
+
+            if save_plot.capitalize() == "Y":
+                plt.savefig(save_path, dpi=500)
+            plt.show()
+        elif verbose == 0:
+            plt.savefig(save_path, dpi=500)
+        else:
+            ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
 
     else:
         # ------------------------------------------------
@@ -1572,7 +1600,33 @@ def plot_categ_differences(
 
         ax.legend(bbox_to_anchor=(1.05, 1.0), loc='upper left')
         plt.tight_layout()
-        plt.show()
+        # Saving plot
+        os.makedirs(plot_dir, exist_ok=True)
+        model_name = main_dir.split("/")[-2] # Assuming that there is a slash after the model name ("/cornet/")
+        plot_name = f"{model_name}_categ-diff_{damage_type}"
+
+        for layer in layers:
+            plot_name = plot_name + f"_{layer}"
+
+        n_damages = len(damage_levels)
+    
+        plot_name = plot_name + f"_{n_damages}-levels"
+
+        if comparison:
+            plot_name = plot_name + "comparison"
+
+        save_path = os.path.join(plot_dir, plot_name)
+
+        if verbose==1:
+            save_plot = input(f"Save plot under {save_path}? Y/N: ")
+
+            if save_plot.capitalize() == "Y":
+                plt.savefig(save_path, dpi=500)
+            plt.show()
+        elif verbose == 0:
+            plt.savefig(save_path, dpi=500)
+        else:
+            ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
 
 
 def aggregate_permutations(
