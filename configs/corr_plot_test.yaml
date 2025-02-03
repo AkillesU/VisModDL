@@ -1,0 +1,11 @@
+tasks:
+  - function: "pair_corr_scatter_subplots"
+    parameters:
+      layers: ["V1"]
+      damage_type: "noise"
+      damage_levels: ["0.0","0.1"] # List
+      image1: "animal1"
+      image2: "animal2"
+      n_permutations: 5
+      main_dir: "data/haupt_stim_activ/damaged/cornet_z/"
+      verbose: 0
