@@ -1711,3 +1711,154 @@ def aggregate_permutations(
             pickle.dump(results_dict, f)
 
         print(f"Aggregated stats saved -> {output_path}")
+
+
+def pair_corr_scatter_subplots(
+    layers,
+    damage_type,
+    damage_levels,       # <--- New argument: list of floats or strings representing subdir levels
+    image1,              # e.g. "animal1" (exclude ".jpg")
+    image2,              # e.g. "animal2" (exclude ".jpg")
+    n_permutations=5,    # how many pickle files to load/plot from each subdir
+    main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
+    plot_dir="plots/",
+    verbose=0  # 0 or 1
+):
+    """
+    For each layer in `layers`, go to:
+       {main_dir}/{damage_type}/{layer}/activations/
+    Then for each value in `damage_levels`, we build the subdirectory name: "damaged_{level}".
+    In that subdir, we load the first `n_permutations` pickle files, extract the activation rows 
+    for `image1` and `image2` (appending ".jpg"), and create a scatter subplot. Each color 
+    corresponds to one pickle file. We compute Pearson correlation and annotate it.
+
+    This yields one figure per layer, with one subplot per damage level (ordered by the 
+    `damage_levels` list). We then save (or optionally prompt before saving) the figure.
+
+    Assumptions:
+      - Each pickle is a DataFrame with image filenames as the index (e.g., "animal1.jpg"), 
+        numeric columns for each activation dimension (0..something).
+      - The subdir name is strictly "damaged_{level}". If the directory doesn't exist, 
+        we skip that damage level.
+      - 'damage_levels' is a list (e.g. [0.1, 0.2, 0.3]) or even strings ["0.1", "0.2"], etc.
+    """
+
+    # Ensure the plot directory exists
+    os.makedirs(plot_dir, exist_ok=True)
+
+    # Loop over layers
+    for layer in layers:
+        layer_activations_path = os.path.join(main_dir, damage_type, layer, "activations")
+        if not os.path.isdir(layer_activations_path):
+            print(f"[WARN] Missing directory: {layer_activations_path}; skipping layer {layer}")
+            continue
+
+        # Create a figure with one subplot per damage level
+        fig, axes = plt.subplots(
+            1, len(damage_levels), 
+            figsize=(5 * len(damage_levels), 4),
+            squeeze=False
+        )
+        axes = axes[0]  # flatten the first row if needed
+
+        # For each damage level, we create a subplot
+        for i, dmg_level in enumerate(damage_levels):
+            subdir_name = f"damaged_{dmg_level}"
+            subdir_path = os.path.join(layer_activations_path, subdir_name)
+
+            ax = axes[i]
+
+            if not os.path.isdir(subdir_path):
+                print(f"[WARN] Directory {subdir_path} does not exist; skipping.")
+                # Optionally clear or label the subplot as missing
+                ax.set_title(f"Missing {dmg_level}")
+                ax.axis("off")
+                continue
+
+            # Gather .pkl files
+            pkl_files = [f for f in os.listdir(subdir_path) if f.lower().endswith(".pkl")]
+            pkl_files.sort()
+
+            # Set up a color map for the n_permutations
+            cmap = plt.get_cmap("tab10")
+            color_cycle = [cmap(k % 10) for k in range(n_permutations)]
+
+            # For each of the first n_permutations
+            for j, pkl_file in enumerate(pkl_files[:n_permutations]):
+                pkl_path = os.path.join(subdir_path, pkl_file)
+                df = safe_load_pickle(pkl_path)
+
+                rowname1 = f"{image1}.jpg"
+                rowname2 = f"{image2}.jpg"
+
+                # Check if rows exist
+                if rowname1 not in df.index or rowname2 not in df.index:
+                    print(f"[WARN] {rowname1} or {rowname2} not in {pkl_path}, skipping file.")
+                    continue
+
+                # Filter numeric columns for the activation dimensions
+                numeric_cols = [c for c in df.columns if str(c).isdigit()]
+                act1 = df.loc[rowname1, numeric_cols].to_numpy(dtype=float)
+                act2 = df.loc[rowname2, numeric_cols].to_numpy(dtype=float)
+
+                if len(act1) != len(act2) or len(act1) == 0:
+                    print(f"[WARN] Inconsistent dims in {pkl_file}; skipping correlation.")
+                    continue
+
+                # Scatter
+                ax.scatter(act1, act2, alpha=0.5, color=color_cycle[j], s=10)
+
+                # Now fit a 1D polynomial (linear) using np.polyfit
+                slope, intercept = np.polyfit(act1, act2, deg=1)
+
+                # Create a range for plotting the fitted line
+                x_fit = np.linspace(act1.min(), act1.max(), 100)
+                y_fit = slope * x_fit + intercept
+
+                # Plot the fit in the same color
+                ax.plot(x_fit, y_fit, color=color_cycle[j], linewidth=1.5, alpha=0.9)
+
+                # Compute correlation
+                corr = np.corrcoef(act1, act2)[0, 1]
+
+                # Label each permutation
+                ax.text(
+                    0.02, 0.95 - 0.05 * j,
+                    f"{os.path.splitext(pkl_file)[0]}: r={corr:.2f}",
+                    color=color_cycle[j],
+                    transform=ax.transAxes,
+                    fontsize=8,
+                    ha='left', va='top'
+                )
+
+            ax.set_title(f"Level: {dmg_level}")
+            if i == 0:
+                ax.set_ylabel(f"{image2} activations")
+            ax.set_xlabel(f"{image1} activations")
+            ax.grid(True)
+
+        # Figure title
+        fig.suptitle(f"Scatter correlation: {image1} vs {image2}\nLayer: {layer}")
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.85)
+
+        # Build plot name
+        model_name = main_dir.strip("/").split("/")[-1]
+        # e.g. "cornet_rt_scatter_conv1_animal1_vs_animal2_permut5.png"
+        plot_name = (
+            f"{model_name}_scatter_{damage_type}_{layer}_"
+            f"{image1}_vs_{image2}_permut{n_permutations}.png"
+        )
+        save_path = os.path.join(plot_dir, plot_name)
+
+        # Save or show
+        if verbose == 1:
+            save_plot = input(f"Save figure under {save_path}? (Y/N): ")
+            if save_plot.strip().lower() == "y":
+                plt.savefig(save_path, dpi=300)
+            plt.show()
+        elif verbose == 0:
+            plt.savefig(save_path, dpi=300)
+            plt.close(fig)
+        else:
+            raise ValueError(f"Invalid verbose value: {verbose}. Use 0 or 1.")
