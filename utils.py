@@ -1017,7 +1017,8 @@ def categ_corr_lineplot(
     os.makedirs(plot_dir, exist_ok=True)
 
     # Build a unique plot name
-    plot_name = f"lineplot_{damage_type}"
+    model_name = main_dir.split("/")[-2] # Assuming that there is a slash after the model name ("/cornet/")
+    plot_name = f"{model_name}_lineplot_{damage_type}"
     for layer in layers:
         plot_name += f"_{layer}"
     for category in categories:
