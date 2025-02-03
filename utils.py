@@ -1143,8 +1143,8 @@ def plot_avg_corr_mat(
     plt.tight_layout()
         # Saving plot
     os.makedirs(plot_dir, exist_ok=True)
-
-    plot_name = f"RDM_{damage_type}"
+    model_name = main_dir.split("/")[-2] # Assuming that there is a slash after the model name ("/cornet/")
+    plot_name = f"{model_name}_RDM_{damage_type}"
 
     for layer in layers:
         plot_name = plot_name + f"_{layer}"
