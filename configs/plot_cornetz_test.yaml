@@ -1,0 +1,9 @@
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_z/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0

@@ -856,6 +856,7 @@ def categ_corr_lineplot(
     metric="observed_difference",
     subdir_regex=r"damaged_([\d\.]+)$",
     plot_dir="plots/",
+    verbose=0 # 0 or 1
 ):
     """
     1. For each layer in `layers`, build the directory path:
@@ -1024,11 +1025,18 @@ def categ_corr_lineplot(
     plot_name += f"_{metric}.png"
 
     save_path = os.path.join(plot_dir, plot_name)
-    save_plot = input(f"Save plot under {save_path}? Y/N: ")
 
-    if save_plot.capitalize() == "Y":
+    if verbose==1:
+        save_plot = input(f"Save plot under {save_path}? Y/N: ")
+
+        if save_plot.capitalize() == "Y":
+            plt.savefig(save_path, dpi=500)
+        plt.show()
+    elif verbose == 0:
         plt.savefig(save_path, dpi=500)
-    plt.show()
+    else:
+        ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
+
 
 
 def plot_avg_corr_mat(
@@ -1040,7 +1048,8 @@ def plot_avg_corr_mat(
     damage_levels=None, # List
     main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
     vmax=1.0,
-    plot_dir="plots/"
+    plot_dir="plots/",
+    verbose=0
 ):
     """
     1. Loop over subdirectories matching the damage type and layers.
@@ -1144,11 +1153,18 @@ def plot_avg_corr_mat(
     plot_name = plot_name + f"_{n_damages}-levels"
 
     save_path = os.path.join(plot_dir, plot_name)
-    save_plot = input(f"Save plot under {save_path}? Y/N: ")
 
-    if save_plot.capitalize() == "Y":
+    if verbose==1:
+        save_plot = input(f"Save plot under {save_path}? Y/N: ")
+
+        if save_plot.capitalize() == "Y":
+            plt.savefig(save_path, dpi=500)
+        plt.show()
+    elif verbose == 0:
         plt.savefig(save_path, dpi=500)
-    plt.show()
+    else:
+        ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
+
 
 
 def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):
@@ -1186,7 +1202,7 @@ def plot_categ_differences(
     mode='dirs',
     file_prefix='damaged_',
     damage_levels=["0"],
-    comparison=False  # <--- NEW ARGUMENT
+    comparison=False
 ):
     """
     Plot mean (with std error bars) of within-vs-between-category correlations,
