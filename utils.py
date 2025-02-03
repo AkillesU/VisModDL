@@ -1836,6 +1836,9 @@ def pair_corr_scatter_subplots(
                 ax.set_ylabel(f"{image2} activations")
             ax.set_xlabel(f"{image1} activations")
             ax.grid(True)
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+
 
         # Figure title
         fig.suptitle(f"Scatter correlation: {image1} vs {image2}\nLayer: {layer}")
