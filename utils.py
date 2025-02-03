@@ -1811,6 +1811,7 @@ def pair_corr_scatter_subplots(
                 color = color_cycle[j]
                 corr = np.corrcoef(act1, act2)[0, 1]
                 label_str = f"{pkl_file}: r={corr:.2f}"
+                ax.plot(x_fit, y_fit, color=color, label=f"Line r={corr:.2f}")
 
                 # Create a scatter plot with a label
                 ax.scatter(
