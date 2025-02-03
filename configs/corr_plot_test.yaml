@@ -2,7 +2,7 @@ tasks:
   - function: "pair_corr_scatter_subplots"
     parameters:
       layers: ["V1", "V2", "IT"]
-      damage_type: "connections"
+      damage_type: "noise"
       damage_levels: ["0.0","0.1","0.2", "0.5", "0.9"] # List
       image1: "animal1"
       image2: "animal5"
