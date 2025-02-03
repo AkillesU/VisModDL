@@ -1713,7 +1713,7 @@ def aggregate_permutations(
         print(f"Aggregated stats saved -> {output_path}")
 
 
-def pair_corr_scatter_grid(
+def pair_corr_scatter_subplots(
     layers,
     damage_levels,
     damage_type,
