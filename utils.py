@@ -1809,7 +1809,16 @@ def pair_corr_scatter_subplots(
 
                 # Scatter
                 color = color_cycle[j]
-                ax.scatter(act1, act2, alpha=0.4, color=color, s=10)
+                corr = np.corrcoef(act1, act2)[0, 1]
+                label_str = f"{pkl_file}: r={corr:.2f}"
+
+                # Create a scatter plot with a label
+                ax.scatter(
+                    act1, act2,
+                    alpha=0.5,
+                    color=color,
+                    s=10,
+                    label=label_str)  # This is crucial for legend
 
                 # Optionally fit a line in log space if use_log_scale
                 if use_log_scale:
@@ -1847,6 +1856,8 @@ def pair_corr_scatter_subplots(
                 ax.set_xlabel(f"{image1} activations")
             if col_idx == 0:
                 ax.set_ylabel(f"{image2} activations")
+            ax.legend()
+
 
     fig.suptitle(f"Scatter correlation grid: {image1} vs {image2}")
     plt.tight_layout()
