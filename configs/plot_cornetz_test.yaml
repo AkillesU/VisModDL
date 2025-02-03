@@ -49,9 +49,13 @@ tasks:
       damage_type: "connections"
       damage_levels: [0.0, 0.1, 0.5, 0.8] # List
       main_dir: "data/haupt_stim_activ/damaged/cornet_z/"
+      mode: "files"
+      comparison: false
   - function: "plot_categ_differences"
     parameters:
       layers: ["V1","V4"]
       damage_type: "connections"
       damage_levels: [0.0, 0.1, 0.5, 0.8] # List
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+      mode: "files"
+      comparison: false
