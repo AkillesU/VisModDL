@@ -1771,8 +1771,8 @@ def pair_corr_scatter_subplots(
 
         for col_idx, dmg_level in enumerate(damage_levels):
             ax = axes[row_idx, col_idx]
-            ax.set_xlim(left=lower_limit)
-            ax.set_ylim(bottom=lower_limit)
+            """ax.set_xlim(left=lower_limit)
+            ax.set_ylim(bottom=lower_limit)"""
             subdir_name = f"damaged_{dmg_level}"
             subdir_path = os.path.join(layer_activ_path, subdir_name)
 
