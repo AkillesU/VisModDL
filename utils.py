@@ -1844,7 +1844,7 @@ def pair_corr_scatter_subplots(
                     slope, intercept = np.polyfit(act1, act2, 1)
                     x_fit = np.linspace(act1.min(), act1.max(), 50)
                     y_fit = slope * x_fit + intercept
-                    ax.plot(x_fit, y_fit, color=color, label=f"Line r={corr:.2f}")
+                    ax.plot(x_fit, y_fit, color=color)
                 # Optionally, you might also compute correlation in log space or linear space
                 # but we won't show that here unless you specifically need it.
 
