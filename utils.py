@@ -215,12 +215,6 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
 
             with torch.no_grad():
                 model(input_tensor)
-            
-            print(activations)
-            # If the activations object is a list (multiple forward passes), keep the final set of activations
-            if isinstance(activations[layer_name], list):
-                activations[layer_name] = activations[layer_name][-1]
-            print(activations)
 
             all_activations.append(activations[layer_name].flatten())
             image_names.append(image_file)
