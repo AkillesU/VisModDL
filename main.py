@@ -40,6 +40,8 @@ def main():
     model_info["repo"] = config.get("model_repo", "-")
     model_info["name"] = config.get("model_name", "cornet_z")
     model_info["weights"] = config.get("model_weights", "")
+    if "model_time_steps" in config:
+        model_info["time_steps"] = config["model_time_steps"]
     vmax = config.get("vmax", 0.4)
     pretrained = config.get("pretrained", True)
 

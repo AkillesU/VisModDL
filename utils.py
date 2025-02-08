@@ -107,7 +107,7 @@ def get_all_conv_layers(model, base_path=""):
     return conv_layers
 
 
-def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""):
+def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path="", model_time_steps=5):
     """
     Load a specified pretrained model and register a forward hook to capture activations.
 
@@ -126,6 +126,8 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
     model_repo = model_info["repo"]
     model_name = model_info["name"]
     model_weights = model_info["weights"]
+    if "time_steps" in model_info:
+        model_time_steps = model_info["time_steps"]
 
     # Hook function to capture layer outputs
     def hook_fn(module, input, output):
@@ -139,11 +141,11 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
 
         elif model_name == "cornet_s":
             from cornet import cornet_s
-            model = cornet_s(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
+            model = cornet_s(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")), times=model_time_steps)
 
         elif model_name == "cornet_rt":
             from cornet import cornet_rt
-            model = cornet_rt(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
+            model = cornet_rt(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")), times=model_time_steps)
 
         else:
             raise ValueError(f"CORnet model {model_name} not found. Check config file.")
@@ -757,7 +759,7 @@ def run_damage(
 
                 # 3.5) Save activations
                 activation_dir = (
-                    f"data/haupt_stim_activ/damaged/{model_info['name']}/"
+                    f"data/haupt_stim_activ/damaged/{model_info['name']}{('_' + str(model_info['time_steps']) + 'steps') if 'time_steps' in model_info else ''}/"
                     f"{manipulation_method}/{layer_name}/activations/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(activation_dir, exist_ok=True)
@@ -772,7 +774,7 @@ def run_damage(
 
                 # 5) Save correlation matrix
                 corrmat_dir = (
-                    f"data/haupt_stim_activ/damaged/{model_info['name']}/"
+                    f"data/haupt_stim_activ/damaged/{model_info['name']}{('_' + str(model_info['time_steps']) + 'steps') if 'time_steps' in model_info else ''}/"
                     f"{manipulation_method}/{layer_name}/RDM/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(corrmat_dir, exist_ok=True)
@@ -787,7 +789,7 @@ def run_damage(
                 results = convert_np_to_native(results)
                 # 7) Save within-between metrics
                 selectivity_dir = (
-                    f"data/haupt_stim_activ/damaged/{model_info['name']}/"
+                    f"data/haupt_stim_activ/damaged/{model_info['name']}{('_' + str(model_info['time_steps']) + 'steps') if 'time_steps' in model_info else ''}/"
                     f"{manipulation_method}/{layer_name}/selectivity/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(selectivity_dir, exist_ok=True)
