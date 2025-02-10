@@ -19,7 +19,7 @@ tasks:
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
       layers: ["V1","V2","V4","IT"]
-      damage_type: "noise"
+      damage_type: "connections"
       categories: ["total"]
       metric: "avg_within"
       verbose: 0
@@ -27,7 +27,7 @@ tasks:
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
       layers: ["V1","V2","V4","IT"]
-      damage_type: "noise"
+      damage_type: "connections"
       categories: ["total"]
       metric: "avg_between"
       verbose: 0
@@ -46,7 +46,7 @@ tasks:
   - function: "plot_categ_differences"
     parameters:
       layers: ["V1","V4"]
-      damage_type: "connections"
+      damage_type: "noise"
       damage_levels: ["0.0", "0.1", "0.5", "0.8"] # List of str
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
       mode: "dirs"
@@ -54,7 +54,7 @@ tasks:
   - function: "plot_categ_differences"
     parameters:
       layers: ["V1","IT"]
-      damage_type: "connections"
+      damage_type: "noise"
       damage_levels: ["0.0", "0.1", "0.5", "0.8"] # List
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
       mode: "dirs"
