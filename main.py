@@ -51,7 +51,9 @@ def main():
     apply_to_all_layers = config.get("apply_to_all_layers", False)
     masking_level = config.get("masking_level", "connections")  # "units" or "connections"
     mc_permutations = config.get("mc_permutations", 100) # N of Monte Carlo permutations
-    noise_levels_params = config.get("noise_levels", [0.1, 10, 0.1])
+    noise_levels_params = config.get("noise_levels", [0.1, 0, 0.1])
+    include_bias = config.get("include_bias", False)
+    only_conv = config.get("only_conv", True)
     # -----------------------------------------------------------------------
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -66,7 +68,9 @@ def main():
         mc_permutations=mc_permutations,
         layer_name=layer_name,
         layer_path=layer_path,
-        image_dir=image_dir)
+        image_dir=image_dir,
+        only_conv=only_conv,
+        include_bias=include_bias)
 
     run_damage(model_info=model_info, 
         pretrained=pretrained,
@@ -78,7 +82,9 @@ def main():
         mc_permutations=mc_permutations,
         layer_name=layer_name,
         layer_path=layer_path,
-        image_dir=image_dir)
+        image_dir=image_dir,
+        only_conv=only_conv,
+        include_bias=include_bias)
 
 if __name__ == "__main__":
     main()

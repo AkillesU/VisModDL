@@ -36,7 +36,7 @@ def get_layer_from_path(model, layer_path):
     return current
 
 
-def get_all_weight_layers(model, base_path=""):
+def get_all_weight_layers(model, base_path="", include_bias=False):
     """
     Recursively find all submodules under the given model that have a 'weight' parameter.
     Returns a list of layer paths (dot-separated) that lead to layers with weights.
@@ -49,10 +49,15 @@ def get_all_weight_layers(model, base_path=""):
         List[str]: A list of dot-separated paths to each module with weights.
     """
     weight_layers = []
-    # Check if current module has a 'weight' parameter
-    if hasattr(model, 'weight') and model.weight is not None:
-        # 'model' itself is a leaf layer with weights
-        weight_layers.append(base_path)
+    if include_bias:
+        if hasattr(model, 'weight') or hasattr(model, 'bias') is not None:
+            # 'model' itself is a leaf layer with weights
+            weight_layers.append(base_path)
+    else:
+        # Check if current module has a 'weight' parameter
+        if hasattr(model, 'weight') is not None:
+            # 'model' itself is a leaf layer with weights
+            weight_layers.append(base_path)
 
     # If not, or in addition, iterate through submodules
     for name, submodule in model._modules.items():
@@ -69,7 +74,7 @@ def get_all_weight_layers(model, base_path=""):
     return weight_layers
 
 
-def get_all_conv_layers(model, base_path=""):
+def get_all_conv_layers(model, base_path="", include_bias=False):
     """
     Recursively find all submodules under `model` that are nn.Conv2d,
     returning a list of layer paths (dot-separated) where each layer has weights.
@@ -86,10 +91,14 @@ def get_all_conv_layers(model, base_path=""):
     # If the current module itself is a Conv2d, record its path
     if isinstance(model, nn.Conv2d):
         # Make sure it has a weight parameter (it should)
-        if getattr(model, 'weight', None) is not None:
-            conv_layers.append(base_path)
-        # Once we've identified this as a Conv2d, we typically don't recurse further
-        # because a single nn.Conv2d shouldn't have any of its own submodules.
+        if include_bias:
+            if getattr(model, 'weight', None) or getattr(model, 'bias', None) is not None:
+                conv_layers.append(base_path)
+        else:
+            if getattr(model, 'weight', None) is not None:
+                conv_layers.append(base_path)
+            # Once we've identified this as a Conv2d, we typically don't recurse further
+            # because a single nn.Conv2d shouldn't have any of its own submodules.
         return conv_layers
 
     # Otherwise if base path is not Conv layer itself, recurse into children
@@ -225,7 +234,7 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
     return activations_df
 
 
-def apply_noise(model, noise_level, layer_paths=None, apply_to_all_layers=False):
+def apply_noise(model, noise_level, layer_paths=None, apply_to_all_layers=False, only_conv=True, include_bias=False):
     """
     Add Gaussian noise with std = noise_level to the specified layers' weights.
     """
@@ -238,21 +247,31 @@ def apply_noise(model, noise_level, layer_paths=None, apply_to_all_layers=False)
         else:
             for path in layer_paths:
                 target_layer = get_layer_from_path(model, path)
-                weight_layer_paths = get_all_conv_layers(target_layer, path)
+                if only_conv:
+                    weight_layer_paths = get_all_conv_layers(target_layer, path, include_bias)
+                else:
+                    weight_layer_paths = get_all_weight_layers(target_layer, path, include_bias)
+
                 for w_path in weight_layer_paths:
                     w_layer = get_layer_from_path(model, w_path)
-                    if hasattr(w_layer, 'weight') and w_layer.weight is not None:
+                    if hasattr(w_layer, 'weight') and w_layer.weight is not None: # TODO -- make noise scale to weight distribution
                         noise = torch.randn_like(w_layer.weight) * noise_level
                         w_layer.weight += noise
+                        # include bias
+                        if include_bias and hasattr(w_layer, 'bias'):
+                            noise = torch.randn_like(w_layer.bias) * noise_level
+                            w_layer.weight += noise
                     else:
                         raise AttributeError(f"layer {w_path} does not have weights")
 
 
-def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers=False, masking_level='connections'):
+def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers=False, masking_level='connections', only_conv=True, include_bias=False):
     """
     Apply masking to either units or connections.
     If masking_level='connections', randomly zero out a fraction of weights individually.
     If masking_level='units', randomly zero out entire units.
+
+    apply_to_all_layers not yet working with bias
     """
     param_masks = {}
 
@@ -263,35 +282,60 @@ def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers
                     mask = create_mask(param, fraction_to_mask, masking_level=masking_level)
                     param_masks[name] = mask
         else:
-            # For each specified path, find all sub-layers that have weights
             for path in layer_paths:
                 target_layer = get_layer_from_path(model, path)
-                weight_layer_paths = get_all_conv_layers(target_layer, path)
-            
-                # weight_layer_paths is a list of layer-path strings
+                if only_conv:
+                    weight_layer_paths = get_all_conv_layers(target_layer, path, include_bias)
+                else:
+                    weight_layer_paths = get_all_weight_layers(target_layer, path, include_bias)
+
                 for w_path in weight_layer_paths:
                     w_layer = get_layer_from_path(model, w_path)
                     if hasattr(w_layer, 'weight') and w_layer.weight is not None:
-                        mask = create_mask(w_layer.weight, fraction_to_mask, masking_level=masking_level)
-                        param_masks[w_path] = mask
+                        weight_mask = create_mask(w_layer.weight, fraction_to_mask, masking_level=masking_level)
+                        param_masks[w_path] = weight_mask
+                        # include bias
+                        if include_bias and hasattr(w_layer, 'bias'):
+                            bias_mask = create_mask(w_layer.bias, fraction_to_mask, masking_level=masking_level)
+                            param_masks[f"{w_path}_bias"] = bias_mask
                     else:
                         raise AttributeError(f"layer {w_path} does not have weights")
+
     # For simplicity if apply_to_all_layers is complex, let's just handle layer_paths case well.
     if not apply_to_all_layers:
         for path in layer_paths:
             # Get all weight-bearing sub-layers under this path
-            weight_layer_paths = get_all_conv_layers(get_layer_from_path(model, path), path)
-        
-            for w_path in weight_layer_paths:
-                layer = get_layer_from_path(model, w_path)
-                mask = param_masks[w_path]  # Access the mask using w_path, not path
+            if only_conv:
+                weight_layer_paths = get_all_conv_layers(get_layer_from_path(model, path), path)
+            else:
+                weight_layer_paths = get_all_weight_layers(get_layer_from_path(model, path), path)
             
-                def layer_mask_hook(module, input, mask=mask):
-                    if hasattr(module, 'weight'):
-                        module.weight.data = module.weight.data * mask
-                    return None
+            if include_bias:
+                for w_path in weight_layer_paths:
+                    layer = get_layer_from_path(model, w_path)
+                    weight_mask = param_masks[w_path]  # Access the mask using w_path
+                    bias_mask = param_masks[f"{w_path}_bias"]
+            
+                    def layer_mask_hook_bias(module, input, weight_mask=weight_mask, bias_mask=bias_mask):
+                        if hasattr(module, 'weight'):
+                            module.weight.data = module.weight.data * weight_mask
+                        if hasattr(module, 'bias'):
+                            module.bias.data = module.bias.data * bias_mask
+                        return None
 
-                layer.register_forward_pre_hook(layer_mask_hook)
+                    layer.register_forward_pre_hook(layer_mask_hook_bias)
+            else:
+                for w_path in weight_layer_paths:
+                    layer = get_layer_from_path(model, w_path)
+                    mask = param_masks[w_path]  # Access the mask using w_path
+            
+                    def layer_mask_hook(module, input, mask=mask):
+                        if hasattr(module, 'weight'):
+                            module.weight.data = module.weight.data * mask
+                        return None
+
+                    layer.register_forward_pre_hook(layer_mask_hook)
+
     else:
         # Global masking approach for all layers:
         param_to_mask = {}
@@ -689,7 +733,9 @@ def run_damage(
     mc_permutations,
     layer_name,
     layer_path,
-    image_dir
+    image_dir,
+    only_conv,
+    include_bias
 ):
     """
     Loads a model, damages it (masking or noise) multiple times,
@@ -741,14 +787,18 @@ def run_damage(
                         fraction_to_mask=damage_level,
                         layer_paths=layer_paths_to_damage,
                         apply_to_all_layers=apply_to_all_layers,
-                        masking_level='connections'
+                        masking_level='connections',
+                        only_conv=only_conv,
+                        include_bias=include_bias
                     )
                 else:  # "noise"
                     apply_noise(
                         model,
                         noise_level=damage_level,
                         layer_paths=layer_paths_to_damage,
-                        apply_to_all_layers=apply_to_all_layers
+                        apply_to_all_layers=apply_to_all_layers,
+                        only_conv=only_conv,
+                        include_bias=include_bias
                     )
 
                 # 3) Forward pass on images to get activations
