@@ -50,12 +50,12 @@ def get_all_weight_layers(model, base_path="", include_bias=False):
     """
     weight_layers = []
     if include_bias:
-        if hasattr(model, 'weight') or hasattr(model, 'bias') is not None:
+        if hasattr(model, 'weight') or hasattr(model, 'bias'):
             # 'model' itself is a leaf layer with weights
             weight_layers.append(base_path)
     else:
         # Check if current module has a 'weight' parameter
-        if hasattr(model, 'weight') is not None:
+        if hasattr(model, 'weight'):
             # 'model' itself is a leaf layer with weights
             weight_layers.append(base_path)
 
@@ -92,10 +92,10 @@ def get_all_conv_layers(model, base_path="", include_bias=False):
     if isinstance(model, nn.Conv2d):
         # Make sure it has a weight parameter (it should)
         if include_bias:
-            if getattr(model, 'weight', None) or getattr(model, 'bias', None) is not None:
+            if hasattr(model, 'weight') or hasattr(model, 'bias'):
                 conv_layers.append(base_path)
         else:
-            if getattr(model, 'weight', None) is not None:
+            if hasattr(model, 'weight'):
                 conv_layers.append(base_path)
             # Once we've identified this as a Conv2d, we typically don't recurse further
             # because a single nn.Conv2d shouldn't have any of its own submodules.
@@ -258,9 +258,9 @@ def apply_noise(model, noise_level, layer_paths=None, apply_to_all_layers=False,
                         noise = torch.randn_like(w_layer.weight) * noise_level
                         w_layer.weight += noise
                         # include bias
-                        if include_bias and hasattr(w_layer, 'bias'):
+                        if include_bias and hasattr(w_layer, 'bias') and w_layer.bias is not None:
                             noise = torch.randn_like(w_layer.bias) * noise_level
-                            w_layer.weight += noise
+                            w_layer.bias += noise
                     else:
                         raise AttributeError(f"layer {w_path} does not have weights")
 
@@ -295,7 +295,7 @@ def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers
                         weight_mask = create_mask(w_layer.weight, fraction_to_mask, masking_level=masking_level)
                         param_masks[w_path] = weight_mask
                         # include bias
-                        if include_bias and hasattr(w_layer, 'bias'):
+                        if include_bias and hasattr(w_layer, 'bias') and w_layer.bias is not None:
                             bias_mask = create_mask(w_layer.bias, fraction_to_mask, masking_level=masking_level)
                             param_masks[f"{w_path}_bias"] = bias_mask
                     else:
@@ -314,12 +314,13 @@ def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers
                 for w_path in weight_layer_paths:
                     layer = get_layer_from_path(model, w_path)
                     weight_mask = param_masks[w_path]  # Access the mask using w_path
-                    bias_mask = param_masks[f"{w_path}_bias"]
+                    if layer.bias is not None:
+                        bias_mask = param_masks[f"{w_path}_bias"]
             
                     def layer_mask_hook_bias(module, input, weight_mask=weight_mask, bias_mask=bias_mask):
                         if hasattr(module, 'weight'):
                             module.weight.data = module.weight.data * weight_mask
-                        if hasattr(module, 'bias'):
+                        if hasattr(module, 'bias') and module.bias is not None:
                             module.bias.data = module.bias.data * bias_mask
                         return None
 
