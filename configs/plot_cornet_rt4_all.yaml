@@ -1,0 +1,61 @@
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps_all_params/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps_all_params/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps_all_params/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "avg_within"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps_all_params/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "avg_between"
+      verbose: 0
+  - function: "plot_avg_corr_mat"
+    parameters:
+      layers: ["V1"]
+      damage_type: "connections"
+      damage_levels: ["0.0", "0.1", "0.2", "0.4", "0.5", "0.8"] # List of str
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps_all_params/"
+  - function: "plot_avg_corr_mat"
+    parameters:
+      layers: ["IT"]
+      damage_type: "connections"
+      damage_levels: ["0.0", "0.1", "0.2", "0.4", "0.5", "0.8"] # List of str
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps_all_params/"
+  - function: "plot_categ_differences"
+    parameters:
+      layers: ["V1","V4"]
+      damage_type: "noise"
+      damage_levels: ["0.0", "0.1", "0.5", "0.8"] # List of str
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps_all_params/"
+      mode: "dirs"
+      comparison: false
+  - function: "plot_categ_differences"
+    parameters:
+      layers: ["V1","IT"]
+      damage_type: "noise"
+      damage_levels: ["0.0", "0.1", "0.5", "0.8"] # List
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps_all_params/"
+      mode: "dirs"
+      comparison: false
