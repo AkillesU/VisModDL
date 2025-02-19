@@ -1,5 +1,5 @@
 tasks:  
-  - function: "plot_categ_differences"
+  - function: plot_categ_differences
     parameters:
       layers: ["IT"]
       damage_type: "noise"
@@ -7,7 +7,7 @@ tasks:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps_non_st/"
       mode: "dirs"
       comparison: True
-  - function: "plot_categ_differences"
+  - function: plot_categ_differences
     parameters:
       layers: ["IT"]
       damage_type: "connections"
@@ -15,7 +15,7 @@ tasks:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps_non_st/"
       mode: "dirs"
       comparison: True
-  - function: "plot_categ_differences"
+  - function: plot_categ_differences
     parameters:
       layers: ["V2"]
       damage_type: "noise"
@@ -23,7 +23,7 @@ tasks:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps_non_st/"
       mode: "dirs"
       comparison: True
-  - function: "plot_categ_differences"
+  - function: plot_categ_differences
     parameters:
       layers: ["V2"]
       damage_type: "connections"
@@ -31,7 +31,7 @@ tasks:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps_non_st/"
       mode: "dirs"
       comparison: True
- - function: "plot_categ_differences"
+ - function: plot_categ_differences
     parameters:
       layers: ["V4"]
       damage_type: "noise"
@@ -39,7 +39,7 @@ tasks:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps_non_st/"
       mode: "dirs"
       comparison: True
-  - function: "plot_categ_differences"
+  - function: plot_categ_differences
     parameters:
       layers: ["V4"]
       damage_type: "connections"
