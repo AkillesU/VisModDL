@@ -1,7 +1,7 @@
 tasks:
   - function: categ_corr_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_z/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
       layers: ["V1","V2","V4","IT"]
       damage_type: "noise"
       categories: ["total"]
@@ -9,7 +9,7 @@ tasks:
       verbose: 0
   - function: categ_corr_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_z/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
       layers: ["V1","V2","V4","IT"]
       damage_type: "connections"
       categories: ["total"]
@@ -17,7 +17,7 @@ tasks:
       verbose: 0
   - function: categ_corr_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
       layers: ["V1","V2","V4","IT"]
       damage_type: "noise"
       categories: ["total"]
@@ -25,7 +25,7 @@ tasks:
       verbose: 0
   - function: categ_corr_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
       layers: ["V1","V2","V4","IT"]
       damage_type: "connections"
       categories: ["total"]
@@ -36,19 +36,19 @@ tasks:
       layers: ["V1"]
       damage_type: "connections"
       damage_levels: ["0.0", "0.1", "0.2", "0.4", "0.5", "0.8"] # List of str
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
   - function: "plot_avg_corr_mat"
     parameters:
       layers: ["V1"]
       damage_type: "connections"
       damage_levels: ["0.0", "0.1", "0.2", "0.4", "0.5", "0.8"] # List of str
-      main_dir: "data/haupt_stim_activ/damaged/cornet_z/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
   - function: "plot_categ_differences"
     parameters:
       layers: ["V1","V4"]
       damage_type: "connections"
       damage_levels: ["0.0", "0.1", "0.5", "0.8"] # List of str
-      main_dir: "data/haupt_stim_activ/damaged/cornet_z/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
       mode: "dirs"
       comparison: false
   - function: "plot_categ_differences"
@@ -56,6 +56,6 @@ tasks:
       layers: ["V1","V4"]
       damage_type: "connections"
       damage_levels: ["0.0", "0.1", "0.5", "0.8"] # List
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
       mode: "dirs"
       comparison: false

@@ -1,0 +1,24 @@
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
+      layers: ["V1"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 1
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
+      layers: ["V1"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "avg_within"
+      verbose: 1
+  - function: "plot_avg_corr_mat"
+    parameters:
+      layers: ["V1"]
+      damage_type: "noise"
+      damage_levels: ["0.0", "0.1", "0.2", "0.4", "1.2", "1.8", "2.8"] # List of str
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_4steps/"
+      verbose: 1

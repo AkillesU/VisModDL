@@ -1,0 +1,7 @@
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      layers: ["V1"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
