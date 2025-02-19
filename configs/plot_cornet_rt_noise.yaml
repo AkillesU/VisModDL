@@ -1,0 +1,45 @@
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "avg_within"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "avg_between"
+      verbose: 0
+  - function: "plot_avg_corr_mat"
+    parameters:
+      layers: ["V1"]
+      damage_type: "noise"
+      damage_levels: ["0.0", "1.0", "2.0", "4.0"] # List of str
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+  - function: "plot_avg_corr_mat"
+    parameters:
+      layers: ["V2","IT"]
+      damage_type: "noise"
+      damage_levels: ["0.0", "1.0", "2.0", "4.0"] # List of str
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+  - function: "plot_categ_differences"
+    parameters:
+      layers: ["V1","V4"]
+      damage_type: "noise"
+      damage_levels: ["0.0", "1.0", "2.0", "4.0"] # List of str
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+      mode: "dirs"
+      comparison: false
