@@ -1,3 +1,4 @@
+tasks:  
   - function: "plot_categ_differences"
     parameters:
       layers: ["IT"]
