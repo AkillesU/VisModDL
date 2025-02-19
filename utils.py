@@ -234,7 +234,7 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
     return activations_df
 
 
-def apply_noise(model, noise_level, layer_paths=None, apply_to_all_layers=False, only_conv=True, include_bias=False):
+def apply_noise(model, noise_level, noise_dict, layer_paths=None, apply_to_all_layers=False, only_conv=True, include_bias=False):
     """
     Add Gaussian noise with std = noise_level to the specified layers' weights.
     """
@@ -254,12 +254,12 @@ def apply_noise(model, noise_level, layer_paths=None, apply_to_all_layers=False,
 
                 for w_path in weight_layer_paths:
                     w_layer = get_layer_from_path(model, w_path)
-                    if hasattr(w_layer, 'weight') and w_layer.weight is not None: # TODO -- make noise scale to weight distribution
-                        noise = torch.randn_like(w_layer.weight) * noise_level
+                    if hasattr(w_layer, 'weight') and w_layer.weight is not None:
+                        noise = torch.randn_like(w_layer.weight) * noise_dict[f"{w_path}.weight"] * noise_level
                         w_layer.weight += noise
                         # include bias
                         if include_bias and hasattr(w_layer, 'bias') and w_layer.bias is not None:
-                            noise = torch.randn_like(w_layer.bias) * noise_level
+                            noise = torch.randn_like(w_layer.bias) * noise_dict[f"{w_path}.bias"] * noise_level
                             w_layer.bias += noise
                     else:
                         raise AttributeError(f"layer {w_path} does not have weights")
@@ -722,6 +722,40 @@ def generate_params_list(params=[0.1,10,0.1]):
     # Generate the values
     return [start + i * step for i in range(length)]
 
+
+def get_params_sd(model: nn.Module) -> dict:
+    """
+    Utilizes `get_all_weight_layers` to find all modules that have weight/bias.
+    Then computes std dev for each weight/bias (if they exist) and returns a dict:
+        {
+          'some.layer.path.weight': std_val,
+          'some.layer.path.bias':  std_val,
+          ...
+        }
+    """
+    sd_dict = {}
+    
+    # 1. Gather all submodules that might have weight or bias
+    layer_paths = get_all_weight_layers(model, base_path="", include_bias=True)
+    
+    # 2. Iterate over each layer path, retrieve submodule, compute std dev
+    for path in layer_paths:
+        submodule = get_layer_from_path(model, path)
+        
+        # If this submodule has a 'weight' param, compute std dev
+        if hasattr(submodule, "weight") and submodule.weight is not None:
+            # if submodule.weight.requires_grad:
+            std_w = submodule.weight.std().item()
+            sd_dict[f"{path}.weight"] = std_w
+        
+        # If this submodule has a 'bias' param, compute std dev
+        if hasattr(submodule, "bias") and submodule.bias is not None:
+            # if submodule.bias.requires_grad:
+            std_b = submodule.bias.std().item()
+            sd_dict[f"{path}.bias"] = std_b
+    
+    return sd_dict
+
        
 def run_damage(
     model_info,
@@ -762,6 +796,8 @@ def run_damage(
         damage_levels_list = generate_params_list(fraction_to_mask_params)
     elif manipulation_method == "noise":
         damage_levels_list = generate_params_list(noise_levels_params)
+        model, activations = load_model(model_info=model_info, pretrained=pretrained, layer_name=layer_name,layer_path=layer_path)
+        noise_dict = get_params_sd(model)
     else:
         raise ValueError("manipulation_method must be 'connections' or 'noise'.")
 
@@ -796,6 +832,7 @@ def run_damage(
                     apply_noise(
                         model,
                         noise_level=damage_level,
+                        noise_dict=noise_dict,
                         layer_paths=layer_paths_to_damage,
                         apply_to_all_layers=apply_to_all_layers,
                         only_conv=only_conv,
