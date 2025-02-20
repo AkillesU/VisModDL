@@ -770,7 +770,8 @@ def run_damage(
     layer_path,
     image_dir,
     only_conv,
-    include_bias
+    include_bias,
+    run_suffix=""
 ):
     """
     Loads a model, damages it (masking or noise) multiple times,
@@ -789,6 +790,9 @@ def run_damage(
     layer_name : str                # For hooking activations
     layer_path : str                # For hooking activations
     image_dir : str                 # Directory of images
+    only_conv : bool                # Apply damage to only conv layers?
+    include_bias : bool             # Apply damage also to bias parameters?
+    run_suffix : str                # Suffix to add to run directory name
     """
 
     # Determine the list of damage levels
@@ -803,6 +807,18 @@ def run_damage(
 
     # We'll have len(damage_levels_list) * mc_permutations total loops
     total_iterations = len(damage_levels_list) * mc_permutations
+
+    # Define time_steps string to add to run dir name
+    if "time_steps" in model_info:
+        time_steps = str(model_info['time_steps'])
+    elif model_info['name'] == "cornet_rt":
+        time_steps = "5" # default time steps for cornet_rt
+    else:
+        time_steps = ""
+
+    # modify run_suffix
+    run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
+
 
     with tqdm(total=total_iterations, desc="Running alteration") as pbar:
         # Outer loop over each damage level (fraction or noise STD)
@@ -847,7 +863,7 @@ def run_damage(
 
                 # 3.5) Save activations
                 activation_dir = (
-                    f"data/haupt_stim_activ/damaged/{model_info['name']}{('_' + str(model_info['time_steps']) + 'steps') if 'time_steps' in model_info else ''}/"
+                    f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
                     f"{manipulation_method}/{layer_name}/activations/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(activation_dir, exist_ok=True)
@@ -862,7 +878,7 @@ def run_damage(
 
                 # 5) Save correlation matrix
                 corrmat_dir = (
-                    f"data/haupt_stim_activ/damaged/{model_info['name']}{('_' + str(model_info['time_steps']) + 'steps') if 'time_steps' in model_info else ''}/"
+                    f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
                     f"{manipulation_method}/{layer_name}/RDM/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(corrmat_dir, exist_ok=True)
@@ -877,7 +893,7 @@ def run_damage(
                 results = convert_np_to_native(results)
                 # 7) Save within-between metrics
                 selectivity_dir = (
-                    f"data/haupt_stim_activ/damaged/{model_info['name']}{('_' + str(model_info['time_steps']) + 'steps') if 'time_steps' in model_info else ''}/"
+                    f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
                     f"{manipulation_method}/{layer_name}/selectivity/damaged_{round(damage_level,3)}"
                 )
                 os.makedirs(selectivity_dir, exist_ok=True)
