@@ -19,10 +19,17 @@ def main(config_path):
     """Main function to execute functions based on YAML config."""
     with open(config_path, "r") as file:
         config = yaml.safe_load(file)
-
+    if config["subdir"] is not None:
+        print("subdir found")
+        subdir = config["subdir"]
+    else:
+        subdir = ""
     for task in config.get("tasks", []):
         function_name = task.get("function")
         parameters = task.get("parameters", {})
+        # Add plot directory to params
+        parameters["plot_dir"] = "plots/" + subdir
+        print(parameters)
 
         if function_name:
             print(f"Running {function_name} with parameters: {parameters}")
