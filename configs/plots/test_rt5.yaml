@@ -1,0 +1,34 @@
+subdir: "find_out/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps_non_st/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps_non_st/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
