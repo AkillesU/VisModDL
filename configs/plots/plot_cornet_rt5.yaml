@@ -1,4 +1,4 @@
-subdir: "cornet_rt4/"
+subdir: "cornet_rt5/"
 tasks:
   - function: categ_corr_lineplot
     parameters:
