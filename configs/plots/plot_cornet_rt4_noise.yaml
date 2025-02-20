@@ -1,3 +1,4 @@
+subdir: "cornet_rt4_std_noise/"
 tasks:
   - function: categ_corr_lineplot
     parameters:
