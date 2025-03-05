@@ -34,7 +34,6 @@ def main():
     image_dir = config.get("image_dir", "stimuli")
     layer_name = config.get("layer_name", "IT")
     layer_path = config.get("layer_path", "")
-    n_bootstrap = config.get("n_bootstrap", 10000)
     model_info = {}
     model_info["source"] = config.get("model_source", "cornet")
     model_info["repo"] = config.get("model_repo", "-")
@@ -42,7 +41,6 @@ def main():
     model_info["weights"] = config.get("model_weights", "")
     if "model_time_steps" in config:
         model_info["time_steps"] = config["model_time_steps"]
-    vmax = config.get("vmax", 0.4)
     pretrained = config.get("pretrained", True)
 
     manipulation_method = config.get("manipulation_method", None)
