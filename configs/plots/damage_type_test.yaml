@@ -2,7 +2,7 @@ subdir: "cornet_rt5/"
 tasks:
   - function: damage_type_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5_c_std_noise/"
       layer: "V1"
       damage_types: ["noise","connections"]
       categories: ["total"]
@@ -10,7 +10,7 @@ tasks:
       verbose: 0
   - function: damage_type_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5_c_std_noise/"
       layer: "V2"
       damage_types: ["noise","connections"]
       categories: ["total"]
@@ -18,7 +18,7 @@ tasks:
       verbose: 0
   - function: damage_type_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5_c_std_noise/"
       layer: "V4"
       damage_types: ["noise","connections"]
       categories: ["total"]
@@ -26,7 +26,7 @@ tasks:
       verbose: 0
   - function: damage_type_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5steps/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_5_c_std_noise/"
       layer: "IT"
       damage_types: ["noise","connections"]
       categories: ["total"]
