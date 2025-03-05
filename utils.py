@@ -2011,29 +2011,35 @@ def damage_type_lineplot(
     common_ylim=None,  # tuple or None
     verbose=0  # 0 or 1
 ):
+    """
+    1) Aggregates data for each damage_type & category.
+    2) Plots one subplot *per* damage type.
+    3) If exactly 2 damage types, plots a second figure with a dual x-axis
+       (twinned axes) and a shared y-axis. 
+       - Each axis is forced to start at 0 on the left corner.
+       - The top and bottom axes have different colors and different param scales.
+    4) If common_ylim is provided, it's applied to all subplots for consistent comparison.
+    """
 
+    # -------------
+    # STEP 1: AGGREGATE DATA
+    # -------------
+    data = {}  # data[(damage_type, category)] -> { param_value : (mean, std) }
 
-    # data[(damage_type, category)] -> { param_value : (mean, std) }
-    data = {}
-
-    # STEP 1) COLLECT / AGGREGATE DATA FOR EACH DAMAGE TYPE
     for damage_type in damage_types:
-        # Construct the directory for this damage type
         layer_path = os.path.join(main_dir, damage_type, layer, "selectivity")
-        # Construct output file path to save aggregated stats
         output_path = os.path.join(main_dir, damage_type, layer, "avg_selectivity")
         os.makedirs(output_path, exist_ok=True)
 
         if not os.path.isdir(layer_path):
-            # If the path doesn't exist, skip
             print(f"Warning: {layer_path} not found. Skipping {damage_type}.")
             continue
 
-        # Initialize data dict for each (damage_type, cat) combination
+        # Initialize data structures
         for cat in categories:
             data[(damage_type, cat)] = {}
 
-        # Loop over subdirectories (e.g. "damaged_0.1")
+        # Check subdirectories
         for subdir_name in os.listdir(layer_path):
             subdir_path = os.path.join(layer_path, subdir_name)
             if not os.path.isdir(subdir_path):
@@ -2041,26 +2047,23 @@ def damage_type_lineplot(
 
             match = re.search(subdir_regex, subdir_name)
             if not match:
-                continue  # subdir doesn't match, skip it
+                continue  # Not a "damaged_xxx" folder
 
             fraction_raw = float(match.group(1))
             fraction_rounded = round(fraction_raw, 3)
 
-            # The aggregated stats file name for this fraction
             fraction_file_name = f"avg_selectivity_{fraction_rounded}.pkl"
             fraction_file_path = os.path.join(output_path, fraction_file_name)
 
-            # If aggregated file doesn't exist, create it
+            # If we haven't aggregated this fraction yet, do so
             if not os.path.exists(fraction_file_path):
-                aggregated_data = {}  # aggregated_data[cat][metric] = list of values
+                aggregated_data = {}  # aggregated_data[cat][metric] = []
 
-                # Loop over .pkl files in subdir
                 for fname in os.listdir(subdir_path):
                     if fname.lower().endswith(".pkl"):
                         pkl_path = os.path.join(subdir_path, fname)
                         with open(pkl_path, "rb") as f:
                             content = pickle.load(f)
-
                         if not isinstance(content, dict):
                             continue
                         for cat_name, metrics_dict in content.items():
@@ -2072,7 +2075,7 @@ def damage_type_lineplot(
                                 aggregated_data[cat_name].setdefault(metric_name, [])
                                 aggregated_data[cat_name][metric_name].append(val)
 
-                # Compute mean and std
+                # Compute mean & std
                 stats_dict = {}
                 for cat_name, metrics_map in aggregated_data.items():
                     stats_dict[cat_name] = {}
@@ -2087,14 +2090,12 @@ def damage_type_lineplot(
                             "std": std_val
                         }
 
-                # Write aggregated stats
+                # Save aggregated stats
                 with open(fraction_file_path, "wb") as f:
                     pickle.dump(stats_dict, f)
 
-            # Read back aggregated content
+            # Load stats
             aggregated_content = safe_load_pickle(fraction_file_path)
-
-            # Populate data
             if not isinstance(aggregated_content, dict):
                 continue
 
@@ -2106,71 +2107,75 @@ def damage_type_lineplot(
                         std_val = aggregated_content[cat][metric]["std"]
                         data[(damage_type, cat)][fraction_rounded] = (mean_val, std_val)
 
-    # ----
-    # STEP 2) PLOT: ONE SUBPLOT PER DAMAGE TYPE
-    # ----
-
-    # We'll create one row, with len(damage_types) subplots
-    # (Alternatively, you could do multiple rows if that suits better.)
+    # -------------
+    # STEP 2: PLOT ONE SUBPLOT PER DAMAGE TYPE
+    # -------------
     num_damage_types = len(damage_types)
     if num_damage_types == 0:
-        print("No damage types found with data. Exiting.")
+        print("No valid damage types found. Exiting.")
         return
 
     fig, axes = plt.subplots(
-        1,
-        num_damage_types,
+        1, num_damage_types, 
         figsize=(5 * num_damage_types, 5),
         squeeze=False
     )
-    axes = axes[0]  # since subplots returns a 2D array, we flatten the 1st row
+    axes = axes[0]  # Flatten single row
 
     for i, damage_type in enumerate(damage_types):
         ax = axes[i]
-        # We'll gather all fractions (param values) for this damage_type across categories
+        any_data_plotted = False
+
         for cat in categories:
             fraction_dict = data.get((damage_type, cat), {})
             if len(fraction_dict) == 0:
                 continue
 
-            # Sort param values
             x_sorted = sorted(fraction_dict.keys())
             y_means = [fraction_dict[x][0] for x in x_sorted]
             y_stds  = [fraction_dict[x][1] for x in x_sorted]
 
-            # Plot
             ax.errorbar(
-                x_sorted,
-                y_means,
-                yerr=y_stds,
-                fmt='-o',
-                capsize=3,
+                x_sorted, y_means, yerr=y_stds,
+                fmt='-o', capsize=3,
                 label=f"{cat}"
             )
+            any_data_plotted = True
 
-        # Attempt to guess an x-axis label based on damage_type:
-        # (You can adjust or use a dictionary if you have custom naming.)
+        if not any_data_plotted:
+            ax.text(0.5, 0.5, "No data found", ha="center", va="center", transform=ax.transAxes)
+
+        # Try a heuristic label:
         if "fraction" in damage_type.lower():
             ax.set_xlabel("Fraction of units set to 0")
         elif "noise" in damage_type.lower() or "std" in damage_type.lower():
             ax.set_xlabel("Std of Gaussian noise")
         else:
-            ax.set_xlabel(f"Parameter - {damage_type}")
+            ax.set_xlabel(f"{damage_type} param")
 
         ax.set_ylabel(metric)
         ax.set_title(f"Layer {layer} - {damage_type}")
         ax.legend()
 
-        # If user requested common_ylim, apply it
+        # Common ylim if requested
         if common_ylim is not None:
             ax.set_ylim(common_ylim)
 
+        # Force x-axis to start at 0 if that makes sense
+        # (We'll do a quick check if all x>0)
+        all_x = [x for c in categories for x in data.get((damage_type, c), {}).keys()]
+        if len(all_x) > 0:
+            min_x = min(all_x)
+            max_x = max(all_x)
+            if min_x >= 0:  # If the param is always >= 0
+                ax.set_xlim(left=0)
+            ax.set_xlim(right=max_x)
+
     fig.tight_layout()
 
-    # Save the multi-subplot figure
+    # Save the per-damage-type subplots figure
     os.makedirs(plot_dir, exist_ok=True)
-    # Build a unique name
-    model_name = main_dir.split("/")[-2]  # Heuristic: e.g. if main_dir = ".../cornet_rt/"
+    model_name = main_dir.split("/")[-2]  # e.g. "cornet_rt"
     plot_name = f"{model_name}_lineplot_{layer}_SUBPLOTS"
     for damage_type in damage_types:
         plot_name += f"_{damage_type}"
@@ -2188,96 +2193,120 @@ def damage_type_lineplot(
         plt.savefig(save_path, dpi=300)
         plt.close(fig)
 
-    # ----
-    # STEP 3) IF EXACTLY TWO DAMAGE TYPES, CREATE A "TWINS" PLOT
-    # ----
+    # -------------
+    # STEP 3: IF EXACTLY TWO DAMAGE TYPES, CREATE A "TWINS" PLOT
+    # -------------
+
     if num_damage_types == 2:
+        ##### DUAL AXIS SECTION START #####
         d1, d2 = damage_types
-        fig2, ax1 = plt.subplots(figsize=(7, 5))
 
-        # Twinned axis
-        ax2 = ax1.twiny()
+        # Prepare figure
+        fig2, ax_bottom = plt.subplots(figsize=(7, 5))
+        # Create top axis
+        ax_top = ax_bottom.twiny()
 
-        # We'll gather data for each axis:
-        #   damage_types[0] -> ax1,   damage_types[1] -> ax2
-        # We also set their param ranges accordingly.
+        # For color differentiation
+        color_bottom = "C0"
+        color_top    = "C1"
 
-        # Plot lines for each category from damage_type[0]
+        # -------------
+        # BOTTOM AXIS: damage_type d1
+        # -------------
+        any_data_bottom = False
+        all_x_bottom = []
+
         for cat in categories:
             fraction_dict = data.get((d1, cat), {})
             if len(fraction_dict) == 0:
                 continue
+
             x_sorted = sorted(fraction_dict.keys())
             y_means = [fraction_dict[x][0] for x in x_sorted]
             y_stds  = [fraction_dict[x][1] for x in x_sorted]
-            ax1.errorbar(
+            line_bottom = ax_bottom.errorbar(
                 x_sorted, y_means, yerr=y_stds,
                 fmt='-o', capsize=3,
+                color=color_bottom,
                 label=f"{d1}:{cat}"
             )
+            any_data_bottom = True
+            all_x_bottom.extend(x_sorted)
 
-        # Plot lines for each category from damage_type[1] on ax2
-        # but we need ax2 set to the correct x-limits. The default will overlay
-        # [0,1] with [0,1]. We'll handle it by setting the min & max from the data.
-        min_x2, max_x2 = None, None
+        # If bottom data is >= 0, force x to start at 0
+        if any_data_bottom and len(all_x_bottom) > 0:
+            min_x1, max_x1 = min(all_x_bottom), max(all_x_bottom)
+            if min_x1 >= 0:
+                ax_bottom.set_xlim(left=0)
+            ax_bottom.set_xlim(right=max_x1)
 
-        # We'll store references to lines so we can create a combined legend.
-        lines_ax2 = []
-        labels_ax2 = []
+        # Label bottom axis
+        ax_bottom.set_xlabel(
+            f"{d1} parameter", 
+            color=color_bottom
+        )
+        ax_bottom.tick_params(axis='x', labelcolor=color_bottom)
+        ax_bottom.spines["bottom"].set_edgecolor(color_bottom)
+        # The y-axis is shared
+        ax_bottom.set_ylabel(metric)
+
+        # -------------
+        # TOP AXIS: damage_type d2
+        # -------------
+        any_data_top = False
+        all_x_top = []
 
         for cat in categories:
             fraction_dict = data.get((d2, cat), {})
             if len(fraction_dict) == 0:
                 continue
+
             x_sorted = sorted(fraction_dict.keys())
             y_means = [fraction_dict[x][0] for x in x_sorted]
             y_stds  = [fraction_dict[x][1] for x in x_sorted]
-
-            line = ax2.errorbar(
+            line_top = ax_top.errorbar(
                 x_sorted, y_means, yerr=y_stds,
                 fmt='-s', capsize=3,
+                color=color_top,
                 label=f"{d2}:{cat}"
             )
-            lines_ax2.append(line)
-            labels_ax2.append(f"{d2}:{cat}")
+            any_data_top = True
+            all_x_top.extend(x_sorted)
 
-            x_min_cur, x_max_cur = min(x_sorted), max(x_sorted)
-            if min_x2 is None or x_min_cur < min_x2:
-                min_x2 = x_min_cur
-            if max_x2 is None or x_max_cur > max_x2:
-                max_x2 = x_max_cur
+        # If top data is >= 0, force x to start at 0
+        if any_data_top and len(all_x_top) > 0:
+            min_x2, max_x2 = min(all_x_top), max(all_x_top)
+            if min_x2 >= 0:
+                ax_top.set_xlim(left=0)
+            ax_top.set_xlim(right=max_x2)
 
-        # Set separate x-limits for ax2
-        if min_x2 is not None and max_x2 is not None:
-            ax2.set_xlim(min_x2, max_x2)
+        # Label top axis
+        ax_top.set_xlabel(
+            f"{d2} parameter", 
+            color=color_top
+        )
+        ax_top.tick_params(axis='x', labelcolor=color_top)
+        ax_top.spines["top"].set_edgecolor(color_top)
 
-        # Attempt to guess x-axis labels
-        if "fraction" in d1.lower():
-            ax1.set_xlabel("Fraction of units (damage_type_1)")
-        else:
-            ax1.set_xlabel(f"{d1} parameter")
-
-        if "fraction" in d2.lower():
-            ax2.set_xlabel("Fraction of units (damage_type_2)")
-        else:
-            ax2.set_xlabel(f"{d2} parameter")
-
-        ax1.set_ylabel(metric)
-
-        # Optionally set a common ylim
+        # Optionally set common y-limits
         if common_ylim is not None:
-            ax1.set_ylim(common_ylim)
-            ax2.set_ylim(common_ylim)
+            ax_bottom.set_ylim(common_ylim)
+            ax_top.set_ylim(common_ylim)
 
-        # Combine legends from both axes
-        lines_ax1, labels_ax1 = ax1.get_legend_handles_labels()
-        lines_ax2, labels_ax2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines_ax1 + lines_ax2, labels_ax1 + labels_ax2, loc='best')
-        ax1.set_title(f"Twinned Axes for Layer {layer}")
+        # Combine legends
+        lines_bottom, labels_bottom = ax_bottom.get_legend_handles_labels()
+        lines_top, labels_top = ax_top.get_legend_handles_labels()
+        ax_bottom.legend(
+            lines_bottom + lines_top, 
+            labels_bottom + labels_top,
+            loc="best"
+        )
+
+        ax_bottom.set_title(f"Twinned Axes for Layer {layer}")
 
         fig2.tight_layout()
 
-        # Save the twinned axis figure
+        # Save
         plot_name_twinned = f"{model_name}_lineplot_{layer}_TWINS"
         for damage_type in damage_types:
             plot_name_twinned += f"_{damage_type}"
