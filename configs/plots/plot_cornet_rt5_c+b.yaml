@@ -1,0 +1,62 @@
+subdir: "cornet_rt5/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_c+b/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_c+b/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_c+b/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "avg_within"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_c+b/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "avg_between"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_c+b/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "avg_within"
+      verbose: 0
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_c+b/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "avg_between"
+      verbose: 0
+  - function: "plot_avg_corr_mat"
+    parameters:
+      layers: ["V1"]
+      damage_type: "noise"
+      damage_levels: ["0.0", "0.5", "1", "2", "2.5", "3"] # List of str
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_c+b/"
+  - function: "plot_avg_corr_mat"
+    parameters:
+      layers: ["IT"]
+      damage_type: "noise"
+      damage_levels: ["0.0", "0.5", "1", "2", "2.5", "3"] # List of str
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt_c+b/"
