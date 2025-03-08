@@ -52,11 +52,11 @@ tasks:
     parameters:
       layers: ["V1"]
       damage_type: "noise"
-      damage_levels: ["0.0", "0.5", "1", "2", "2.5", "3"] # List of str
+      damage_levels: ["0.0", "0.5", "1.0", "2.0", "2.5", "3.0"] # List of str
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
   - function: "plot_avg_corr_mat"
     parameters:
       layers: ["IT"]
       damage_type: "noise"
-      damage_levels: ["0.0", "0.5", "1", "2", "2.5", "3"] # List of str
+      damage_levels: ["0.0", "0.5", "1.0", "2.0", "2.5", "3.0"] # List of str
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
