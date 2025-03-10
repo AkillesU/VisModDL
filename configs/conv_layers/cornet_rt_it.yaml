@@ -1,9 +1,10 @@
 image_dir: "stimuli"
 layer_name: "IT"
-layer_path: ["module._modules.V1._modules.output",
-			"module._modules.V2._modules.output",
-			"module._modules.V4._modules.output",
-			"module._modules.IT._modules.output"]
+layer_path: 
+ - "module._modules.V1._modules.output"
+ - "module._modules.V2._modules.output"
+ - "module._modules.V4._modules.output"
+ - "module._modules.IT._modules.output"
 model_source: "cornet"
 model_repo: "-"
 model_name: "cornet_rt"
