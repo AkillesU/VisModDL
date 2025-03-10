@@ -1031,37 +1031,38 @@ def categ_corr_lineplot(
     verbose=0 # 0 or 1
 ):
     """
-    1. For each layer in `layers`, build the directory path:
-         {main_dir}{damage_type}/{layer}/selectivity/
+    1. For each damage layer in `damage_layers` and each activation layer in `activations_layers`, 
+       build the directory path:
+         {main_dir}{damage_type}/{layer}/selectivity/{activation_layer}/
     2. In that directory, for each subdirectory matching subdir_regex (e.g. "damaged_0.1"),
        parse the numeric fraction (e.g., 0.1).
-    3. If an aggregated stats file "avg_selectivity_{fraction}.yaml" does not exist for
-       that fraction, compute *all* categories & metrics found in the raw .yaml files.
-       Save them to "avg_selectivity_{fraction}.yaml".
+    3. If an aggregated stats file "avg_selectivity_{fraction}.pkl" does not exist for
+       that fraction, compute *all* categories & metrics found in the raw .pkl files.
+       Save them to "avg_selectivity_{fraction}.pkl".
     4. For plotting, read back those aggregated stats, but only use the specified
-       `categories` and single `metric` to populate `data[(layer, cat)]`.
-    5. Plot them on a single figure, with one line per (layer, category).
+       `categories` and single `metric` to populate `data[(layer, activation_layer, cat)]`.
+    5. Plot them on a single figure, with one line per (layer, activation_layer, category).
     """
 
-    # data[(layer, category)] -> { fraction_value : (mean, std) }
+    # data[(layer, activation_layer, category)] -> { fraction_value : (mean, std) }
     data = {}
 
-    # -- Loop over each layer to gather data --
+    # -- Loop over each damage layer and activation layer to gather data --
     for layer in damage_layers:
         for activation_layer in activations_layers:
-            # Construct the directory for this layer
-            layer_path = os.path.join(main_dir, damage_type, layer,activation_layer, "selectivity")
-            # Construct output file path to save aggregated Pickle
-            output_path = os.path.join(main_dir, damage_type, layer,activation_layer, "avg_selectivity")
+            # Construct the directory for this combination
+            layer_path = os.path.join(main_dir, damage_type, layer, "selectivity", activation_layer)
+            # Construct output file path to save aggregated data
+            output_path = os.path.join(main_dir, damage_type, layer, "avg_selectivity", activation_layer)
             os.makedirs(output_path, exist_ok=True)
 
             if not os.path.isdir(layer_path):
-                # If the path doesn't exist, skip this layer
+                # If the path doesn't exist, skip
                 continue
 
-            # Initialize data dict for each (layer, cat) combination
+            # Initialize data dict for each (layer, activation_layer, cat) combination
             for cat in categories:
-                data[(layer, cat)] = {}
+                data[(layer, activation_layer, cat)] = {}
 
             # 1) Loop over all subdirectories in layer_path
             for subdir_name in os.listdir(layer_path):
@@ -1129,9 +1130,6 @@ def categ_corr_lineplot(
                         pickle.dump(stats_dict, f)
 
                 aggregated_content = safe_load_pickle(fraction_file_path)
-                """# 3) Now read back the aggregated file (either just written or previously existing)
-                with open(fraction_file_path, "rb") as f:
-                    aggregated_content = pickle.load(f)"""
 
                 # 4) For plotting, we only care about the user-specified categories & single metric
                 if not isinstance(aggregated_content, dict):
@@ -1146,14 +1144,14 @@ def categ_corr_lineplot(
                         ):
                             mean_val = aggregated_content[cat][metric]["mean"]
                             std_val = aggregated_content[cat][metric]["std"]
-                            data[(layer, cat)][fraction_rounded] = (mean_val, std_val)
+                            data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val)
 
-    # 5) Prepare a single figure with one line per (layer, category)
+    # 5) Prepare a single figure with one line per (layer, activation_layer, category)
     plt.figure(figsize=(8, 6))
 
-    for (layer, cat), fraction_dict in data.items():
+    for (layer, activation_layer, cat), fraction_dict in data.items():
         if len(fraction_dict) == 0:
-            # This (layer, category) had no data at all, skip plotting
+            # This (layer, activation_layer, category) had no data at all
             continue
 
         # Sort the fractions in ascending order
@@ -1170,14 +1168,14 @@ def categ_corr_lineplot(
             y_means.append(mean_val)
             y_stds.append(std_val)
 
-        # Plot error bars for this (layer, category)
+        # Plot error bars for this (layer, activation_layer, category)
         plt.errorbar(
             x_vals, 
             y_means, 
             yerr=y_stds, 
             fmt='-o', 
             capsize=4, 
-            label=f"{layer} - {cat} ({metric})"
+            label=f"{layer} - {activation_layer} - {cat} ({metric})"
         )
 
     plt.xlabel("Damage Parameter Value")
@@ -1190,26 +1188,29 @@ def categ_corr_lineplot(
     os.makedirs(plot_dir, exist_ok=True)
 
     # Build a unique plot name
-    model_name = main_dir.split("/")[-2] # Assuming that there is a slash after the model name ("/cornet/")
+    model_name = main_dir.split("/")[-2]  # Attempt to extract model name from main_dir
     plot_name = f"{model_name}_lineplot_{damage_type}"
     for layer in damage_layers:
         plot_name += f"_{layer}"
+    plot_name += f"-"
+    for activation_layer in activations_layers:
+        plot_name += f"_{activation_layer}"
     for category in categories:
+        # e.g., add "a" for "animal", "f" for "face", etc.
         plot_name += f"_{category[0]}"
     plot_name += f"_{metric}.png"
 
     save_path = os.path.join(plot_dir, plot_name)
 
-    if verbose==1:
+    if verbose == 1:
         save_plot = input(f"Save plot under {save_path}? Y/N: ")
-
         if save_plot.capitalize() == "Y":
             plt.savefig(save_path, dpi=500)
         plt.show()
     elif verbose == 0:
         plt.savefig(save_path, dpi=500)
     else:
-        ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
+        raise ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
 
 
 
