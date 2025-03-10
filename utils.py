@@ -2388,103 +2388,82 @@ def damage_type_lineplot(
         print("Skipping twinned-axes plot, because we have != 2 damage types.")
 
 
+def normalize_module_name(name):
+    """
+    Normalize a module name by removing any occurrence of the token '_modules'.
+    For example, 'module._modules.IT._modules.output' becomes 'module.IT.output'.
+    """
+    tokens = name.split(".")
+    tokens = [t for t in tokens if t != "_modules"]
+    return ".".join(tokens)
+
 def build_hierarchical_index(module, prefix="", current_index=None):
     """
-    Recursively traverse the model to create a mapping from full module name to its
-    hierarchical index. The index is represented as a list of integers indicating 
-    the position of the module at each level of the hierarchy.
+    Recursively traverse the model to create a mapping from normalized full module names 
+    to their hierarchical index. The index is a list of integers indicating the position 
+    of the module at each level of the hierarchy.
     
-    For example, a module with full name "layer1.layer1-2.conv1" might get an index [0, 1, 0].
+    For example, a module with normalized full name "layer1.layer1-2.conv1" might get an index [0, 1, 0].
     """
     if current_index is None:
         current_index = []
     mapping = {}
-    if prefix:
-        mapping[prefix] = current_index
+    norm_prefix = normalize_module_name(prefix) if prefix else ""
+    if norm_prefix:
+        mapping[norm_prefix] = current_index
     for idx, (name, child) in enumerate(module.named_children()):
         full_name = f"{prefix}.{name}" if prefix else name
+        norm_full_name = normalize_module_name(full_name)
         child_index = current_index + [idx]
-        mapping[full_name] = child_index
+        mapping[norm_full_name] = child_index
         mapping.update(build_hierarchical_index(child, full_name, child_index))
     return mapping
-
 
 def get_final_layers_to_hook(model, activation_layers_to_save, layer_paths_to_damage):
     """
     Determines which activation layers (given by their full module names) should be hooked,
-    based on whether they occur downstream of the damage layer(s).
+    using a hierarchical index built from the model's architecture.
     
-    Two modes are supported:
-      1. CORnet-style: If any activation layer name indicates a CORnet block (e.g., its third
-         token is one of "V1", "V2", "V4", "IT"), then use block-order logic.
-      2. Feedforward hierarchical indexing: Otherwise, build a hierarchical index by traversing
-         the model. Compare indices lexicographically so that an activation layer is saved if
-         its index is greater than that of a damage layer.
-         
-         For example, if a damage layer has index [0, 1, 0]:
-           - An activation layer with index [0, 1, 3] qualifies (same parent, later child).
-           - One with [1, 0, 3] qualifies (later top-level branch).
-           - One with [0, 0, 3] does not.
-           
+    The names (both from the model and the provided layer names) are first normalized to remove
+    extra tokens (e.g. '_modules'). Then, for each activation layer, if its hierarchical index 
+    (as a tuple) is lexicographically greater than that of any damage layer, the activation layer 
+    is considered to be downstream of the damage and is included.
+    
+    For example, if a damage layer has index [0, 1]:
+      - An activation layer with index [0, 1, 3] qualifies.
+      - An activation layer with index [1, 0, 3] qualifies.
+      - An activation layer with index [0, 0, 3] does not qualify.
+      
     Parameters:
       model: A PyTorch model object.
-      activation_layers_to_save: List of full module names (strings) where activations are to be saved.
+      activation_layers_to_save: List of full module names (strings) where activations should be saved.
       layer_paths_to_damage: List of full module names (strings) where damage is applied.
       
     Returns:
-      final_layers_to_hook: A list of activation layer names that should be hooked.
+      final_layers_to_hook: A list of activation layer names (as originally provided) that should be hooked.
     """
-    # Define CORnet blocks.
-    cornet_blocks = {"V1", "V2", "V4", "IT"}
+    # Build a mapping from normalized module names to hierarchical indices.
+    hierarchy = build_hierarchical_index(model)
     
-    # Check if any activation layer follows CORnet-style naming (i.e., expects a CORnet block in the 3rd element).
-    use_cornet = any(
-        (len(act.split(".")) > 2 and act.split(".")[2] in cornet_blocks)
-        for act in activation_layers_to_save
-    )
+    # Normalize the provided layer names.
+    norm_activation_layers = [normalize_module_name(name) for name in activation_layers_to_save]
+    norm_damage_layers = [normalize_module_name(name) for name in layer_paths_to_damage]
     
-    if use_cornet:
-        # --- Use CORnet block ordering ---
-        top_level_blocks_in_order = ["V1", "V2", "V4", "IT"]
-        block_order_map = {b: i for i, b in enumerate(top_level_blocks_in_order)}
-        
-        # For damage layers, assume the block name is in the first element.
-        damage_block_indices = []
-        for dmg_path in layer_paths_to_damage:
-            parts = dmg_path.split(".")
-            if parts and parts[0] in block_order_map:
-                damage_block_indices.append(block_order_map[parts[0]])
-        earliest_damage_idx = min(damage_block_indices) if damage_block_indices else 0
-
-        final_layers = []
-        for act_path in activation_layers_to_save:
-            parts = act_path.split(".")
-            # Assume the CORnet block is the third element.
-            if len(parts) > 2 and parts[2] in block_order_map:
-                if block_order_map[parts[2]] >= earliest_damage_idx:
-                    final_layers.append(act_path)
-        return final_layers
-    
-    else:
-        # --- Use hierarchical indexing for feedforward models ---
-        # Build a mapping from full module name to hierarchical index.
-        hierarchy = build_hierarchical_index(model)
-        
-        final_layers = []
-        for act in activation_layers_to_save:
-            act_index = hierarchy.get(act, None)
-            if act_index is None:
-                # The activation layer name was not found in the model.
+    final_layers = []
+    for orig_act, norm_act in zip(activation_layers_to_save, norm_activation_layers):
+        act_index = hierarchy.get(norm_act, None)
+        if act_index is None:
+            # Could not find the activation layer in the model.
+            continue
+        # Check against each damage layer.
+        for orig_dmg, norm_dmg in zip(layer_paths_to_damage, norm_damage_layers):
+            dmg_index = hierarchy.get(norm_dmg, None)
+            if dmg_index is None:
+                # Could not find the damage layer in the model.
                 continue
-            # Check against all damage layers.
-            for dmg in layer_paths_to_damage:
-                dmg_index = hierarchy.get(dmg, None)
-                if dmg_index is None:
-                    # The damage layer name was not found in the model.
-                    continue
-                # If the activation layer's index is lexicographically greater than the damage layer's index,
-                # then the activation layer is considered downstream of the damage.
-                if tuple(act_index) > tuple(dmg_index):
-                    final_layers.append(act)
-                    break  # No need to check other damage layers for this activation.
-        return final_layers
+            # If the activation layer's index is lexicographically greater than the damage layer's index,
+            # then it is considered downstream of the damage.
+            if tuple(act_index) > tuple(dmg_index):
+                final_layers.append(orig_act)
+                break  # No need to check further if it qualifies for one damage layer.
+    return final_layers
