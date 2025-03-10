@@ -1,13 +1,42 @@
+subdir: "test/"
 tasks:
-  - function: "pair_corr_scatter_subplots"
+  - function: "categ_corr_lineplot"
     parameters:
-      layers: ["V1", "V2", "IT"]
+      damage_layers: ["V1"]
+      activations_layers: ["V1","V2","V4","IT"]
       damage_type: "noise"
-      damage_levels: ["0.0","0.1","0.2", "0.5", "0.9"] # List
-      image1: "animal1"
-      image2: "animal5"
-      n_permutations: 5
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      categories: ["total"]
       verbose: 0
-      lower_limit: 0
-      use_log_scale: false
+  - function: "categ_corr_lineplot"
+    parameters:
+      damage_layers: ["V2"]
+      activations_layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      categories: ["total"]
+      verbose: 0
+  - function: "categ_corr_lineplot"
+    parameters:
+      damage_layers: ["V4"]
+      activations_layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      categories: ["total"]
+      verbose: 0
+  - function: "categ_corr_lineplot"
+    parameters:
+      damage_layers: ["IT"]
+      activations_layers: ["V1","V2","V4","IT"]
+      damage_type: "noise"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      categories: ["total"]
+      verbose: 0
+  - function: "categ_corr_lineplot"
+    parameters:
+      damage_layers: ["V1","V2","IT"]
+      activations_layers: ["V2","IT"]
+      damage_type: "noise"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      categories: ["total"]
+      verbose: 0
