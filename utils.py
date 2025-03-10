@@ -1052,14 +1052,13 @@ def categ_corr_lineplot(
         for activation_layer in activations_layers:
             # Construct the directory for this combination
             layer_path = os.path.join(main_dir, damage_type, layer, "selectivity", activation_layer)
-            # Construct output file path to save aggregated data
-            output_path = os.path.join(main_dir, damage_type, layer, "avg_selectivity", activation_layer)
-            os.makedirs(output_path, exist_ok=True)
 
             if not os.path.isdir(layer_path):
                 # If the path doesn't exist, skip
                 continue
-
+            # Construct output file path to save aggregated data
+            output_path = os.path.join(main_dir, damage_type, layer, "avg_selectivity", activation_layer)
+            os.makedirs(output_path, exist_ok=True)
             # Initialize data dict for each (layer, activation_layer, cat) combination
             for cat in categories:
                 data[(layer, activation_layer, cat)] = {}
