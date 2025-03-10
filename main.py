@@ -65,7 +65,7 @@ def main():
         manipulation_method="noise",
         mc_permutations=mc_permutations,
         layer_name=layer_name,
-        layer_path=layer_path,
+        activation_layers_to_save=layer_path,
         image_dir=image_dir,
         only_conv=only_conv,
         include_bias=include_bias)
@@ -79,7 +79,7 @@ def main():
         manipulation_method="connections",
         mc_permutations=mc_permutations,
         layer_name=layer_name,
-        layer_path=layer_path,
+        activation_layers_to_save=layer_path,
         image_dir=image_dir,
         only_conv=only_conv,
         include_bias=include_bias)

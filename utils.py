@@ -173,9 +173,23 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
     model.eval()
     activations = {} # Init activations dictionary for hook registration
 
-    # Access the target layer and register forward hook
-    target_layer = get_layer_from_path(model, layer_path)
-    target_layer.register_forward_hook(hook_fn)
+    # We'll store all hooks in the same 'activations' dictionary, keyed by their path.
+    if isinstance(layer_path, list):
+        # If layer_path is already a list of paths, do multiple hooks
+        def make_hook_fn(name):
+            def hook_fn(module, input, output):
+                activations[name] = output.cpu().detach().numpy()
+            return hook_fn
+        
+        for lp in layer_path:
+            target_layer = get_layer_from_path(model, lp)
+            target_layer.register_forward_hook(make_hook_fn(lp))
+    else:
+        # Old single-layer logic
+        def hook_fn(module, input, output):
+            activations[layer_name] = output.cpu().detach().numpy()
+        target_layer = get_layer_from_path(model, layer_path)
+        target_layer.register_forward_hook(hook_fn)
 
     return model, activations
 
@@ -766,72 +780,96 @@ def run_damage(
     apply_to_all_layers,
     manipulation_method,   # "connections" or "noise"
     mc_permutations,
-    layer_name,
-    layer_path,
+    layer_name,            # We keep this for naming folders, but we'll also handle multiple layers
+    activation_layers_to_save,  # <--- new list of layers to actually hook
     image_dir,
     only_conv,
     include_bias,
     run_suffix=""
 ):
     """
-    Loads a model, damages it (masking or noise) multiple times,
-    computes and saves correlation matrices + within/between metrics.
-
-    Parameters:
-    -----------
-    model_info : dict
-    pretrained : bool
-    fraction_to_mask_params : list  # [start, length, step] if "connections"
-    noise_levels_params : list      # [start, length, step] if "noise"
-    layer_paths_to_damage : list    # Which layers to damage
-    apply_to_all_layers : bool
-    manipulation_method : str       # "connections" or "noise"
-    mc_permutations : int           # Number of Monte Carlo permutations
-    layer_name : str                # For hooking activations
-    layer_path : str                # For hooking activations
-    image_dir : str                 # Directory of images
-    only_conv : bool                # Apply damage to only conv layers?
-    include_bias : bool             # Apply damage also to bias parameters?
-    run_suffix : str                # Suffix to add to run directory name
+    A merged run_damage that:
+      - Keeps Section 2 & 4 from the original (i.e. time_steps/run_suffix logic + per-image forward pass).
+      - Incorporates earliest-damaged-block logic so we only hook layers that come at or after that block.
+      - Still uses an 'activations' dictionary, updated each time we run a forward pass on a single image.
+      - Allows hooking multiple layers (activation_layers_to_save).
     """
 
-    # Determine the list of damage levels
-    if manipulation_method == "connections":
-        damage_levels_list = generate_params_list(fraction_to_mask_params)
-    elif manipulation_method == "noise":
-        damage_levels_list = generate_params_list(noise_levels_params)
-        model, activations = load_model(model_info=model_info, pretrained=pretrained, layer_name=layer_name,layer_path=layer_path)
-        noise_dict = get_params_sd(model)
-    else:
-        raise ValueError("manipulation_method must be 'connections' or 'noise'.")
-
-    # We'll have len(damage_levels_list) * mc_permutations total loops
-    total_iterations = len(damage_levels_list) * mc_permutations
-
-    # Define time_steps string to add to run dir name
+    # -------------------------------------------------------------------------
+    # SECTION 2: (Unchanged) Time steps & run_suffix from original code
+    # -------------------------------------------------------------------------
     if "time_steps" in model_info:
         time_steps = str(model_info['time_steps'])
     elif model_info['name'] == "cornet_rt":
-        time_steps = "5" # default time steps for cornet_rt
+        time_steps = "5"
     else:
         time_steps = ""
 
-    # modify run_suffix
+    # Keep original run_suffix logic
     run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
 
+    # -------------------------------------------------------------------------
+    # A) Determine the list of damage levels (same as before + optional temp load for noise_dict)
+    # -------------------------------------------------------------------------
+    if manipulation_method == "connections":
+        damage_levels_list = generate_params_list(fraction_to_mask_params)
+        noise_dict = None
+    elif manipulation_method == "noise":
+        damage_levels_list = generate_params_list(noise_levels_params)
+        # For noise, we do the original approach of loading a model once
+        model, _ = load_model(model_info, pretrained=pretrained, layer_name="temp", layer_path="module._modules.V1._modules.output")
+        noise_dict = get_params_sd(model)
+        
+    else:
+        raise ValueError("manipulation_method must be 'connections' or 'noise'.")
 
+    # -------------------------------------------------------------------------
+    # B) Identify earliest damaged block (new logic), filter activation layers
+    # -------------------------------------------------------------------------
+    top_level_blocks_in_order = ["V1", "V2", "V4", "IT"]
+    block_order_map = {b: i for i, b in enumerate(top_level_blocks_in_order)}
+
+    damage_indices = []
+    for dmg_path in layer_paths_to_damage:
+        top_block_dmg = dmg_path.split(".")[0]
+        if top_block_dmg in block_order_map:
+            damage_indices.append(block_order_map[top_block_dmg])
+
+    if damage_indices:
+        earliest_damage_idx = min(damage_indices)
+    else:
+        earliest_damage_idx = 0
+
+    # Now filter activation_layers_to_save to keep only those whose top-level block >= earliest_damage_idx
+    final_layers_to_hook = get_final_layers_to_hook(model,activation_layers_to_save,layer_paths_to_damage)
+    for act_path in activation_layers_to_save:
+        print(act_path)
+        top_block_act = act_path.split(".")[2]
+        if top_block_act in block_order_map:
+            if block_order_map[top_block_act] >= earliest_damage_idx:
+                final_layers_to_hook.append(act_path)
+    print(final_layers_to_hook)
+    # If final_layers_to_hook is empty, we won't really collect multi-layer activations,
+    # but we keep 'layer_name' for the old directory naming logic.
+
+    total_iterations = len(damage_levels_list) * mc_permutations
+
+    # -------------------------------------------------------------------------
+    # SECTION 4: (Kept) The original style: one forward pass per image.
+    #            We'll do it slightly adapted so we can handle multi-layer hooking
+    # -------------------------------------------------------------------------
     with tqdm(total=total_iterations, desc="Running alteration") as pbar:
-        # Outer loop over each damage level (fraction or noise STD)
         for damage_level in damage_levels_list:
-            # Inner loop over Monte Carlo permutations
             for permutation_index in range(mc_permutations):
-                # 1) Load fresh model & activations dict
+                # 1) Load fresh model & attach multi-hook
+                #    We'll store outputs in the original 'activations' dict but for multiple layers
                 model, activations = load_model(
-                    model_info,
+                    model_info=model_info,
                     pretrained=pretrained,
-                    layer_name=layer_name,
-                    layer_path=layer_path
+                    layer_name=layer_name,       # used for naming, but see note below
+                    layer_path=final_layers_to_hook  # multi-layer hooking
                 )
+                model.eval()
 
                 # 2) Apply the chosen damage
                 if manipulation_method == "connections":
@@ -855,61 +893,89 @@ def run_damage(
                         include_bias=include_bias
                     )
 
-                # 3) Forward pass on images to get activations
-                activations_df = extract_activations(
-                    model, activations, image_dir, layer_name=layer_name
-                )
-                activations_df_sorted = sort_activations_by_numeric_index(activations_df)
+                # 3) Now we do the old "extract_activations" approach (one image at a time)
+                #    but we need multi-layer outputs. We'll do a custom loop similar to original code.
 
-                # 3.5) Save activations
-                activation_dir = (
-                    f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                    f"{manipulation_method}/{layer_name}/activations/damaged_{round(damage_level,3)}"
-                )
-                os.makedirs(activation_dir, exist_ok=True)
-                activation_dir_path = os.path.join(activation_dir, f"{permutation_index}.pkl")
+                # We'll store each image's flattened activation in a dictionary-of-lists, e.g.:
+                #   per_layer_data = {layer_path: []}
+                per_layer_data = {lp: [] for lp in final_layers_to_hook}
 
-                # 1) Convert to float16 (optional)
-                reduced_df = activations_df_sorted.astype(np.float16)
-                reduced_df.to_pickle(activation_dir_path)
+                image_files = [
+                    f for f in os.listdir(image_dir)
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+                ]
+                image_files.sort()
 
-                # 4) Compute correlation matrix
-                correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
+                for image_file in image_files:
+                    img_path = os.path.join(image_dir, image_file)
+                    input_tensor = preprocess_image(img_path)
 
-                # 5) Save correlation matrix
-                corrmat_dir = (
-                    f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                    f"{manipulation_method}/{layer_name}/RDM/damaged_{round(damage_level,3)}"
-                )
-                os.makedirs(corrmat_dir, exist_ok=True)
-                corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}.pkl")
+                    # run forward
+                    with torch.no_grad():
+                        model(input_tensor)
 
-                with open(corrmat_path, "wb") as f:
-                    pickle.dump(correlation_matrix.tolist(), f)
+                    # 'activations[lp]' is now the last image's output for that layer
+                    # We'll flatten & store in per_layer_data
+                    for lp in final_layers_to_hook:
+                        out_flat = activations[lp].flatten()  # assume hooking updated this
+                        per_layer_data[lp].append(out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat)
 
-                # 6) Compute within-between metrics
-                categories_array = assign_categories(sorted_image_names)
-                results = calc_within_between(correlation_matrix, categories_array)
-                results = convert_np_to_native(results)
-                # 7) Save within-between metrics
-                selectivity_dir = (
-                    f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                    f"{manipulation_method}/{layer_name}/selectivity/damaged_{round(damage_level,3)}"
-                )
-                os.makedirs(selectivity_dir, exist_ok=True)
-                selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.pkl")
+                # 4) For each layer, build a DataFrame, compute correlation, selectivity, and save
+                #    We'll keep the original directory structure: same as old, but insert 'lp' after RDM/selectivity etc.
+                for lp in final_layers_to_hook:
+                    # build a 2D array [N_images, features]
+                    arr_2d = np.stack(per_layer_data[lp], axis=0)  # shape [N, F]
+                    activations_df = pd.DataFrame(arr_2d, index=image_files)
 
-                with open(selectivity_path, "wb") as f:
-                    pickle.dump(results, f)
+                    # sort indices
+                    activations_df_sorted = sort_activations_by_numeric_index(activations_df)
 
-                """#  print summary
-                print(f"[Damage: {damage_level}, Perm: {permutation_index}] -> "
-                      f"RDM saved: {corrmat_path} | Selectivity saved: {selectivity_path}")
-"""
-                # Update the progress bar
+                    lp_name = lp.split(".")[2]
+                    # save activations
+                    activation_dir = (
+                        f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
+                        f"{manipulation_method}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
+                    )
+                    os.makedirs(activation_dir, exist_ok=True)
+                    activation_dir_path = os.path.join(activation_dir, f"{permutation_index}.pkl")
+
+                    reduced_df = activations_df_sorted.astype(np.float16)
+                    reduced_df.to_pickle(activation_dir_path)
+                    print("Activations saved to: ", activation_dir_path)
+
+                    # compute correlation matrix
+                    correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
+
+                    # save correlation matrix
+                    corrmat_dir = (
+                        f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
+                        f"{manipulation_method}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
+                    )
+                    os.makedirs(corrmat_dir, exist_ok=True)
+                    corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}.pkl")
+                    with open(corrmat_path, "wb") as f:
+                        pickle.dump(correlation_matrix.tolist(), f)
+
+                    # compute within-between
+                    categories_array = assign_categories(sorted_image_names)
+                    results = calc_within_between(correlation_matrix, categories_array)
+                    results = convert_np_to_native(results)
+
+                    # save selectivity
+                    selectivity_dir = (
+                        f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
+                        f"{manipulation_method}/{layer_name}/selectivity/{lp_name}/damaged_{round(damage_level,3)}"
+                    )
+                    os.makedirs(selectivity_dir, exist_ok=True)
+                    selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.pkl")
+                    with open(selectivity_path, "wb") as f:
+                        pickle.dump(results, f)
+
+                # update progress
                 pbar.update(1)
 
     print("All damage permutations completed!")
+
 
 
 def get_sorted_filenames(image_dir):
@@ -2326,3 +2392,105 @@ def damage_type_lineplot(
             plt.close(fig2)
     else:
         print("Skipping twinned-axes plot, because we have != 2 damage types.")
+
+
+def build_hierarchical_index(module, prefix="", current_index=None):
+    """
+    Recursively traverse the model to create a mapping from full module name to its
+    hierarchical index. The index is represented as a list of integers indicating 
+    the position of the module at each level of the hierarchy.
+    
+    For example, a module with full name "layer1.layer1-2.conv1" might get an index [0, 1, 0].
+    """
+    if current_index is None:
+        current_index = []
+    mapping = {}
+    if prefix:
+        mapping[prefix] = current_index
+    for idx, (name, child) in enumerate(module.named_children()):
+        full_name = f"{prefix}.{name}" if prefix else name
+        child_index = current_index + [idx]
+        mapping[full_name] = child_index
+        mapping.update(build_hierarchical_index(child, full_name, child_index))
+    return mapping
+
+
+def get_final_layers_to_hook(model, activation_layers_to_save, layer_paths_to_damage):
+    """
+    Determines which activation layers (given by their full module names) should be hooked,
+    based on whether they occur downstream of the damage layer(s).
+    
+    Two modes are supported:
+      1. CORnet-style: If any activation layer name indicates a CORnet block (e.g., its third
+         token is one of "V1", "V2", "V4", "IT"), then use block-order logic.
+      2. Feedforward hierarchical indexing: Otherwise, build a hierarchical index by traversing
+         the model. Compare indices lexicographically so that an activation layer is saved if
+         its index is greater than that of a damage layer.
+         
+         For example, if a damage layer has index [0, 1, 0]:
+           - An activation layer with index [0, 1, 3] qualifies (same parent, later child).
+           - One with [1, 0, 3] qualifies (later top-level branch).
+           - One with [0, 0, 3] does not.
+           
+    Parameters:
+      model: A PyTorch model object.
+      activation_layers_to_save: List of full module names (strings) where activations are to be saved.
+      layer_paths_to_damage: List of full module names (strings) where damage is applied.
+      
+    Returns:
+      final_layers_to_hook: A list of activation layer names that should be hooked.
+    """
+    # Define CORnet blocks.
+    cornet_blocks = {"V1", "V2", "V4", "IT"}
+    
+    # Check if any activation layer follows CORnet-style naming (i.e., expects a CORnet block in the 3rd element).
+    use_cornet = any(
+        (len(act.split(".")) > 2 and act.split(".")[2] in cornet_blocks)
+        for act in activation_layers_to_save
+    )
+    
+    if use_cornet:
+        # --- Use CORnet block ordering ---
+        top_level_blocks_in_order = ["V1", "V2", "V4", "IT"]
+        block_order_map = {b: i for i, b in enumerate(top_level_blocks_in_order)}
+        
+        # For damage layers, assume the block name is in the first element.
+        damage_block_indices = []
+        for dmg_path in layer_paths_to_damage:
+            parts = dmg_path.split(".")
+            if parts and parts[0] in block_order_map:
+                damage_block_indices.append(block_order_map[parts[0]])
+        earliest_damage_idx = min(damage_block_indices) if damage_block_indices else 0
+
+        final_layers = []
+        for act_path in activation_layers_to_save:
+            parts = act_path.split(".")
+            # Assume the CORnet block is the third element.
+            if len(parts) > 2 and parts[2] in block_order_map:
+                if block_order_map[parts[2]] >= earliest_damage_idx:
+                    final_layers.append(act_path)
+        return final_layers
+    
+    else:
+        # --- Use hierarchical indexing for feedforward models ---
+        # Build a mapping from full module name to hierarchical index.
+        hierarchy = build_hierarchical_index(model)
+        
+        final_layers = []
+        for act in activation_layers_to_save:
+            act_index = hierarchy.get(act, None)
+            if act_index is None:
+                # The activation layer name was not found in the model.
+                continue
+            # Check against all damage layers.
+            for dmg in layer_paths_to_damage:
+                dmg_index = hierarchy.get(dmg, None)
+                if dmg_index is None:
+                    # The damage layer name was not found in the model.
+                    continue
+                # If the activation layer's index is lexicographically greater than the damage layer's index,
+                # then the activation layer is considered downstream of the damage.
+                if tuple(act_index) > tuple(dmg_index):
+                    final_layers.append(act)
+                    break  # No need to check other damage layers for this activation.
+        return final_layers
