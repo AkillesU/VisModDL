@@ -781,7 +781,7 @@ def run_damage(
     manipulation_method,   # "connections" or "noise"
     mc_permutations,
     layer_name,            # We keep this for naming folders, but we'll also handle multiple layers
-    activation_layers_to_save,  # <--- new list of layers to actually hook
+    activation_layers_to_save,  # <--- list of layers to actually hook
     image_dir,
     only_conv,
     include_bias,
@@ -789,9 +789,9 @@ def run_damage(
 ):
     """
     A merged run_damage that:
-      - Keeps Section 2 & 4 from the original (i.e. time_steps/run_suffix logic + per-image forward pass).
-      - Incorporates earliest-damaged-block logic so we only hook layers that come at or after that block.
-      - Still uses an 'activations' dictionary, updated each time we run a forward pass on a single image.
+      - Keeps  time_steps/run_suffix logic + per-image forward pass.
+      - Incorporates earliest-damaged-block logic so only hook layers that come at or after that block.
+      - Still uses an 'activations' dictionary, updated each time run a forward pass on a single image.
       - Allows hooking multiple layers (activation_layers_to_save).
     """
 
@@ -839,8 +839,13 @@ def run_damage(
         earliest_damage_idx = min(damage_indices)
     else:
         earliest_damage_idx = 0
-
-    # Now filter activation_layers_to_save to keep only those whose top-level block >= earliest_damage_idx
+    
+    if isinstance(activation_layers_to_save, list):
+        model, _ = load_model(model_info, pretrained=pretrained, layer_path=activation_layers_to_save[0])
+    else:
+        model, _ = load_model(model_info, pretrained=pretrained, layer_path=activation_layers_to_save)
+    
+        # Now filter activation_layers_to_save to keep only those whose top-level block >= earliest_damage_idx
     final_layers_to_hook = get_final_layers_to_hook(model,activation_layers_to_save,layer_paths_to_damage)
     
     print("Activations to be saved for ",layer_paths_to_damage, ": ", final_layers_to_hook)
@@ -1015,7 +1020,8 @@ def safe_load_pickle(file_path):
 
 
 def categ_corr_lineplot(
-    layers,
+    damage_layers,
+    activations_layers,
     damage_type,
     main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
     categories=["animal", "face", "object", "place", "total"],
@@ -1041,105 +1047,106 @@ def categ_corr_lineplot(
     data = {}
 
     # -- Loop over each layer to gather data --
-    for layer in layers:
-        # Construct the directory for this layer
-        layer_path = os.path.join(main_dir, damage_type, layer, "selectivity")
-        # Construct output file path to save aggregated Pickle
-        output_path = os.path.join(main_dir, damage_type, layer, "avg_selectivity")
-        os.makedirs(output_path, exist_ok=True)
+    for layer in damage_layers:
+        for activation_layer in activations_layers:
+            # Construct the directory for this layer
+            layer_path = os.path.join(main_dir, damage_type, layer,activation_layer, "selectivity")
+            # Construct output file path to save aggregated Pickle
+            output_path = os.path.join(main_dir, damage_type, layer,activation_layer, "avg_selectivity")
+            os.makedirs(output_path, exist_ok=True)
 
-        if not os.path.isdir(layer_path):
-            # If the path doesn't exist, skip this layer
-            continue
-
-        # Initialize data dict for each (layer, cat) combination
-        for cat in categories:
-            data[(layer, cat)] = {}
-
-        # 1) Loop over all subdirectories in layer_path
-        for subdir_name in os.listdir(layer_path):
-            subdir_path = os.path.join(layer_path, subdir_name)
-            if not os.path.isdir(subdir_path):
+            if not os.path.isdir(layer_path):
+                # If the path doesn't exist, skip this layer
                 continue
 
-            # Extract the numeric portion from the subdirectory name
-            match = re.search(subdir_regex, subdir_name)
-            if not match:
-                continue  # subdir doesn't match, skip it
-
-            fraction_raw = float(match.group(1))
-            fraction_rounded = round(fraction_raw, 3)
-
-            # The aggregated stats file name for this fraction
-            fraction_file_name = f"avg_selectivity_{fraction_rounded}.pkl"
-            fraction_file_path = os.path.join(output_path, fraction_file_name)
-
-            # Check if the aggregated file for this fraction exists
-            if not os.path.exists(fraction_file_path):
-                # If it doesn't exist, we aggregate *all* categories & metrics
-                # found in the .pkl files in this subdirectory.
-                aggregated_data = {}  # aggregated_data[cat][metric] = list of values
-
-                # 2) Look for .pkl files in the subdirectory
-                for fname in os.listdir(subdir_path):
-                    if fname.lower().endswith(".pkl"):
-                        pkl_path = os.path.join(subdir_path, fname)
-                        with open(pkl_path, "rb") as f:
-                            content = pickle.load(f)
-
-                        # Go through every category and metric in this file
-                        # and store them in aggregated_data
-                        if not isinstance(content, dict):
-                            continue
-                        for cat_name, metrics_dict in content.items():
-                            if not isinstance(metrics_dict, dict):
-                                continue
-                            # Initialize if needed
-                            if cat_name not in aggregated_data:
-                                aggregated_data[cat_name] = {}
-                            for metric_name, val in metrics_dict.items():
-                                # Ensure we have a list to accumulate values
-                                aggregated_data[cat_name].setdefault(metric_name, [])
-                                aggregated_data[cat_name][metric_name].append(val)
-
-                # Now compute the mean & std for every category and metric encountered
-                stats_dict = {}
-                for cat_name, metrics_map in aggregated_data.items():
-                    stats_dict[cat_name] = {}
-                    for metric_name, vals_list in metrics_map.items():
-                        if len(vals_list) == 0:
-                            continue
-                        arr = np.array(vals_list, dtype=float)
-                        mean_val = float(np.mean(arr))
-                        std_val = float(np.std(arr))
-                        stats_dict[cat_name][metric_name] = {
-                            "mean": mean_val,
-                            "std": std_val
-                        }
-
-                # Write these aggregated stats to the fraction_file_path
-                with open(fraction_file_path, "wb") as f:
-                    pickle.dump(stats_dict, f)
-
-            aggregated_content = safe_load_pickle(fraction_file_path)
-            """# 3) Now read back the aggregated file (either just written or previously existing)
-            with open(fraction_file_path, "rb") as f:
-                aggregated_content = pickle.load(f)"""
-
-            # 4) For plotting, we only care about the user-specified categories & single metric
-            if not isinstance(aggregated_content, dict):
-                continue
-
+            # Initialize data dict for each (layer, cat) combination
             for cat in categories:
-                if cat in aggregated_content:
-                    # The aggregated file might have multiple metrics; we only use `metric`
-                    if (
-                        isinstance(aggregated_content[cat], dict)
-                        and metric in aggregated_content[cat]
-                    ):
-                        mean_val = aggregated_content[cat][metric]["mean"]
-                        std_val = aggregated_content[cat][metric]["std"]
-                        data[(layer, cat)][fraction_rounded] = (mean_val, std_val)
+                data[(layer, cat)] = {}
+
+            # 1) Loop over all subdirectories in layer_path
+            for subdir_name in os.listdir(layer_path):
+                subdir_path = os.path.join(layer_path, subdir_name)
+                if not os.path.isdir(subdir_path):
+                    continue
+
+                # Extract the numeric portion from the subdirectory name
+                match = re.search(subdir_regex, subdir_name)
+                if not match:
+                    continue  # subdir doesn't match, skip it
+
+                fraction_raw = float(match.group(1))
+                fraction_rounded = round(fraction_raw, 3)
+
+                # The aggregated stats file name for this fraction
+                fraction_file_name = f"avg_selectivity_{fraction_rounded}.pkl"
+                fraction_file_path = os.path.join(output_path, fraction_file_name)
+
+                # Check if the aggregated file for this fraction exists
+                if not os.path.exists(fraction_file_path):
+                    # If it doesn't exist, we aggregate *all* categories & metrics
+                    # found in the .pkl files in this subdirectory.
+                    aggregated_data = {}  # aggregated_data[cat][metric] = list of values
+
+                    # 2) Look for .pkl files in the subdirectory
+                    for fname in os.listdir(subdir_path):
+                        if fname.lower().endswith(".pkl"):
+                            pkl_path = os.path.join(subdir_path, fname)
+                            with open(pkl_path, "rb") as f:
+                                content = pickle.load(f)
+
+                            # Go through every category and metric in this file
+                            # and store them in aggregated_data
+                            if not isinstance(content, dict):
+                                continue
+                            for cat_name, metrics_dict in content.items():
+                                if not isinstance(metrics_dict, dict):
+                                    continue
+                                # Initialize if needed
+                                if cat_name not in aggregated_data:
+                                    aggregated_data[cat_name] = {}
+                                for metric_name, val in metrics_dict.items():
+                                    # Ensure we have a list to accumulate values
+                                    aggregated_data[cat_name].setdefault(metric_name, [])
+                                    aggregated_data[cat_name][metric_name].append(val)
+
+                    # Now compute the mean & std for every category and metric encountered
+                    stats_dict = {}
+                    for cat_name, metrics_map in aggregated_data.items():
+                        stats_dict[cat_name] = {}
+                        for metric_name, vals_list in metrics_map.items():
+                            if len(vals_list) == 0:
+                                continue
+                            arr = np.array(vals_list, dtype=float)
+                            mean_val = float(np.mean(arr))
+                            std_val = float(np.std(arr))
+                            stats_dict[cat_name][metric_name] = {
+                                "mean": mean_val,
+                                "std": std_val
+                            }
+
+                    # Write these aggregated stats to the fraction_file_path
+                    with open(fraction_file_path, "wb") as f:
+                        pickle.dump(stats_dict, f)
+
+                aggregated_content = safe_load_pickle(fraction_file_path)
+                """# 3) Now read back the aggregated file (either just written or previously existing)
+                with open(fraction_file_path, "rb") as f:
+                    aggregated_content = pickle.load(f)"""
+
+                # 4) For plotting, we only care about the user-specified categories & single metric
+                if not isinstance(aggregated_content, dict):
+                    continue
+
+                for cat in categories:
+                    if cat in aggregated_content:
+                        # The aggregated file might have multiple metrics; we only use `metric`
+                        if (
+                            isinstance(aggregated_content[cat], dict)
+                            and metric in aggregated_content[cat]
+                        ):
+                            mean_val = aggregated_content[cat][metric]["mean"]
+                            std_val = aggregated_content[cat][metric]["std"]
+                            data[(layer, cat)][fraction_rounded] = (mean_val, std_val)
 
     # 5) Prepare a single figure with one line per (layer, category)
     plt.figure(figsize=(8, 6))
@@ -1185,7 +1192,7 @@ def categ_corr_lineplot(
     # Build a unique plot name
     model_name = main_dir.split("/")[-2] # Assuming that there is a slash after the model name ("/cornet/")
     plot_name = f"{model_name}_lineplot_{damage_type}"
-    for layer in layers:
+    for layer in damage_layers:
         plot_name += f"_{layer}"
     for category in categories:
         plot_name += f"_{category[0]}"
