@@ -842,13 +842,8 @@ def run_damage(
 
     # Now filter activation_layers_to_save to keep only those whose top-level block >= earliest_damage_idx
     final_layers_to_hook = get_final_layers_to_hook(model,activation_layers_to_save,layer_paths_to_damage)
-    for act_path in activation_layers_to_save:
-        print(act_path)
-        top_block_act = act_path.split(".")[2]
-        if top_block_act in block_order_map:
-            if block_order_map[top_block_act] >= earliest_damage_idx:
-                final_layers_to_hook.append(act_path)
-    print(final_layers_to_hook)
+    
+    print("Activations to be saved for ",layer_paths_to_damage, ": ", final_layers_to_hook)
     # If final_layers_to_hook is empty, we won't really collect multi-layer activations,
     # but we keep 'layer_name' for the old directory naming logic.
 
@@ -941,7 +936,6 @@ def run_damage(
 
                     reduced_df = activations_df_sorted.astype(np.float16)
                     reduced_df.to_pickle(activation_dir_path)
-                    print("Activations saved to: ", activation_dir_path)
 
                     # compute correlation matrix
                     correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
