@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import torch
 import numpy as np
@@ -14,6 +14,11 @@ from tqdm import tqdm
 import math
 import torch.nn as nn
 import pickle
+from joblib import Parallel, delayed
+from sklearn.preprocessing import RobustScaler
+from sklearn.svm import SVC
+from itertools import combinations, product
+
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -2474,3 +2479,218 @@ def get_final_layers_to_hook(model, activation_layers_to_save, layer_paths_to_da
                 final_layers.append(orig_act)
                 break  # No need to check further if it qualifies for one damage layer.
     return final_layers
+
+
+def run_svm_split(train_indices1, test_indices1,
+                                      train_indices2, test_indices2,
+                                      activations1, activations2):
+    """
+    Train and test SVM on the specific split using pre-scaled activations.
+    Returns the test accuracy.
+    """
+    X_train = np.concatenate((activations1[np.array(train_indices1)],
+                              activations2[np.array(train_indices2)]))
+    y_train = np.concatenate((np.zeros(len(train_indices1), dtype=np.int64),
+                              np.ones(len(train_indices2), dtype=np.int64)))
+
+    X_test = np.concatenate((activations1[np.array(test_indices1)],
+                             activations2[np.array(test_indices2)]))
+    y_test = np.concatenate((np.zeros(len(test_indices1), dtype=np.int64),
+                             np.ones(len(test_indices2), dtype=np.int64)))
+
+    # Train SVM with a linear kernel
+    clf = SVC(kernel="linear", random_state=42)
+    clf.fit(X_train, y_train)
+
+    preds_test = clf.predict(X_test)
+    accuracy_test = np.mean(preds_test == y_test)
+    return accuracy_test
+
+
+def svm_process_split(train_idx1, train_idx2,
+                  test_combinations1, test_combinations2,
+                  act1_scaled, act2_scaled):
+    """
+    For a given pair of training indices, find the corresponding test indices
+    and run the SVM, returning the test accuracy.
+    """
+    test_idx1 = test_combinations1[train_idx1]
+    test_idx2 = test_combinations2[train_idx2]
+    return run_svm_split(train_idx1, test_idx1,
+                                             train_idx2, test_idx2,
+                                             act1_scaled, act2_scaled)
+
+
+def svm_process_file(pkl_file, training_samples=[15], clip_val=1e6):
+    """
+    Load a .pkl file of activations (with 4 categories × 16 examples each = 64 rows),
+    run SVM classification for all permutations in each category pair, and return
+    a DataFrame with one row per SVM run.
+
+    Columns are the 6 category pairs (e.g., 'animal_vs_face', ...),
+    each containing the accuracy for that run.
+
+    If multiple training sample sizes are used, you’ll see a repeated block of rows
+    for each 'n_train' with an added 'n_train' column.
+    
+    Returns:
+        pd.DataFrame  (one row per SVM permutation, columns = each category pair + 'n_train')
+        or None if file is invalid (too few rows).
+    """
+    df = pd.read_pickle(pkl_file)
+    # Drop any leftover columns like 'numeric_index'
+    df = df.drop("numeric_index", axis=1, errors="ignore")
+    df.columns = df.columns.astype(str)
+
+    if len(df) < 64:
+        return None  # Not enough data
+
+    # Extract the four categories (16 rows each)
+    cat1 = df.iloc[0:16].to_numpy()
+    cat2 = df.iloc[16:32].to_numpy()
+    cat3 = df.iloc[32:48].to_numpy()
+    cat4 = df.iloc[48:64].to_numpy()
+    categories = {
+        "animal": cat1,
+        "face":   cat2,
+        "scene":  cat3,
+        "object": cat4
+    }
+
+    # Clip raw activations to avoid extremes
+    for key in categories:
+        categories[key] = np.clip(categories[key], -clip_val, clip_val)
+
+    # Build a list of the 6 pairs
+    pairs = list(combinations(categories.keys(), 2))
+
+    # We'll gather results in a DataFrame with columns for each pair
+    # + an optional "n_train" column if multiple training sizes are used.
+    all_rows = []
+
+
+    # We'll gather accuracy arrays for each pair
+    pair_to_accuracies = {f"{p[0]}_vs_{p[1]}": [] for p in pairs}
+
+    # The final number of permutations for each pair should be consistent
+    # if each category has exactly 16 items.
+
+    for (name1, name2) in pairs:
+        act1 = categories[name1]
+        act2 = categories[name2]
+
+        # Combine and scale
+        combined = np.concatenate((act1, act2), axis=0)
+        scaler = RobustScaler()
+        scaler.fit(combined)
+
+        # Avoid dividing by zero for extremely small scale
+        min_epsilon = 1e-6
+        scaler.scale_[scaler.scale_ < min_epsilon] = min_epsilon
+
+        act1_scaled = scaler.transform(act1)
+        act2_scaled = scaler.transform(act2)
+
+        # Replace NaNs/infs
+        act1_scaled = np.clip(
+            np.nan_to_num(act1_scaled, nan=0.0, posinf=clip_val, neginf=-clip_val),
+            -clip_val, clip_val
+        )
+        act2_scaled = np.clip(
+            np.nan_to_num(act2_scaled, nan=0.0, posinf=clip_val, neginf=-clip_val),
+            -clip_val, clip_val
+        )
+
+        # Generate all train/test splits
+        indices = np.arange(16)
+        train_combinations1 = list(combinations(indices, training_samples))
+        train_combinations2 = list(combinations(indices, training_samples))
+
+        test_combinations1 = {
+            train: tuple(np.setdiff1d(indices, train))
+            for train in train_combinations1
+        }
+        test_combinations2 = {
+            train: tuple(np.setdiff1d(indices, train))
+            for train in train_combinations2
+        }
+        total_runs=len(test_combinations1)*len(test_combinations2)
+
+        splits = list(product(train_combinations1, train_combinations2))
+
+        # Run parallel
+        results = Parallel(n_jobs=-1)(
+            delayed(svm_process_split)(
+                train_idx1, train_idx2,
+                test_combinations1, test_combinations2,
+                act1_scaled, act2_scaled
+            )
+            for (train_idx1, train_idx2) in splits
+        )
+
+        pair_key = f"{name1}_vs_{name2}"
+        pair_to_accuracies[pair_key] = results
+
+    # Now we combine the results for this n_train into a DataFrame
+    # Each pair is a column, each row is one SVM permutation index.
+    # If each pair has the same number of runs (which it should, given 16 images each),
+    # we can simply index them by the same row numbers.
+
+    # Find how many runs each pair has
+    num_runs = len(next(iter(pair_to_accuracies.values())))  # e.g. 256
+
+    # Build a dict of columns
+    data_dict = {pair: pair_to_accuracies[pair] for pair in pair_to_accuracies}
+    # Also track n_train so we know which training size these runs are from
+
+    # Convert to DataFrame
+    df_runs = pd.DataFrame(data_dict)
+    all_rows.append(df_runs)
+
+    # Concatenate all training sizes
+    if all_rows:
+        return pd.concat(all_rows, ignore_index=True)
+    else:
+        return None
+
+
+def svm_process_directory(parent_dir, training_samples=15):
+    """
+    Recursively walk through parent_dir and find all .pkl files under any folder
+    that is part of an 'activations' hierarchy. For each file, process it and save
+    the resulting DataFrame in a mirrored directory structure under a folder named
+    'svm_{training_samples}'.
+
+    A progress bar (tqdm) shows the total number of pickle files processed.
+    """
+    # First, gather all pickle files from any folder that includes 'activations' in its path.
+    pkl_file_paths = []
+    for root, dirs, files in os.walk(parent_dir):
+        # Use a check that 'activations' appears anywhere in the path.
+        if "activations" in root.split(os.sep):
+            for fname in files:
+                if fname.lower().endswith(".pkl"):
+                    pkl_file_paths.append((root, fname))
+
+    # Process each file with a progress bar.
+    for root, fname in tqdm(pkl_file_paths, desc="Processing PKL files", total=len(pkl_file_paths)):
+        in_path = os.path.join(root, fname)
+        # Determine the output path by mirroring the structure.
+        # Find the first occurrence of "activations" in the path.
+        parts = os.path.normpath(root).split(os.sep)
+        try:
+            idx = parts.index("activations")
+        except ValueError:
+            continue  # Should not happen because of the earlier check.
+        # Build the relative path from the 'activations' folder.
+        activations_folder = os.path.join(*parts[:idx+1])
+        rel_path = os.path.relpath(in_path, activations_folder)
+        # The output directory replaces 'activations' with 'svm_{training_samples}'
+        out_dir = os.path.join(os.path.dirname(activations_folder), f"svm_{training_samples}")
+        out_path = os.path.join(out_dir, rel_path)
+
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        df_result = svm_process_file(in_path, training_samples=training_samples)
+        if df_result is not None:
+            df_result.to_pickle(out_path)
+            
