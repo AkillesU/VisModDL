@@ -2654,43 +2654,69 @@ def svm_process_file(pkl_file, training_samples=[15], clip_val=1e6):
         return None
 
 
-def svm_process_directory(parent_dir, training_samples=15):
+def svm_process_directory(parent_dir, training_samples=15, allowed_subdirs=None):
     """
-    Recursively walk through parent_dir and find all .pkl files under any folder
-    that is part of an 'activations' hierarchy. For each file, process it and save
-    the resulting DataFrame in a mirrored directory structure under a folder named
-    'svm_{training_samples}'.
+    Recursively walk through parent_dir. For any folder whose path
+    includes "activations", we check the next directory after "activations"
+    and only process it if it's in allowed_subdirs (if provided).
 
-    A progress bar (tqdm) shows the total number of pickle files processed.
+    - parent_dir: the root directory to start searching
+    - training_samples: number of training samples per category
+    - allowed_subdirs: optional list of subdirectory names to process
+        e.g. ["V1", "IT"]. If None or empty, we process all subdirectories.
+
+    We then gather all .pkl files in these valid subdirectories,
+    run SVM permutations, and save results under a mirrored "svm_{training_samples}/"
+    folder.
     """
-    # First, gather all pickle files from any folder that includes 'activations' in its path.
+    if allowed_subdirs is None:
+        allowed_subdirs = []  # means "no filtering"
+
+    # We'll collect all files that pass the subdir filter in this list
     pkl_file_paths = []
+
     for root, dirs, files in os.walk(parent_dir):
-        # Use a check that 'activations' appears anywhere in the path.
+        # Check if "activations" is in the path
         if "activations" in root.split(os.sep):
+            # Figure out the subdirectory immediately after "activations"
+            parts = root.split(os.sep)
+            try:
+                idx = parts.index("activations")
+            except ValueError:
+                continue  # Shouldn't happen if "activations" is in path
+
+            # subfolders after 'activations'
+            subfolders_after_activations = parts[idx+1:]  # might be ["V1", "subsubdir"] if root is "parent/activations/V1/subsubdir"
+
+            # If there's at least one subfolder after "activations",
+            # we check whether subfolders_after_activations[0] is in allowed_subdirs.
+            # If allowed_subdirs is empty, we skip the filter (process everything).
+            if allowed_subdirs:
+                if not subfolders_after_activations or subfolders_after_activations[0] not in allowed_subdirs:
+                    # skip this directory
+                    continue
+
+            # If we reach here, it means we're either not filtering,
+            # or the subdirectory is in allowed_subdirs.
+            # Collect .pkl files
             for fname in files:
                 if fname.lower().endswith(".pkl"):
                     pkl_file_paths.append((root, fname))
 
-    # Process each file with a progress bar.
+    # Now process each file with a progress bar
+    from tqdm import tqdm
     for root, fname in tqdm(pkl_file_paths, desc="Processing PKL files", total=len(pkl_file_paths)):
         in_path = os.path.join(root, fname)
-        # Determine the output path by mirroring the structure.
-        # Find the first occurrence of "activations" in the path.
-        parts = os.path.normpath(root).split(os.sep)
-        try:
-            idx = parts.index("activations")
-        except ValueError:
-            continue  # Should not happen because of the earlier check.
-        # Build the relative path from the 'activations' folder.
+        # Mirror structure by replacing "activations" with "svm_{training_samples}"
+        parts = root.split(os.sep)
+        idx = parts.index("activations")
         activations_folder = os.path.join(*parts[:idx+1])
         rel_path = os.path.relpath(in_path, activations_folder)
-        # The output directory replaces 'activations' with 'svm_{training_samples}'
-        out_dir = os.path.join(os.path.dirname(activations_folder), f"svm_{training_samples}")
-        out_path = os.path.join(out_dir, rel_path)
+
+        svm_dir = os.path.join(os.path.dirname(activations_folder), f"svm_{training_samples}")
+        out_path = os.path.join(svm_dir, rel_path)
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         df_result = svm_process_file(in_path, training_samples=training_samples)
         if df_result is not None:
             df_result.to_pickle(out_path)
-            

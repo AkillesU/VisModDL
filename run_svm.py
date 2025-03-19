@@ -8,8 +8,9 @@ def main(config_path):
 
     parent_dir = config["parent_dir"]
     training_samples = config["training_samples"]
+    activation_layers = config["activation_layers"]
 
-    svm_process_directory(parent_dir, training_samples=training_samples)
+    svm_process_directory(parent_dir, training_samples=training_samples, allowed_subdirs=activation_layers)
 
 
 if __name__ == "__main__":

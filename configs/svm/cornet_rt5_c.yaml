@@ -1,2 +1,4 @@
 training_samples: 15
 parent_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c"
+activation_layers:
+ - "IT"
