@@ -2616,11 +2616,12 @@ def svm_process_file(pkl_file, training_samples=15, clip_val=1e6, max_permutatio
 
             all_data.append((X_train, y_train, X_test, y_test))
 
-        # Now do a single parallel call for all permutations in this pair
-        results = Parallel(n_jobs=2)(
+        # Remove parallel processing for now
+        """results = Parallel(n_jobs=1)(
             delayed(train_and_test_svm_arrays)(X_train, y_train, X_test, y_test)
             for (X_train, y_train, X_test, y_test) in all_data
-        )
+        )"""
+        results = (train_and_test_svm_arrays(X_train, y_train, X_test, y_test) for (X_train, y_train, X_test, y_test) in all_data)
 
         pair_key = f"{name1}_vs_{name2}"
         pair_to_accuracies[pair_key] = results
