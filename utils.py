@@ -2563,7 +2563,8 @@ def svm_process_file(pkl_file, training_samples=15, clip_val=1e6, max_permutatio
         act1 = categories[name1]
         act2 = categories[name2]
 
-        # Fit RobustScaler once for the combined data of this pair
+        # Removed Scaler fitting for now
+        """# Fit RobustScaler once for the combined data of this pair
         combined = np.concatenate((act1, act2), axis=0)
         scaler = StandardScaler()
         scaler.fit(combined)
@@ -2571,14 +2572,14 @@ def svm_process_file(pkl_file, training_samples=15, clip_val=1e6, max_permutatio
         scaler.scale_[scaler.scale_ < min_epsilon] = min_epsilon
 
         act1_scaled = scaler.transform(act1)
-        act2_scaled = scaler.transform(act2)
+        act2_scaled = scaler.transform(act2)"""
 
         act1_scaled = np.clip(
-            np.nan_to_num(act1_scaled, nan=0.0, posinf=clip_val, neginf=-clip_val),
+            np.nan_to_num(act1, nan=0.0, posinf=clip_val, neginf=-clip_val),
             -clip_val, clip_val
         )
         act2_scaled = np.clip(
-            np.nan_to_num(act2_scaled, nan=0.0, posinf=clip_val, neginf=-clip_val),
+            np.nan_to_num(act2, nan=0.0, posinf=clip_val, neginf=-clip_val),
             -clip_val, clip_val
         )
 
