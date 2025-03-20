@@ -1033,38 +1033,53 @@ def categ_corr_lineplot(
     metric="observed_difference",
     subdir_regex=r"damaged_([\d\.]+)$",
     plot_dir="plots/",
-    verbose=0 # 0 or 1
+    data_type="selectivity",  # <-- NEW: either "selectivity" or "svm"
+    verbose=0  # 0 or 1
 ):
     """
-    1. For each damage layer in `damage_layers` and each activation layer in `activations_layers`, 
-       build the directory path:
-         {main_dir}{damage_type}/{layer}/selectivity/{activation_layer}/
-    2. In that directory, for each subdirectory matching subdir_regex (e.g. "damaged_0.1"),
-       parse the numeric fraction (e.g., 0.1).
-    3. If an aggregated stats file "avg_selectivity_{fraction}.pkl" does not exist for
-       that fraction, compute *all* categories & metrics found in the raw .pkl files.
-       Save them to "avg_selectivity_{fraction}.pkl".
-    4. For plotting, read back those aggregated stats, but only use the specified
-       `categories` and single `metric` to populate `data[(layer, activation_layer, cat)]`.
-    5. Plot them on a single figure, with one line per (layer, activation_layer, category).
+    If data_type == "selectivity":
+        - Uses existing selectivity logic, with subdirectories containing pickled
+          dictionaries of category->metric->value
+        - Summarizes multiple .pkl files into an aggregated "avg_selectivity_{fraction}.pkl"
+        - For each specified category + metric, collects mean+std.
+
+    If data_type == "svm":
+        - Expects subdirectories containing pickled Pandas DataFrames with columns like
+          'animal_vs_face', 'object_vs_scene', etc. Each row is one permutation.
+        - Summarizes multiple .pkl files into an aggregated "avg_svm_{fraction}.pkl"
+        - For each specified category, finds all columns containing that category's name
+          (or averages *all* columns if category == "total"), then computes mean+std across
+          all permutations/columns.
     """
 
     # data[(layer, activation_layer, category)] -> { fraction_value : (mean, std) }
     data = {}
 
+    # --- Decide subdirectory for data_type ---
+    # For "selectivity": path ends with /selectivity/{activation_layer}
+    # For "svm": path ends with /svm/{activation_layer}
+    data_subfolder = data_type # Get data subfolder based on data_type. Requires n_training extension on svm
+
+    # A small helper to get the aggregator filename
+    # e.g. "avg_selectivity_0.1.pkl" or "avg_svm_0.1.pkl"
+    def get_aggregated_filename(fraction_rounded):
+        return f"avg_{data_type}_{fraction_rounded}.pkl"
+
     # -- Loop over each damage layer and activation layer to gather data --
     for layer in damage_layers:
         for activation_layer in activations_layers:
-            # Construct the directory for this combination
-            layer_path = os.path.join(main_dir, damage_type, layer, "selectivity", activation_layer)
+            # Construct the directory for this combination, depending on data_type
+            layer_path = os.path.join(main_dir, damage_type, layer, data_subfolder, activation_layer)
 
             if not os.path.isdir(layer_path):
                 # If the path doesn't exist, skip
                 continue
+
             # Construct output file path to save aggregated data
-            output_path = os.path.join(main_dir, damage_type, layer, "avg_selectivity", activation_layer)
+            output_path = os.path.join(main_dir, damage_type, layer, f"avg_{data_type}", activation_layer)
             os.makedirs(output_path, exist_ok=True)
-            # Initialize data dict for each (layer, activation_layer, cat) combination
+
+            # Initialize data dict for each (layer, activation_layer, cat)
             for cat in categories:
                 data[(layer, activation_layer, cat)] = {}
 
@@ -1083,108 +1098,173 @@ def categ_corr_lineplot(
                 fraction_rounded = round(fraction_raw, 3)
 
                 # The aggregated stats file name for this fraction
-                fraction_file_name = f"avg_selectivity_{fraction_rounded}.pkl"
+                fraction_file_name = get_aggregated_filename(fraction_rounded)
                 fraction_file_path = os.path.join(output_path, fraction_file_name)
 
-                # Check if the aggregated file for this fraction exists
+                # 2) If no aggregated file yet, we compute it from scratch
                 if not os.path.exists(fraction_file_path):
-                    # If it doesn't exist, we aggregate *all* categories & metrics
-                    # found in the .pkl files in this subdirectory.
-                    aggregated_data = {}  # aggregated_data[cat][metric] = list of values
+                    aggregated_data = {}  # final structure to pickle
 
-                    # 2) Look for .pkl files in the subdirectory
-                    for fname in os.listdir(subdir_path):
-                        if fname.lower().endswith(".pkl"):
-                            pkl_path = os.path.join(subdir_path, fname)
-                            with open(pkl_path, "rb") as f:
-                                content = pickle.load(f)
+                    # If we're in "selectivity" mode, each .pkl is a dict of
+                    # {category: {metric: value}}. We want to gather them all and do average+std.
+                    if data_type == "selectivity":
+                        # aggregated_data[cat_name][metric_name] = list of values
+                        tmp_storage = {}
 
-                            # Go through every category and metric in this file
-                            # and store them in aggregated_data
-                            if not isinstance(content, dict):
-                                continue
-                            for cat_name, metrics_dict in content.items():
-                                if not isinstance(metrics_dict, dict):
+                        for fname in os.listdir(subdir_path):
+                            if fname.lower().endswith(".pkl"):
+                                pkl_path = os.path.join(subdir_path, fname)
+                                with open(pkl_path, "rb") as f:
+                                    content = pickle.load(f)
+
+                                # Go through every category and metric in this file
+                                # and store them in tmp_storage
+                                if not isinstance(content, dict):
                                     continue
-                                # Initialize if needed
-                                if cat_name not in aggregated_data:
-                                    aggregated_data[cat_name] = {}
-                                for metric_name, val in metrics_dict.items():
-                                    # Ensure we have a list to accumulate values
-                                    aggregated_data[cat_name].setdefault(metric_name, [])
-                                    aggregated_data[cat_name][metric_name].append(val)
+                                for cat_name, metrics_dict in content.items():
+                                    if not isinstance(metrics_dict, dict):
+                                        continue
+                                    # Initialize if needed
+                                    if cat_name not in tmp_storage:
+                                        tmp_storage[cat_name] = {}
+                                    for metric_name, val in metrics_dict.items():
+                                        tmp_storage[cat_name].setdefault(metric_name, [])
+                                        tmp_storage[cat_name][metric_name].append(val)
 
-                    # Now compute the mean & std for every category and metric encountered
-                    stats_dict = {}
-                    for cat_name, metrics_map in aggregated_data.items():
-                        stats_dict[cat_name] = {}
-                        for metric_name, vals_list in metrics_map.items():
-                            if len(vals_list) == 0:
+                        # Now compute the mean & std for every category and metric
+                        for cat_name, metrics_map in tmp_storage.items():
+                            if cat_name not in aggregated_data:
+                                aggregated_data[cat_name] = {}
+                            for metric_name, vals_list in metrics_map.items():
+                                arr = np.array(vals_list, dtype=float)
+                                mean_val = float(np.mean(arr))
+                                std_val = float(np.std(arr))
+                                aggregated_data[cat_name][metric_name] = {
+                                    "mean": mean_val,
+                                    "std": std_val
+                                }
+
+                    # If we're in "svm" mode, each .pkl is a pandas DataFrame of shape (n_permutations, n_columns).
+                    # The columns are things like "animal_vs_face", "object_vs_scene", etc.
+                    else:
+                        # aggregated_data[cat_name] = {"mean": ..., "std": ...}
+                        # We'll accumulate raw data in lists for each cat_name we eventually want
+                        cat_tmp = {cat: [] for cat in categories}  # each cat -> list of values
+
+                        for fname in os.listdir(subdir_path):
+                            if fname.lower().endswith(".pkl"):
+                                pkl_path = os.path.join(subdir_path, fname)
+                                df = pd.read_pickle(pkl_path)
+                                # df is shape (n_permutations, n_columns)
+
+                                # For each category we want, we gather the relevant columns
+                                # Then flatten across permutations. E.g. if category == "animal",
+                                # we find all columns containing "animal". If "total", we use all columns.
+                                for cat_name in categories:
+                                    if cat_name == "total":
+                                        # Use all columns
+                                        cols = df.columns
+                                    else:
+                                        # Use columns that contain this category name
+                                        cols = [c for c in df.columns if cat_name in c]
+
+                                    if len(cols) == 0:
+                                        # No columns matched
+                                        continue
+
+                                    # Flatten out all permutations from these columns
+                                    vals = df[cols].values.flatten()
+                                    cat_tmp[cat_name].extend(vals.tolist())
+
+                        # Now compute the mean & std for each category
+                        for cat_name, all_vals in cat_tmp.items():
+                            if len(all_vals) == 0:
                                 continue
-                            arr = np.array(vals_list, dtype=float)
+                            arr = np.array(all_vals, dtype=float)
                             mean_val = float(np.mean(arr))
                             std_val = float(np.std(arr))
-                            stats_dict[cat_name][metric_name] = {
+                            if cat_name not in aggregated_data:
+                                aggregated_data[cat_name] = {}
+                            # We'll store them under a single key, e.g. "score"
+                            aggregated_data[cat_name]["score"] = {
                                 "mean": mean_val,
                                 "std": std_val
                             }
 
-                    # Write these aggregated stats to the fraction_file_path
+                    # Write aggregated_data to fraction_file_path
                     with open(fraction_file_path, "wb") as f:
-                        pickle.dump(stats_dict, f)
+                        pickle.dump(aggregated_data, f)
 
+                # 3) Load the aggregated stats
                 aggregated_content = safe_load_pickle(fraction_file_path)
 
-                # 4) For plotting, we only care about the user-specified categories & single metric
                 if not isinstance(aggregated_content, dict):
                     continue
 
+                # 4) For each requested category, store mean & std in `data`
                 for cat in categories:
                     if cat in aggregated_content:
-                        # The aggregated file might have multiple metrics; we only use `metric`
-                        if (
-                            isinstance(aggregated_content[cat], dict)
-                            and metric in aggregated_content[cat]
-                        ):
-                            mean_val = aggregated_content[cat][metric]["mean"]
-                            std_val = aggregated_content[cat][metric]["std"]
-                            data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val)
+                        # For selectivity, we want aggregated_content[cat][metric]
+                        # For svm, we want aggregated_content[cat]["score"]
+                        if data_type == "selectivity":
+                            # Must have aggregated_content[cat][metric]
+                            if isinstance(aggregated_content[cat], dict) and metric in aggregated_content[cat]:
+                                mean_val = aggregated_content[cat][metric]["mean"]
+                                std_val = aggregated_content[cat][metric]["std"]
+                                data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val)
+
+                        else:
+                            # data_type == "svm" -> key is "score"
+                            if "score" in aggregated_content[cat]:
+                                mean_val = aggregated_content[cat]["score"]["mean"]
+                                std_val = aggregated_content[cat]["score"]["std"]
+                                data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val)
 
     # 5) Prepare a single figure with one line per (layer, activation_layer, category)
     plt.figure(figsize=(8, 6))
 
     for (layer, activation_layer, cat), fraction_dict in data.items():
         if len(fraction_dict) == 0:
-            # This (layer, activation_layer, category) had no data at all
+            # This (layer, activation_layer, category) had no data
             continue
 
-        # Sort the fractions in ascending order
+        # Sort fractions in ascending order
         fractions_sorted = sorted(fraction_dict.keys())
 
         x_vals = []
         y_means = []
-        y_stds = []
+        y_errs = []
 
-        # Extract the (mean, std) directly
         for frac in fractions_sorted:
             mean_val, std_val = fraction_dict[frac]
             x_vals.append(frac)
             y_means.append(mean_val)
-            y_stds.append(std_val)
+            # For 95% CI, use 1.96 * std
+            y_errs.append(std_val * 1.96)
 
-        # Plot error bars for this (layer, activation_layer, category)
+        if data_type == "selectivity":
+            label_str = f"{layer} - {activation_layer} - {cat} ({metric})"
+        else:
+            label_str = f"{layer} - {activation_layer} - {cat} (svm)"
+
         plt.errorbar(
-            x_vals, 
-            y_means, 
-            yerr=y_stds, 
-            fmt='-o', 
-            capsize=4, 
-            label=f"{layer} - {activation_layer} - {cat} ({metric})"
+            x_vals,
+            y_means,
+            yerr=y_errs,
+            fmt='-o',
+            capsize=4,
+            label=label_str
         )
 
+    # Set labels and title
     plt.xlabel("Damage Parameter Value")
-    plt.ylabel(metric)
-    plt.title("Correlation metric across damage parameter values")
+    if data_type == "selectivity":
+        plt.ylabel(metric)
+        plt.title("Selectivity metric across damage parameter values")
+    else:
+        plt.ylabel("Classification Accuracy")
+        plt.title("SVM classification across damage parameter values")
+
     plt.legend()
     plt.tight_layout()
 
@@ -1192,17 +1272,19 @@ def categ_corr_lineplot(
     os.makedirs(plot_dir, exist_ok=True)
 
     # Build a unique plot name
-    model_name = main_dir.split("/")[-2]  # Attempt to extract model name from main_dir
-    plot_name = f"{model_name}_lineplot_{damage_type}"
+    model_name = main_dir.strip("/").split("/")[-1]  # Attempt to extract model name
+    plot_name = f"{model_name}_{data_type}_lineplot_{damage_type}"
     for layer in damage_layers:
         plot_name += f"_{layer}"
-    plot_name += f"-"
     for activation_layer in activations_layers:
         plot_name += f"_{activation_layer}"
     for category in categories:
-        # e.g., add "a" for "animal", "f" for "face", etc.
+        # e.g., add "a" for "animal", "f" for "face", ...
         plot_name += f"_{category[0]}"
-    plot_name += f"_{metric}.png"
+    # Add metric if selectivity, otherwise no
+    if data_type == "selectivity":
+        plot_name += f"_{metric}"
+    plot_name += ".png"
 
     save_path = os.path.join(plot_dir, plot_name)
 
@@ -1213,9 +1295,9 @@ def categ_corr_lineplot(
         plt.show()
     elif verbose == 0:
         plt.savefig(save_path, dpi=500)
+        plt.show()
     else:
         raise ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
-
 
 
 def plot_avg_corr_mat(
