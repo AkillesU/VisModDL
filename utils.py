@@ -1039,17 +1039,17 @@ def categ_corr_lineplot(
     """
     If data_type == "selectivity":
         - Expects subdirectories with pickled dictionaries (one value per file per category/metric).
-        - Aggregates file-level averages by computing the mean and std across files.
+        - Aggregates file-level averages by computing the mean, std and sample size across files.
         
     If data_type starts with "svm":
         - Expects subdirectories with pickled Pandas DataFrames (each file has several rows).
         - For each file, computes the average for the relevant columns (or all columns if "total").
         - For each category (except "total"), it searches for columns that contain the category string.
-        - **Always** aggregates averages for all SVM categories: "animal", "face", "object", "scene", and "total".
-          This way, even if a run only requests a subset (e.g., ["total"]), the averaged file contains all.
+        - Always aggregates averages for all SVM categories: "animal", "face", "object", "scene", and "total".
+          The aggregated stats include the mean, std, and n, so that 95% CI = 1.96*std/sqrt(n).
     """
 
-    # data[(layer, activation_layer, category)] -> { fraction_value : (mean, std) }
+    # data[(layer, activation_layer, category)] -> { fraction_value : (mean, std, n) }
     data = {}
 
     # For folder naming, use data_type as given.
@@ -1115,7 +1115,7 @@ def categ_corr_lineplot(
                                     for metric_name, val in metrics_dict.items():
                                         tmp_storage[cat_name].setdefault(metric_name, [])
                                         tmp_storage[cat_name][metric_name].append(val)
-                        # Compute mean and std across files (each file's value)
+                        # Compute mean, std, and n across files (each file's value)
                         for cat_name, metrics_map in tmp_storage.items():
                             if cat_name not in aggregated_data:
                                 aggregated_data[cat_name] = {}
@@ -1126,12 +1126,12 @@ def categ_corr_lineplot(
                                 n_val = len(vals_list)
                                 aggregated_data[cat_name][metric_name] = {
                                     "mean": mean_val,
-                                    "std": std_val
+                                    "std": std_val,
+                                    "n": n_val
                                 }
 
                     else:
                         # For svm, we want to compute for all SVM categories even if not requested.
-                        # Define the full set for SVM data.
                         svm_categories = ["animal", "face", "object", "scene", "total"]
                         cat_tmp = {cat: [] for cat in svm_categories}
                         for fname in os.listdir(subdir_path):
@@ -1150,7 +1150,7 @@ def categ_corr_lineplot(
                                     # Compute the average for this file (across all rows and selected columns)
                                     file_avg = df[cols].values.mean()
                                     cat_tmp[cat_name].append(file_avg)
-                        # Compute aggregated mean and std of file-level averages
+                        # Compute aggregated mean, std and n of file-level averages
                         for cat_name, all_vals in cat_tmp.items():
                             if len(all_vals) == 0:
                                 continue
@@ -1158,7 +1158,7 @@ def categ_corr_lineplot(
                             mean_val = float(np.mean(arr))
                             std_val = float(np.std(arr))
                             n_val = len(all_vals)
-                            aggregated_data[cat_name] = {"score": {"mean": mean_val, "std": std_val}}
+                            aggregated_data[cat_name] = {"score": {"mean": mean_val, "std": std_val, "n": n_val}}
 
                     # Save the aggregated stats to file
                     with open(fraction_file_path, "wb") as f:
@@ -1168,21 +1168,25 @@ def categ_corr_lineplot(
                 if not isinstance(aggregated_content, dict):
                     continue
 
-                # For each requested category (from the function argument), store mean & std in data dictionary.
+                # For each requested category, store (mean, std, n) in data dictionary.
                 for cat in categories:
                     if cat in aggregated_content:
                         if data_type == "selectivity":
-                            if isinstance(aggregated_content[cat], dict) and metric in aggregated_content[cat]:
+                            if (isinstance(aggregated_content[cat], dict) and 
+                                metric in aggregated_content[cat] and 
+                                "n" in aggregated_content[cat][metric]):
                                 mean_val = aggregated_content[cat][metric]["mean"]
                                 std_val = aggregated_content[cat][metric]["std"]
-                                data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val)
+                                n_val = aggregated_content[cat][metric]["n"]
+                                data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val, n_val)
                         else:
-                            if "score" in aggregated_content[cat]:
+                            if "score" in aggregated_content[cat] and "n" in aggregated_content[cat]["score"]:
                                 mean_val = aggregated_content[cat]["score"]["mean"]
                                 std_val = aggregated_content[cat]["score"]["std"]
-                                data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val)
+                                n_val = aggregated_content[cat]["score"]["n"]
+                                data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val, n_val)
 
-    # Prepare a single figure with one line per (layer, activation_layer, category)
+    # Plot the data: one line per (layer, activation_layer, category)
     plt.figure(figsize=(8, 6))
     for (layer, activation_layer, cat), fraction_dict in data.items():
         if len(fraction_dict) == 0:
@@ -1192,10 +1196,12 @@ def categ_corr_lineplot(
         y_means = []
         y_errs = []
         for frac in fractions_sorted:
-            mean_val, std_val = fraction_dict[frac]
+            mean_val, std_val, n_val = fraction_dict[frac]
             x_vals.append(frac)
             y_means.append(mean_val)
-            y_errs.append(std_val / np.sqrt(n_val))* 1.96 if n_val > 0 else 0  # 95% confidence interval
+            # Compute 95% CI: 1.96 * (std / sqrt(n))
+            ci = 1.96 * (std_val / np.sqrt(n_val)) if n_val > 0 else 0
+            y_errs.append(ci)
         if data_type == "selectivity":
             label_str = f"{layer} - {activation_layer} - {cat} ({metric})"
         else:
@@ -1236,7 +1242,6 @@ def categ_corr_lineplot(
         plt.show()
     else:
         raise ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
-
 
 def plot_avg_corr_mat(
     layers,
