@@ -24,6 +24,24 @@ tasks:
       activations_layers: ["IT"]
       damage_type: "connections"
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      categories: ["face","object"]
+      categories: ["face","object","animal","scene"]
+      verbose: 0
+      data_type: "svm_15"
+  - function: "categ_corr_lineplot"
+    parameters:
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "noise"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      categories: ["face","object","animal","scene"]
+      verbose: 0
+      data_type: "svm_15"
+  - function: "categ_corr_lineplot"
+    parameters:
+      damage_layers: ["V4"]
+      activations_layers: ["IT"]
+      damage_type: "connections"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      categories: ["face","object","animal","scene"]
       verbose: 0
       data_type: "svm_15"
