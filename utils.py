@@ -1123,6 +1123,7 @@ def categ_corr_lineplot(
                                 arr = np.array(vals_list, dtype=float)
                                 mean_val = float(np.mean(arr))
                                 std_val = float(np.std(arr))
+                                n_val = len(vals_list)
                                 aggregated_data[cat_name][metric_name] = {
                                     "mean": mean_val,
                                     "std": std_val
@@ -1156,6 +1157,7 @@ def categ_corr_lineplot(
                             arr = np.array(all_vals, dtype=float)
                             mean_val = float(np.mean(arr))
                             std_val = float(np.std(arr))
+                            n_val = len(all_vals)
                             aggregated_data[cat_name] = {"score": {"mean": mean_val, "std": std_val}}
 
                     # Save the aggregated stats to file
@@ -1193,7 +1195,7 @@ def categ_corr_lineplot(
             mean_val, std_val = fraction_dict[frac]
             x_vals.append(frac)
             y_means.append(mean_val)
-            y_errs.append(std_val * 1.96)  # 95% confidence interval
+            y_errs.append(std_val / np.sqrt(n_val))* 1.96 if n_val > 0 else 0  # 95% confidence interval
         if data_type == "selectivity":
             label_str = f"{layer} - {activation_layer} - {cat} ({metric})"
         else:
