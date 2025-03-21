@@ -1458,9 +1458,10 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
 
 
 def plot_categ_differences(
+    damage_layers,
+    activations_layers,
+    damage_type,
     main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
-    damage_type="connections",
-    layers=["V1","V2","V4","IT"],
     image_dir="stimuli/",
     mode='dirs',
     file_prefix='damaged_',
@@ -1476,13 +1477,14 @@ def plot_categ_differences(
 
     Parameters
     ----------
-    main_dir : str
-        Base directory. Default is "data/haupt_stim_activ/damaged_cornet_rt/".
+    damage_layers : list of str
+        List of layer names where damage was applied.
+    activations_layers : list of str
+        List of layer names from which activations (RDMs) were computed.
     damage_type : str
         Subdirectory under main_dir specifying a particular damage type.
-    layers : list of str
-        List of layer names to search within. Each layer becomes another 
-        subdirectory under damage_type.
+    main_dir : str
+        Base directory. Default is "data/haupt_stim_activ/damaged/cornet_rt/".
     image_dir : str
         Directory containing image filenames (used to determine categories).
     mode : {'files', 'dirs'}
@@ -1493,22 +1495,28 @@ def plot_categ_differences(
     damage_levels : list of str
         Only consider files/subdirs ending with these suffixes (e.g. multiple damage fractions).
     comparison : bool
-        If False (default), each (layer, damage_level) combination is plotted 
+        If False (default), each (damage_layer, activation_layer, damage_level) combination is plotted 
         as its own row of subplots (the original behavior).
-        If True, all (layer, damage_level) combinations share the same subplots, 
+        If True, all (damage_layer, activation_layer, damage_level) combos share the same subplots, 
         so there is only one subplot per category (grouped bar chart).
+    plot_dir : str
+        Directory to save the resulting plot.
+    verbose : {0, 1}
+        If 1, prompts interactively to save or not.
+        If 0, silently saves without prompting.
 
     Raises
     ------
     FileNotFoundError
         If directories or files do not exist.
     ValueError
-        If any correlation matrix is non-square or doesn't match the image count.
+        If any correlation matrix is non-square or doesn't match the image count, 
+        or if invalid `verbose` was provided.
     """
 
     # ------------- HELPER FUNCTIONS -------------
     def extract_string_numeric_parts(fname):
-        """Extracts leading string and trailing numeric part from filename."""
+        """Extract leading string and trailing numeric part from filename."""
         import re
         match = re.match(r"([^\d]+)([\d\.]*)", os.path.splitext(fname)[0])
         if match:
@@ -1526,32 +1534,6 @@ def plot_categ_differences(
         ]
         return sorted(files)
 
-    # --------------------------------------------
-
-    if layers is None:
-        layers = []
-
-    # -------------------------------------------------------------------------
-    # 1. Load and sort all image filenames, then group by category
-    # -------------------------------------------------------------------------
-    if image_dir is None or not os.path.isdir(image_dir):
-        raise FileNotFoundError(f"Image directory '{image_dir}' does not exist.")
-
-    sorted_filenames = get_sorted_filenames(image_dir)
-    n_files = len(sorted_filenames)
-
-    # Create a dict: {category: [filenames]}
-    categories = {}
-    for fname in sorted_filenames:
-        cat = extract_string_numeric_parts(fname)[0]
-        categories.setdefault(cat, []).append(fname)
-
-    categories_list = sorted(categories.keys())
-    n_categories = len(categories_list)
-
-    # -------------------------------------------------------------------------
-    # 2. Helpers to validate and load correlation matrices
-    # -------------------------------------------------------------------------
     def _validate_matrix(mat, path_str):
         """Ensures 'mat' is square and matches the number of sorted_filenames."""
         if len(mat) != n_files:
@@ -1565,18 +1547,15 @@ def plot_categ_differences(
 
     def load_matrices_from_item(item_path):
         """
-        If 'item_path' is a file -> load that single YAML file, return [one matrix].
-        If 'item_path' is a directory -> load all matching YAML files, return list of matrices.
+        If 'item_path' is a file -> load that single pickle file, return [one matrix].
+        If 'item_path' is a directory -> load all .pkl files, return list of matrices.
         """
         if os.path.isfile(item_path):
-            # Single file
             with open(item_path, 'rb') as f:
                 mat = pickle.load(f)
             _validate_matrix(mat, item_path)
             return [mat]
-
         elif os.path.isdir(item_path):
-            # Possibly multiple .pkl files in this directory
             allfiles = sorted(os.listdir(item_path))
             matching = [os.path.join(item_path, x) for x in allfiles if x.endswith(".pkl")]
             matrices = []
@@ -1586,18 +1565,13 @@ def plot_categ_differences(
                 _validate_matrix(mat, mfile)
                 matrices.append(mat)
             return matrices
-
         else:
             raise FileNotFoundError(f"'{item_path}' is neither a file nor directory.")
 
-    # -------------------------------------------------------------------------
-    # 3. Compute within-vs-between differences for a list of correlation matrices
-    # -------------------------------------------------------------------------
     def compute_differences_across_matrices(matrices):
         """
         For a list of correlation matrices, compute the within-vs-between difference
-        for each category (excluding diagonals), then return mean +- 1.96*std.
-        
+        for each category (excluding diagonals).
         Returns: dict[category] = (other_cats, mean_diffs, std_diffs)
         """
         accum = {
@@ -1636,7 +1610,7 @@ def plot_categ_differences(
                 for oc, dv in zip(ocs, diffvals):
                     accum[cat][oc].append(dv)
 
-        # Convert to mean 1.96*std
+        # Convert to mean ±1.96*std
         result = {}
         for cat in accum:
             other_cats = sorted(accum[cat].keys())
@@ -1648,59 +1622,83 @@ def plot_categ_differences(
                 std_vals.append(arr.std() * 1.96)  # 95% CI
             result[cat] = (other_cats, mean_vals, std_vals)
         return result
+    # ------------- END HELPER FUNCTIONS -------------
 
     # -------------------------------------------------------------------------
-    # 4. Gather all (layer, suffix, item_path, diffs_dict)
+    # 1. Load and sort all image filenames, then group by category
     # -------------------------------------------------------------------------
-    if not layers:
-        raise ValueError("No layers specified. Provide at least one layer.")
+    if image_dir is None or not os.path.isdir(image_dir):
+        raise FileNotFoundError(f"Image directory '{image_dir}' does not exist.")
 
-    all_results = []  # will hold tuples of (layer, suffix, item_path, diffs_dict)
+    sorted_filenames = get_sorted_filenames(image_dir)
+    n_files = len(sorted_filenames)
 
-    for layer in layers:
-        base_path = os.path.join(main_dir, damage_type, layer, "RDM")
-        if not os.path.isdir(base_path):
-            raise FileNotFoundError(
-                f"Layer directory '{base_path}' does not exist. "
-                f"Check your 'damage_type' or 'layers' argument."
-            )
+    # Create a dict: {category: [filenames]}
+    categories = {}
+    for fname in sorted_filenames:
+        cat = extract_string_numeric_parts(fname)[0]
+        categories.setdefault(cat, []).append(fname)
 
-        # Now loop over each suffix in damage_levels
-        for suffix in damage_levels:
-            items = []
-            if mode == 'files':
-                for f in os.listdir(base_path):
-                    fullpath = os.path.join(base_path, f)
-                    if os.path.isfile(fullpath):
-                        if f.startswith(file_prefix) and f.endswith(suffix):
-                            items.append(fullpath)
-            elif mode == 'dirs':
-                for d in os.listdir(base_path):
-                    full_dpath = os.path.join(base_path, d)
-                    if os.path.isdir(full_dpath):
-                        if d.startswith(file_prefix) and d.endswith(suffix):
-                            items.append(full_dpath)
-            else:
-                raise ValueError("mode must be either 'files' or 'dirs'.")
+    categories_list = sorted(categories.keys())
+    n_categories = len(categories_list)
 
-            if not items:
+    # -------------------------------------------------------------------------
+    # 2. Gather all (damage_layer, activation_layer, suffix, item_path, diffs_dict)
+    # -------------------------------------------------------------------------
+    if not damage_layers:
+        raise ValueError("No damage_layers specified. Provide at least one damage layer.")
+    if not activations_layers:
+        raise ValueError("No activations_layers specified. Provide at least one activation layer.")
+
+    all_results = []  # will hold tuples (dmg_layer, act_layer, suffix, item_path, diffs_dict)
+
+    for dmg_layer in damage_layers:
+        for act_layer in activations_layers:
+            # We assume the RDM matrices are in: main_dir / damage_type / dmg_layer / "RDM" / act_layer
+            base_path = os.path.join(main_dir, damage_type, dmg_layer, "RDM", act_layer)
+            if not os.path.isdir(base_path):
                 raise FileNotFoundError(
-                    f"No matching items found in '{base_path}' "
-                    f"for layer='{layer}', suffix='{suffix}', "
-                    f"prefix='{file_prefix}', mode='{mode}'."
+                    f"Directory '{base_path}' does not exist. "
+                    f"Check your 'damage_type', 'damage_layers', or 'activations_layers'."
                 )
 
-            for item_path in items:
-                mats = load_matrices_from_item(item_path)
-                diffs_dict = compute_differences_across_matrices(mats)
-                all_results.append((layer, suffix, item_path, diffs_dict))
+            # Now loop over each suffix in damage_levels
+            for suffix in damage_levels:
+                items = []
+                if mode == 'files':
+                    for f in os.listdir(base_path):
+                        fullpath = os.path.join(base_path, f)
+                        if os.path.isfile(fullpath):
+                            if f.startswith(file_prefix) and f.endswith(suffix):
+                                items.append(fullpath)
+                elif mode == 'dirs':
+                    for d in os.listdir(base_path):
+                        full_dpath = os.path.join(base_path, d)
+                        if os.path.isdir(full_dpath):
+                            if d.startswith(file_prefix) and d.endswith(suffix):
+                                items.append(full_dpath)
+                else:
+                    raise ValueError("mode must be either 'files' or 'dirs'.")
+
+                if not items:
+                    raise FileNotFoundError(
+                        f"No matching items found in '{base_path}' "
+                        f"for damage_layer='{dmg_layer}', activation_layer='{act_layer}', "
+                        f"suffix='{suffix}', prefix='{file_prefix}', mode='{mode}'."
+                    )
+
+                for item_path in items:
+                    mats = load_matrices_from_item(item_path)
+                    diffs_dict = compute_differences_across_matrices(mats)
+                    all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
 
     # -------------------------------------------------------------------------
-    # 5. Plot the results
+    # 3. Plot the results
     # -------------------------------------------------------------------------
     if not comparison:
         # ------------------------------------------------
-        # Original behavior: one row per (layer, suffix, item_path),
+        # Original behavior: one row per combination
+        # (dmg_layer, act_layer, suffix, item_path),
         # one column per category
         # ------------------------------------------------
         num_rows = len(all_results)
@@ -1711,7 +1709,7 @@ def plot_categ_differences(
         )
         axes = np.array(axes, ndmin=2)  # ensure 2D array
 
-        for i, (layer, suffix, item_path, diffs_dict) in enumerate(all_results):
+        for i, (dmg_layer, act_layer, suffix, item_path, diffs_dict) in enumerate(all_results):
             label = os.path.basename(item_path.rstrip("/\\"))
 
             for j, cat in enumerate(categories_list):
@@ -1726,63 +1724,54 @@ def plot_categ_differences(
                 ax.bar(
                     x_pos, mean_vals,
                     yerr=std_vals,
-                    color='skyblue',
-                    edgecolor='black',
                     capsize=4
                 )
                 ax.set_xticks(x_pos)
                 ax.set_xticklabels(other_cats, rotation=45, ha='right')
 
-                # Show layer, suffix, and the item label in the subplot title
-                ax.set_title(f"{layer}, Damage={suffix}\n{cat}")
+                # Show info in the subplot title
+                ax.set_title(f"{dmg_layer}, {act_layer}, Damage={suffix}\n{cat}")
                 if j == 0:
                     ax.set_ylabel("Avg(Within) - Avg(Between)")
 
         plt.tight_layout()
         # Saving plot
         os.makedirs(plot_dir, exist_ok=True)
-        model_name = main_dir.split("/")[-2] # Assuming that there is a slash after the model name ("/cornet/")
+        model_name = main_dir.strip("/").split("/")[-1]
         plot_name = f"{model_name}_categ-diff_{damage_type}"
 
-        for layer in layers:
-            plot_name = plot_name + f"_{layer}"
-
-        n_damages = len(damage_levels)
-    
-        plot_name = plot_name + f"_{n_damages}-levels"
-
-        if comparison:
-            plot_name = plot_name + "comparison"
+        for layer in damage_layers:
+            plot_name += f"_{layer}"
+        for al in activations_layers:
+            plot_name += f"_{al}"
+        plot_name += f"_{len(damage_levels)}-levels"
 
         save_path = os.path.join(plot_dir, plot_name)
 
-        if verbose==1:
+        if verbose == 1:
             save_plot = input(f"Save plot under {save_path}? Y/N: ")
-
             if save_plot.capitalize() == "Y":
                 plt.savefig(save_path, dpi=500)
             plt.show()
         elif verbose == 0:
             plt.savefig(save_path, dpi=500)
+            plt.show()
         else:
-            ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
+            raise ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
 
     else:
         # ------------------------------------------------
-        # comparison=True: 
-        # Plot all (layer, suffix, item_path) combos in the SAME subplots,
-        # so there is only ONE subplot per category.
-        # We'll create grouped bars for each "other cat" across all combos.
+        # comparison=True
+        # Plot all combos in the SAME subplots,
+        # so there is only ONE subplot per category
+        # We'll create grouped bars for each "other cat" across combos.
         # ------------------------------------------------
-        # 1) Build a dictionary: results_by_cat[cat][(layer, suffix, item_path)] = (other_cats, mean_vals, std_vals)
-        results_by_cat = {
-            cat: {} for cat in categories_list
-        }
+        # 1) Build a dictionary: results_by_cat[cat][(dmg_layer, act_layer, suffix, item_path)] = (other_cats, mean_vals, std_vals)
+        results_by_cat = {cat: {} for cat in categories_list}
 
-        # Store the combos in a stable order
-        combos = []  # list of (layer, suffix, item_path) to keep a consistent legend
-        for (layer, suffix, item_path, diffs_dict) in all_results:
-            combo_key = (layer, suffix, item_path)
+        combos = []  # keep track of all (dmg_layer, act_layer, suffix, item_path)
+        for (dmg_layer, act_layer, suffix, item_path, diffs_dict) in all_results:
+            combo_key = (dmg_layer, act_layer, suffix, item_path)
             if combo_key not in combos:
                 combos.append(combo_key)
             # Insert into results_by_cat
@@ -1790,7 +1779,6 @@ def plot_categ_differences(
                 if cat in diffs_dict:
                     results_by_cat[cat][combo_key] = diffs_dict[cat]
                 else:
-                    # Possibly no data if cat wasn't in diffs_dict
                     results_by_cat[cat][combo_key] = ([], [], [])
 
         # 2) Create one subplot per category
@@ -1807,14 +1795,7 @@ def plot_categ_differences(
             ax.set_title(f"Comparison for Category: {cat}")
             ax.set_ylabel("Avg(Within) - Avg(Between)")
 
-            # For this category, we have results_by_cat[cat], which is a dict:
-            #   {(layer, suffix, item_path) -> (other_cats, mean_vals, std_vals)}
-            # We'll assume the same "other_cats" in the same order for each combo,
-            # though they might differ if some combos have different categories.  
-            # We'll look at the first non-empty set to get the other_cats ordering.
-            # If everything is empty, we skip plotting.
-
-            # 2a) Find a consistent ordering of "other_cats"
+            # Find a consistent ordering of other_cats using the first non-empty entry
             all_other_cats = None
             for combo_key in combos:
                 (oc_list, mvals, svals) = results_by_cat[cat][combo_key]
@@ -1824,36 +1805,31 @@ def plot_categ_differences(
 
             if not all_other_cats:
                 # No data found for this category
-                ax.text(0.5, 0.5, f"No data for category '{cat}'", 
+                ax.text(0.5, 0.5, f"No data for '{cat}'", 
                         ha='center', va='center', transform=ax.transAxes)
                 continue
 
-            x_pos = np.arange(len(all_other_cats))  # base x positions for each "other cat"
-            bar_width = 0.8 / len(combos)           # narrower bars for grouping
-            # We'll have each combo's bar slightly offset
+            x_pos = np.arange(len(all_other_cats))  # base x positions
+            bar_width = 0.8 / len(combos)
 
             for i, combo_key in enumerate(combos):
+                dmg_layer, act_layer, suffix, _ = combo_key
                 (oc_list, mean_vals, std_vals) = results_by_cat[cat][combo_key]
-                # It's possible oc_list might be empty if that combo had no data
-                # or if it didn't compute differences for that category.
-                # So we must handle that carefully:
                 if len(oc_list) != len(all_other_cats):
-                    # We'll fill with zeros if missing
-                    # or skip plotting. Here we'll fill with zeros for demonstration:
+                    # If mismatch in length, fill with zeros
                     yvals = np.zeros(len(all_other_cats))
                     yerrs = np.zeros(len(all_other_cats))
                 else:
                     yvals = mean_vals
                     yerrs = std_vals
 
-                # Create an offset for this combo:
                 offset = i * bar_width
                 ax.bar(
-                    x_pos + offset, 
-                    yvals, 
-                    yerr=yerrs, 
-                    width=bar_width, 
-                    label=f"{combo_key[0]}, dmg={combo_key[1]}", 
+                    x_pos + offset,
+                    yvals,
+                    yerr=yerrs,
+                    width=bar_width,
+                    label=f"{dmg_layer}, {act_layer}, dmg={suffix}",
                     capsize=4
                 )
 
@@ -1862,33 +1838,29 @@ def plot_categ_differences(
 
         ax.legend(bbox_to_anchor=(1.05, 1.0), loc='upper left')
         plt.tight_layout()
+
         # Saving plot
         os.makedirs(plot_dir, exist_ok=True)
-        model_name = main_dir.split("/")[-2] # Assuming that there is a slash after the model name ("/cornet/")
+        model_name = main_dir.strip("/").split("/")[-1]
         plot_name = f"{model_name}_categ-diff_{damage_type}"
-
-        for layer in layers:
-            plot_name = plot_name + f"_{layer}"
-
-        n_damages = len(damage_levels)
-    
-        plot_name = plot_name + f"_{n_damages}-levels"
-
-        if comparison:
-            plot_name = plot_name + "comparison"
+        for layer in damage_layers:
+            plot_name += f"_{layer}"
+        for al in activations_layers:
+            plot_name += f"_{al}"
+        plot_name += f"_{len(damage_levels)}-levels_comparison"
 
         save_path = os.path.join(plot_dir, plot_name)
 
-        if verbose==1:
+        if verbose == 1:
             save_plot = input(f"Save plot under {save_path}? Y/N: ")
-
             if save_plot.capitalize() == "Y":
                 plt.savefig(save_path, dpi=500)
             plt.show()
         elif verbose == 0:
             plt.savefig(save_path, dpi=500)
+            plt.show()
         else:
-            ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
+            raise ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
 
 
 def aggregate_permutations(
