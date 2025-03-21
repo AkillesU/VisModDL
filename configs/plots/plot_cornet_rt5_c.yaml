@@ -11,6 +11,7 @@ tasks:
       verbose: 0
       ylim: [0,0.2]
       data_type: "selectivity"
+      scatter: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -22,6 +23,7 @@ tasks:
       verbose: 0
       ylim: [0,0.2]
       data_type: "selectivity"
+      scatter: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -31,7 +33,7 @@ tasks:
       categories: ["total"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.2]
+      ylim: [0,0.1]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -42,7 +44,7 @@ tasks:
       categories: ["total"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.2]
+      ylim: [0,0.1]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:

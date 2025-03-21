@@ -1034,8 +1034,10 @@ def categ_corr_lineplot(
     subdir_regex=r"damaged_([\d\.]+)$",
     plot_dir="plots/",
     data_type="selectivity",  # either "selectivity" or e.g. "svm_15"
-    verbose=0,  # 0 or 1
-    ylim=None):
+    scatter=False,  # <--- NEW ARGUMENT
+    verbose=0,      # 0 or 1
+    ylim=None
+):
     """
     If data_type == "selectivity":
         - Expects subdirectories with pickled dictionaries (one value per file per category/metric).
@@ -1045,12 +1047,14 @@ def categ_corr_lineplot(
         - Expects subdirectories with pickled Pandas DataFrames (each file has several rows).
         - For each file, computes the average for the relevant columns (or all columns if "total").
         - For each category (except "total"), it searches for columns that contain the category string.
-        - Always aggregates averages for all SVM categories: "animal", "face", "object", "scene", and "total".
+        - Always aggregates averages for "animal", "face", "object", "scene", and "total".
           The aggregated stats include the mean, std, and n, so that 95% CI = 1.96*std/sqrt(n).
     """
 
     # data[(layer, activation_layer, category)] -> { fraction_value : (mean, std, n) }
+    # raw_points[(layer, activation_layer, category)] -> { fraction_value : list_of_all_values }
     data = {}
+    raw_points = {}
 
     # For folder naming, use data_type as given.
     data_subfolder = data_type
@@ -1074,6 +1078,7 @@ def categ_corr_lineplot(
             # Initialize data dict for each (layer, activation_layer, category)
             for cat in categories:
                 data[(layer, activation_layer, cat)] = {}
+                raw_points[(layer, activation_layer, cat)] = {}
 
             # Loop over all subdirectories in layer_path
             for subdir_name in os.listdir(layer_path):
@@ -1127,7 +1132,8 @@ def categ_corr_lineplot(
                                 aggregated_data[cat_name][metric_name] = {
                                     "mean": mean_val,
                                     "std": std_val,
-                                    "n": n_val
+                                    "n": n_val,
+                                    "vals": vals_list  # <--- store the raw values
                                 }
 
                     else:
@@ -1158,12 +1164,20 @@ def categ_corr_lineplot(
                             mean_val = float(np.mean(arr))
                             std_val = float(np.std(arr))
                             n_val = len(all_vals)
-                            aggregated_data[cat_name] = {"score": {"mean": mean_val, "std": std_val, "n": n_val}}
+                            aggregated_data[cat_name] = {
+                                "score": {
+                                    "mean": mean_val,
+                                    "std": std_val,
+                                    "n": n_val,
+                                    "vals": all_vals  # <--- store the raw values
+                                }
+                            }
 
                     # Save the aggregated stats to file
                     with open(fraction_file_path, "wb") as f:
                         pickle.dump(aggregated_data, f)
 
+                # Load the aggregated content
                 aggregated_content = safe_load_pickle(fraction_file_path)
                 if not isinstance(aggregated_content, dict):
                     continue
@@ -1172,6 +1186,7 @@ def categ_corr_lineplot(
                 for cat in categories:
                     if cat in aggregated_content:
                         if data_type == "selectivity":
+                            # Check that we have the right metric and that "n" in the dict
                             if (isinstance(aggregated_content[cat], dict) and 
                                 metric in aggregated_content[cat] and 
                                 "n" in aggregated_content[cat][metric]):
@@ -1179,15 +1194,26 @@ def categ_corr_lineplot(
                                 std_val = aggregated_content[cat][metric]["std"]
                                 n_val = aggregated_content[cat][metric]["n"]
                                 data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val, n_val)
-                        else:
-                            if "score" in aggregated_content[cat] and "n" in aggregated_content[cat]["score"]:
+
+                                # Also store raw points if needed
+                                raw_vals = aggregated_content[cat][metric].get("vals", [])
+                                raw_points[(layer, activation_layer, cat)][fraction_rounded] = raw_vals
+
+                        else:  # SVM
+                            if ("score" in aggregated_content[cat] 
+                                and "n" in aggregated_content[cat]["score"]):
                                 mean_val = aggregated_content[cat]["score"]["mean"]
                                 std_val = aggregated_content[cat]["score"]["std"]
                                 n_val = aggregated_content[cat]["score"]["n"]
                                 data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val, n_val)
 
-    # Plot the data: one line per (layer, activation_layer, category)
+                                # Also store raw points if needed
+                                raw_vals = aggregated_content[cat]["score"].get("vals", [])
+                                raw_points[(layer, activation_layer, cat)][fraction_rounded] = raw_vals
+
+    # Now plot the data: one line per (layer, activation_layer, category)
     plt.figure(figsize=(8, 6))
+
     for (layer, activation_layer, cat), fraction_dict in data.items():
         if len(fraction_dict) == 0:
             continue
@@ -1195,18 +1221,47 @@ def categ_corr_lineplot(
         x_vals = []
         y_means = []
         y_errs = []
+
+        # Build main line data
         for frac in fractions_sorted:
             mean_val, std_val, n_val = fraction_dict[frac]
             x_vals.append(frac)
             y_means.append(mean_val)
-            # Compute 95% CI: 1.96 * (std / sqrt(n))
-            ci = std_val#1.96 * (std_val / np.sqrt(n_val)) if n_val > 0 else 0
+            # Compute 95% CI if desired (code currently using std as error)
+            ci = std_val  # or: 1.96 * (std_val / np.sqrt(n_val)) if you prefer
             y_errs.append(ci)
+
+        # Decide on label
         if data_type == "selectivity":
             label_str = f"{layer} - {activation_layer} - {cat} ({metric})"
         else:
             label_str = f"{layer} - {activation_layer} - {cat} (svm)"
-        plt.errorbar(x_vals, y_means, yerr=y_errs, fmt='-o', capsize=4, label=label_str)
+
+        # First draw the line (and capture the handle for color)
+        line = plt.errorbar(
+            x_vals, y_means, yerr=y_errs, fmt='-o', capsize=4, label=label_str, zorder=2
+        )
+        line_color = line[0].get_color()
+
+        # If scatter is enabled, plot raw points with jitter
+        if scatter:
+            for frac in fractions_sorted:
+                raw_vals = raw_points[(layer, activation_layer, cat)].get(frac, [])
+                if len(raw_vals) == 0:
+                    continue
+
+                # Horizontal jitter around `frac`
+                jitter_scale = 0.005
+                x_jitter = frac + np.random.normal(0, jitter_scale, size=len(raw_vals))
+
+                # Plot scatter behind the line (zorder < 2)
+                plt.scatter(
+                    x_jitter,
+                    raw_vals,
+                    alpha=0.5,
+                    color=line_color,
+                    zorder=1
+                )
 
     plt.xlabel("Damage Parameter Value")
     if data_type == "selectivity":
@@ -1215,6 +1270,7 @@ def categ_corr_lineplot(
     else:
         plt.ylabel("Classification Accuracy")
         plt.title("SVM classification across damage parameter values")
+
     if ylim is not None:
         plt.ylim(ylim)
     plt.legend()
@@ -1244,6 +1300,7 @@ def categ_corr_lineplot(
         plt.show()
     else:
         raise ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
+
 
 def plot_avg_corr_mat(
     layers,
