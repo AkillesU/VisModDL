@@ -53,7 +53,7 @@ tasks:
       categories: ["animal","object","face","scene"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.18]
+      ylim: [0,0.6]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -64,5 +64,5 @@ tasks:
       categories: ["animal","object","face","scene"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.18]
+      ylim: [0,0.6]
       data_type: "selectivity"
