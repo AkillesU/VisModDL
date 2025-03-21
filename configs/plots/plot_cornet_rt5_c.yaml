@@ -4,7 +4,7 @@ tasks:
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1","V2","V4","IT"]
-      activation_layers: ["IT"]
+      activations_layers: ["IT"]
       damage_type: "noise"
       categories: ["total"]
       metric: "observed_difference"
@@ -15,7 +15,7 @@ tasks:
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1","V2","V4","IT"]
-      activation_layers: ["IT"]
+      activations_layers: ["IT"]
       damage_type: "connections"
       categories: ["total"]
       metric: "observed_difference"
@@ -26,7 +26,7 @@ tasks:
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1","V2","V4"]
-      activation_layers: ["V4"]
+      activations_layers: ["V4"]
       damage_type: "noise"
       categories: ["total"]
       metric: "observed_difference"
@@ -37,7 +37,7 @@ tasks:
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1","V2","V4"]
-      activation_layers: ["V4"]
+      activations_layers: ["V4"]
       damage_type: "connections"
       categories: ["total"]
       metric: "observed_difference"
@@ -48,7 +48,7 @@ tasks:
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1"]
-      activation_layers: ["IT"]
+      activations_layers: ["IT"]
       damage_type: "noise"
       categories: ["animal","object","face","scene"]
       metric: "observed_difference"
@@ -59,7 +59,7 @@ tasks:
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1"]
-      activation_layers: ["IT"]
+      activations_layers: ["IT"]
       damage_type: "connections"
       categories: ["animal","object","face","scene"]
       metric: "observed_difference"
