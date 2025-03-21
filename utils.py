@@ -1200,7 +1200,7 @@ def categ_corr_lineplot(
             x_vals.append(frac)
             y_means.append(mean_val)
             # Compute 95% CI: 1.96 * (std / sqrt(n))
-            ci = 1.96 * (std_val / np.sqrt(n_val)) if n_val > 0 else 0
+            ci = std_val#1.96 * (std_val / np.sqrt(n_val)) if n_val > 0 else 0
             y_errs.append(ci)
         if data_type == "selectivity":
             label_str = f"{layer} - {activation_layer} - {cat} ({metric})"
