@@ -9,7 +9,7 @@ tasks:
       categories: ["total"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.18]
+      ylim: [0,0.2]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -20,7 +20,7 @@ tasks:
       categories: ["total"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.18]
+      ylim: [0,0.2]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -31,7 +31,7 @@ tasks:
       categories: ["total"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.18]
+      ylim: [0,0.2]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -42,7 +42,7 @@ tasks:
       categories: ["total"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.18]
+      ylim: [0,0.2]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -50,10 +50,10 @@ tasks:
       damage_layers: ["V1"]
       activations_layers: ["IT"]
       damage_type: "noise"
-      categories: ["animal","object","face","scene"]
+      categories: ["animal","object","face","scenes"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.6]
+      ylim: [-0.1,0.5]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -61,8 +61,8 @@ tasks:
       damage_layers: ["V1"]
       activations_layers: ["IT"]
       damage_type: "connections"
-      categories: ["animal","object","face","scene"]
+      categories: ["animal","object","face","scenes"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.6]
+      ylim: [-0.1,0.5]
       data_type: "selectivity"
