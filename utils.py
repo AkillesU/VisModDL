@@ -1215,7 +1215,7 @@ def categ_corr_lineplot(
     else:
         plt.ylabel("Classification Accuracy")
         plt.title("SVM classification across damage parameter values")
-    if ylim not None:
+    if ylim is not None:
         plt.ylim(ylim)
     plt.legend()
     plt.tight_layout()
