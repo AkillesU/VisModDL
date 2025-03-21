@@ -1034,8 +1034,8 @@ def categ_corr_lineplot(
     subdir_regex=r"damaged_([\d\.]+)$",
     plot_dir="plots/",
     data_type="selectivity",  # either "selectivity" or e.g. "svm_15"
-    verbose=0  # 0 or 1
-):
+    verbose=0,  # 0 or 1
+    ylim=None):
     """
     If data_type == "selectivity":
         - Expects subdirectories with pickled dictionaries (one value per file per category/metric).
@@ -1215,6 +1215,8 @@ def categ_corr_lineplot(
     else:
         plt.ylabel("Classification Accuracy")
         plt.title("SVM classification across damage parameter values")
+    if ylim not None:
+        plt.ylim(ylim)
     plt.legend()
     plt.tight_layout()
 
