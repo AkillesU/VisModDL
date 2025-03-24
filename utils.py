@@ -1838,7 +1838,7 @@ def plot_categ_differences(
 
                 # Filter to only those categories that exist in 'index_map'
                 # This ensures we don't try to index into something that isn't present
-                new_oc_list = [c for c in desired_oc_order if c in index_map]
+                new_oc_list = [c for c in custom_category_order if c in index_map]
 
                 # Now reorder all the data arrays
                 new_mean_vals = [mean_vals[index_map[c]] for c in new_oc_list]
