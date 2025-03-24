@@ -1838,12 +1838,12 @@ def plot_categ_differences(
 
                 # Filter to only those categories that exist in 'index_map'
                 # This ensures we don't try to index into something that isn't present
-                new_oc_list = [c for c in custom_category_order if c in index_map]
+                new_oc_list = [c for c in desired_oc_order if c in index_map]
 
                 # Now reorder all the data arrays
-                yvals = [mean_vals[index_map[c]] for c in new_oc_list]
-                yerrs = [std_vals[index_map[c]] for c in new_oc_list]
-                raw_data = [raw_diffs[index_map[c]] for c in new_oc_list]
+                new_mean_vals = [mean_vals[index_map[c]] for c in new_oc_list]
+                new_std_vals = [std_vals[index_map[c]] for c in new_oc_list]
+                new_raw_diffs = [raw_diffs[index_map[c]] for c in new_oc_list]
 
                 # We only define x_pos once (for each combo) if it doesn't exist,
                 # but *ideally* it's consistent across combos. So let's do it
@@ -1857,38 +1857,36 @@ def plot_categ_differences(
                 # bar color
                 bar_edge_color = f"C{i}"
 
-                # ---- Make bars transparent, edges colored, thicker lines ----
+                # Plot the bars (transparent fill, thicker edges)
                 bars = ax.bar(
                     x_pos + offset,
-                    yvals,
-                    yerr=yerrs,
+                    new_mean_vals,
+                    yerr=new_std_vals,
                     width=bar_width,
                     label=f"{dmg_layer}, {act_layer}, dmg={suffix}",
                     capsize=4,
-                    facecolor="none",         # transparent fill
-                    edgecolor=bar_edge_color, # unique edge color
-                    linewidth=2               # thicker edges
+                    facecolor="none",
+                    edgecolor=bar_edge_color,
+                    linewidth=2
                 )
 
-                # Plot individual points if requested
+                # Scatter if desired
                 if scatter:
-                    for idx, (xv, raw_vals) in enumerate(zip(x_pos, raw_data)):
-                        if len(raw_vals) > 0:
-                            # Add jitter to spread points horizontally
-                            jitter = np.random.normal(0, bar_width/6, size=len(raw_vals))
+                    for idx, rv in enumerate(new_raw_diffs):
+                        if len(rv) > 0:
+                            jitter = np.random.normal(0, bar_width/6, size=len(rv))
                             ax.scatter(
-                                xv + offset + jitter,
-                                raw_vals,
-                                color=bar_edge_color,  # match bar edge color
+                                (x_pos[idx] + offset) + jitter,
+                                rv,
+                                color=bar_edge_color,
                                 alpha=0.4,
                                 s=20,
-                                zorder=0
+                                zorder=0  # behind bars, if you prefer
                             )
 
+            # After we've plotted all combos, set x-ticks & labels using the new_oc_list
             ax.set_xticks(x_pos_base + bar_width*(len(combos)/2 - 0.5))
-            ax.set_xticklabels(all_other_cats, rotation=45, ha='right')
-            if ylim is not None:
-                    ax.set_ylim(ylim)
+            ax.set_xticklabels(new_oc_list, rotation=45, ha='right')
 
         ax.legend(bbox_to_anchor=(1.05, 1.0), loc='upper left')
         plt.tight_layout()
