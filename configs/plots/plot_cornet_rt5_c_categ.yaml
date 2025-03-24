@@ -6,7 +6,7 @@ tasks:
       damage_layers: ["IT"]
       activations_layers: ["IT"]
       damage_type: "noise"
-      verbose: 1
+      verbose: 0
       damage_levels: ["0.0","1.0"]
       comparison: True
       scatter: True
@@ -16,7 +16,7 @@ tasks:
       damage_layers: ["IT"]
       activations_layers: ["IT"]
       damage_type: "connections"
-      verbose: 1
+      verbose: 0
       damage_levels: ["0.0","0.2"]
       comparison: True
       scatter: True
