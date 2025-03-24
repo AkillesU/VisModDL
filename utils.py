@@ -1816,7 +1816,6 @@ def plot_categ_differences(
         if n_categories == 1:
             axes = [axes]  # ensure axes is iterable if only one category
 
-        x_pos_base = None  # We'll store the x positions after we fix the oc_list
 
         bar_width = 0.8 / len(combos)
         for j, cat in enumerate(categories_list):
@@ -1849,8 +1848,6 @@ def plot_categ_differences(
                 # but *ideally* it's consistent across combos. So let's do it
                 # each time for safety, or we can do once outside the combos loop
                 x_pos = np.arange(len(new_oc_list))
-                if x_pos_base is None:
-                    x_pos_base = x_pos  # store for tick labels
 
                 offset = i * bar_width
 
@@ -1885,7 +1882,7 @@ def plot_categ_differences(
                             )
 
             # After we've plotted all combos, set x-ticks & labels using the new_oc_list
-            ax.set_xticks(x_pos_base + bar_width*(len(combos)/2 - 0.5))
+            ax.set_xticks(x_pos + bar_width*(len(combos)/2 - 0.5))
             ax.set_xticklabels(new_oc_list, rotation=45, ha='right')
 
         ax.legend(bbox_to_anchor=(1.05, 1.0), loc='upper left')
