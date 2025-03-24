@@ -1885,7 +1885,7 @@ def plot_categ_differences(
                                 zorder=0
                             )
 
-            ax.set_xticks(x_pos + bar_width*(len(combos)/2 - 0.5))
+            ax.set_xticks(x_pos_base + bar_width*(len(combos)/2 - 0.5))
             ax.set_xticklabels(all_other_cats, rotation=45, ha='right')
             if ylim is not None:
                     ax.set_ylim(ylim)
