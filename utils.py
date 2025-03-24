@@ -1881,10 +1881,22 @@ def plot_categ_differences(
                                 s=20,
                                 zorder=0  # behind bars, if you prefer
                             )
+            for bar in bars:
+                # Get the bar geometry
+                x = bar.get_x()                     # left edge of the bar
+                width = bar.get_width()             # width of the bar
+                bottom = bar.get_y()                # usually 0 (unless you set a bottom)
+                height = bar.get_height()           # bar height
+                top = bottom + height               # the top y-coordinate
 
+                # Draw a black line across the top
+                ax.plot([x, x + width], [top, top],
+                        color='black', linewidth=2, zorder=5)
             # After we've plotted all combos, set x-ticks & labels using the new_oc_list
             ax.set_xticks(x_pos + bar_width*(len(combos)/2 - 0.5))
             ax.set_xticklabels(new_oc_list, rotation=45, ha='right')
+            if ylim is not None:
+                ax.set_ylim(ylim)
 
         ax.legend(bbox_to_anchor=(1.05, 1.0), loc='upper left')
         plt.tight_layout()
