@@ -1825,14 +1825,15 @@ def plot_categ_differences(
 
             # Find a consistent ordering of other_cats using the first non-empty entry
             all_other_cats = None
-            for combo_key in combos:
-                (oc_list, mvals, svals, _) = results_by_cat[cat][combo_key]
+            for i, combo_key in enumerate(combos):
+                (oc_list, mean_vals, std_vals, raw_diffs) = results_by_cat[cat][combo_key]
+    
+                if not oc_list:
+                    # If empty, skip plotting or fill with zeros
+                    # (Here we'll just skip.)
+                    continue
 
-                if oc_list:  # found a non-empty one
-                    all_other_cats = oc_list
-                    break
-
-             # =========== REORDER "OTHER CATS" =============
+                # =========== REORDER "OTHER CATS" =============
                 index_map = {c: idx for idx, c in enumerate(oc_list)}
 
                 # Filter to only those categories that exist in 'index_map'
