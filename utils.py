@@ -1468,7 +1468,8 @@ def plot_categ_differences(
     damage_levels=["0"],
     comparison=False,
     plot_dir="plots/",
-    verbose=0
+    verbose=0,
+    scatter=False
 ):
     """
     Plot mean (with std error bars) of within-vs-between-category correlations,
@@ -1572,7 +1573,7 @@ def plot_categ_differences(
         """
         For a list of correlation matrices, compute the within-vs-between difference
         for each category (excluding diagonals).
-        Returns: dict[category] = (other_cats, mean_diffs, std_diffs)
+        Returns: dict[category] = (other_cats, mean_diffs, std_diffs, raw_diffs)
         """
         accum = {
             cat: {oc: [] for oc in categories_list if oc != cat}
@@ -1610,17 +1611,19 @@ def plot_categ_differences(
                 for oc, dv in zip(ocs, diffvals):
                     accum[cat][oc].append(dv)
 
-        # Convert to mean ±1.96*std
+        # Convert to mean ±1.96*std and keep raw data
         result = {}
         for cat in accum:
             other_cats = sorted(accum[cat].keys())
             mean_vals = []
             std_vals = []
+            raw_diffs = []  # Store raw differences for individual points
             for oc in other_cats:
                 arr = np.array(accum[cat][oc])
                 mean_vals.append(arr.mean())
                 std_vals.append(arr.std() * 1.96)  # 95% CI
-            result[cat] = (other_cats, mean_vals, std_vals)
+                raw_diffs.append(arr)  # Keep all raw differences
+            result[cat] = (other_cats, mean_vals, std_vals, raw_diffs)
         return result
     # ------------- END HELPER FUNCTIONS -------------
 
@@ -1718,14 +1721,30 @@ def plot_categ_differences(
                     ax.set_visible(False)
                     continue
 
-                other_cats, mean_vals, std_vals = diffs_dict[cat]
+                other_cats, mean_vals, std_vals, raw_diffs = diffs_dict[cat]
                 x_pos = np.arange(len(other_cats))
 
-                ax.bar(
+                # Plot bars
+                bars = ax.bar(
                     x_pos, mean_vals,
                     yerr=std_vals,
-                    capsize=4
-                )
+                    capsize=4,
+                    )
+                
+                # Plot individual points if requested
+                if scatter:
+                    for idx, (x, raw_vals) in enumerate(zip(x_pos, raw_diffs)):
+                        # Get bar color for matching
+                        bar_color = bars[idx].get_facecolor()
+                        # Add jitter to x position
+                        jitter = np.random.normal(0, 0.05, size=len(raw_vals))
+                        # Plot points with transparency
+                        ax.scatter(
+                            x + jitter, raw_vals,
+                            color=bar_color, alpha=0.4,
+                            s=20, zorder=3
+                        )
+
                 ax.set_xticks(x_pos)
                 ax.set_xticklabels(other_cats, rotation=45, ha='right')
 
@@ -1745,6 +1764,8 @@ def plot_categ_differences(
         for al in activations_layers:
             plot_name += f"_{al}"
         plot_name += f"_{len(damage_levels)}-levels"
+        if scatter:
+            plot_name += "_with-points"
 
         save_path = os.path.join(plot_dir, plot_name)
 
@@ -1766,7 +1787,7 @@ def plot_categ_differences(
         # so there is only ONE subplot per category
         # We'll create grouped bars for each "other cat" across combos.
         # ------------------------------------------------
-        # 1) Build a dictionary: results_by_cat[cat][(dmg_layer, act_layer, suffix, item_path)] = (other_cats, mean_vals, std_vals)
+        # 1) Build a dictionary: results_by_cat[cat][(dmg_layer, act_layer, suffix, item_path)] = (other_cats, mean_vals, std_vals, raw_diffs)
         results_by_cat = {cat: {} for cat in categories_list}
 
         combos = []  # keep track of all (dmg_layer, act_layer, suffix, item_path)
@@ -1779,7 +1800,7 @@ def plot_categ_differences(
                 if cat in diffs_dict:
                     results_by_cat[cat][combo_key] = diffs_dict[cat]
                 else:
-                    results_by_cat[cat][combo_key] = ([], [], [])
+                    results_by_cat[cat][combo_key] = ([], [], [], [])
 
         # 2) Create one subplot per category
         fig, axes = plt.subplots(
@@ -1798,7 +1819,7 @@ def plot_categ_differences(
             # Find a consistent ordering of other_cats using the first non-empty entry
             all_other_cats = None
             for combo_key in combos:
-                (oc_list, mvals, svals) = results_by_cat[cat][combo_key]
+                (oc_list, mvals, svals, _) = results_by_cat[cat][combo_key]
                 if oc_list:  # found a non-empty one
                     all_other_cats = oc_list
                     break
@@ -1814,24 +1835,45 @@ def plot_categ_differences(
 
             for i, combo_key in enumerate(combos):
                 dmg_layer, act_layer, suffix, _ = combo_key
-                (oc_list, mean_vals, std_vals) = results_by_cat[cat][combo_key]
+                (oc_list, mean_vals, std_vals, raw_diffs) = results_by_cat[cat][combo_key]
                 if len(oc_list) != len(all_other_cats):
                     # If mismatch in length, fill with zeros
                     yvals = np.zeros(len(all_other_cats))
                     yerrs = np.zeros(len(all_other_cats))
+                    raw_data = [np.array([]) for _ in range(len(all_other_cats))]
                 else:
                     yvals = mean_vals
                     yerrs = std_vals
+                    raw_data = raw_diffs
 
                 offset = i * bar_width
-                ax.bar(
+                # Plot bars
+                bars = ax.bar(
                     x_pos + offset,
                     yvals,
                     yerr=yerrs,
                     width=bar_width,
                     label=f"{dmg_layer}, {act_layer}, dmg={suffix}",
-                    capsize=4
+                    capsize=4,
+                    facecolor="none",
+                    edgecolor="C0"
+
                 )
+                
+                # Plot individual points if requested
+                if scatter:
+                    for idx, (x, raw_vals) in enumerate(zip(x_pos, raw_data)):
+                        if len(raw_vals) > 0:  # Only plot if we have data
+                            # Get bar color for matching
+                            bar_color = bars[idx].get_facecolor()
+                            # Add jitter to x position (within bar width)
+                            jitter = np.random.normal(0, bar_width/6, size=len(raw_vals))
+                            # Plot points with transparency
+                            ax.scatter(
+                                x + offset + jitter, raw_vals,
+                                color=bar_color, alpha=0.4,
+                                s=20, zorder=3
+                            )
 
             ax.set_xticks(x_pos + bar_width*(len(combos)/2 - 0.5))
             ax.set_xticklabels(all_other_cats, rotation=45, ha='right')
