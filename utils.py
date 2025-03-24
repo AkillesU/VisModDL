@@ -1643,7 +1643,9 @@ def plot_categ_differences(
         cat = extract_string_numeric_parts(fname)[0]
         categories.setdefault(cat, []).append(fname)
 
-    categories_list = sorted(categories.keys())
+    custom_category_order = ["face", "place", "object", "animal"]
+    # Make sure these names actually match the keys in the "categories" dict:
+    categories_list = custom_category_order
     n_categories = len(categories_list)
 
     # -------------------------------------------------------------------------
@@ -1743,7 +1745,7 @@ def plot_categ_differences(
                         ax.scatter(
                             x + jitter, raw_vals,
                             color=bar_color, alpha=0.4,
-                            s=20, zorder=3
+                            s=20, zorder=0
                         )
 
                 ax.set_xticks(x_pos)
@@ -1879,7 +1881,7 @@ def plot_categ_differences(
                                 color=bar_edge_color,  # match bar edge color
                                 alpha=0.4,
                                 s=20,
-                                zorder=3
+                                zorder=0
                             )
 
             ax.set_xticks(x_pos + bar_width*(len(combos)/2 - 0.5))
