@@ -1816,6 +1816,9 @@ def plot_categ_differences(
         if n_categories == 1:
             axes = [axes]  # ensure axes is iterable if only one category
 
+        x_pos_base = None  # We'll store the x positions after we fix the oc_list
+
+        bar_width = 0.8 / len(combos)
         for j, cat in enumerate(categories_list):
             ax = axes[j]
             ax.set_title(f"Comparison for Category: {cat}")
@@ -1825,35 +1828,33 @@ def plot_categ_differences(
             all_other_cats = None
             for combo_key in combos:
                 (oc_list, mvals, svals, _) = results_by_cat[cat][combo_key]
+
                 if oc_list:  # found a non-empty one
                     all_other_cats = oc_list
                     break
 
-            if not all_other_cats:
-                ax.text(0.5, 0.5, f"No data for '{cat}'", 
-                        ha='center', va='center', transform=ax.transAxes)
-                continue
+             # =========== REORDER "OTHER CATS" =============
+                index_map = {c: idx for idx, c in enumerate(oc_list)}
 
-            x_pos = np.arange(len(all_other_cats))  # base x positions
-            bar_width = 0.8 / len(combos)
+                # Filter to only those categories that exist in 'index_map'
+                # This ensures we don't try to index into something that isn't present
+                new_oc_list = [c for c in custom_category_order if c in index_map]
 
-            for i, combo_key in enumerate(combos):
-                dmg_layer, act_layer, suffix, _ = combo_key
-                (oc_list, mean_vals, std_vals, raw_diffs) = results_by_cat[cat][combo_key]
-                if len(oc_list) != len(all_other_cats):
-                    # If mismatch in length, fill with zeros
-                    yvals = np.zeros(len(all_other_cats))
-                    yerrs = np.zeros(len(all_other_cats))
-                    raw_data = [np.array([]) for _ in range(len(all_other_cats))]
-                else:
-                    yvals = mean_vals
-                    yerrs = std_vals
-                    raw_data = raw_diffs
+                # Now reorder all the data arrays
+                yvals = [mean_vals[index_map[c]] for c in new_oc_list]
+                yerrs = [std_vals[index_map[c]] for c in new_oc_list]
+                raw_data = [raw_diffs[index_map[c]] for c in new_oc_list]
+
+                # We only define x_pos once (for each combo) if it doesn't exist,
+                # but *ideally* it's consistent across combos. So let's do it
+                # each time for safety, or we can do once outside the combos loop
+                x_pos = np.arange(len(new_oc_list))
+                if x_pos_base is None:
+                    x_pos_base = x_pos  # store for tick labels
 
                 offset = i * bar_width
 
-                # Pick a unique color for this combo (edge + points)
-                # You could cycle by i, or create a global color index
+                # bar color
                 bar_edge_color = f"C{i}"
 
                 # ---- Make bars transparent, edges colored, thicker lines ----
