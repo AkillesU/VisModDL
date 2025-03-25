@@ -1055,6 +1055,7 @@ def categ_corr_lineplot(
     # raw_points[(layer, activation_layer, category)] -> { fraction_value : list_of_all_values }
     data = {}
     raw_points = {}
+    # 1. Suppose these are all pairs you ever expect to plot:
 
     # For folder naming, use data_type as given.
     data_subfolder = data_type
@@ -1211,55 +1212,72 @@ def categ_corr_lineplot(
                                 raw_vals = aggregated_content[cat]["score"].get("vals", [])
                                 raw_points[(layer, activation_layer, cat)][fraction_rounded] = raw_vals
 
-    # Now plot the data: one line per (layer, activation_layer, category)
-    plt.figure(figsize=(8, 6))
+    # >>> ADD THIS DICTIONARY HERE <<<
+    pair_to_color = {
+        ("IT", "IT"): "blue",
+        ("IT", "V4"): "red",
+        ("IT", "V2"): "green",
+        ("IT", "V1"): "orange"
+        # etc. Add as many pairs as you want to give a custom color.
+    }
 
+    # Now start the plotting:
+    plt.figure(figsize=(8, 6))
+    
     for (layer, activation_layer, cat), fraction_dict in data.items():
         if len(fraction_dict) == 0:
             continue
+
         fractions_sorted = sorted(fraction_dict.keys())
         x_vals = []
         y_means = []
         y_errs = []
 
-        # Build main line data
         for frac in fractions_sorted:
             mean_val, std_val, n_val = fraction_dict[frac]
             x_vals.append(frac)
             y_means.append(mean_val)
-            # Compute 95% CI if desired (code currently using std as error)
-            ci = std_val  # or: 1.96 * (std_val / np.sqrt(n_val)) if you prefer
+            # ci could be 1.96*(std_val / np.sqrt(n_val)) if you prefer
+            ci = std_val
             y_errs.append(ci)
 
-        # Decide on label
+        # Decide on label as before
         if data_type == "selectivity":
             label_str = f"{layer} - {activation_layer} - {cat} ({metric})"
         else:
             label_str = f"{layer} - {activation_layer} - {cat} (svm)"
 
-        # First draw the line (and capture the handle for color)
-        line = plt.errorbar(
-            x_vals, y_means, yerr=y_errs, fmt='-o', capsize=4, label=label_str, zorder=2
-        )
-        line_color = line[0].get_color()
+        # >>> LOOK UP THE COLOR FROM THE DICTIONARY <<<
+        # Fallback to None if not found, so MPL picks a default
+        this_color = pair_to_color.get((layer, activation_layer), None)
 
-        # If scatter is enabled, plot raw points with jitter
+        # >>> PASS THE COLOR EXPLICITLY HERE <<<
+        line = plt.errorbar(
+            x_vals, 
+            y_means, 
+            yerr=y_errs, 
+            fmt='-o', 
+            capsize=4, 
+            label=label_str, 
+            zorder=2,
+            color=this_color  # <--- use the looked-up or fallback color
+        )
+
+        # If scatter is enabled, also pass the same color so points match the line
         if scatter:
             for frac in fractions_sorted:
                 raw_vals = raw_points[(layer, activation_layer, cat)].get(frac, [])
                 if len(raw_vals) == 0:
                     continue
 
-                # Horizontal jitter around `frac`
                 jitter_scale = 0.005
                 x_jitter = frac + np.random.normal(0, jitter_scale, size=len(raw_vals))
-
-                # Plot scatter behind the line (zorder < 2)
+                
                 plt.scatter(
                     x_jitter,
                     raw_vals,
                     alpha=0.5,
-                    color=line_color,
+                    color=this_color,  # <--- ensure scatter matches line color
                     zorder=1
                 )
 
@@ -1273,6 +1291,7 @@ def categ_corr_lineplot(
 
     if ylim is not None:
         plt.ylim(ylim)
+
     plt.legend()
     plt.tight_layout()
 
