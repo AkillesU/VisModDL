@@ -1265,8 +1265,8 @@ def categ_corr_lineplot(
 
     plt.xlabel("Damage Parameter Value")
     if data_type == "selectivity":
-        plt.ylabel(metric)
-        plt.title("Selectivity metric across damage parameter values")
+        plt.ylabel("Differentiation (within-between)")
+        plt.title("Differentiation across damage parameter values")
     else:
         plt.ylabel("Classification Accuracy")
         plt.title("SVM classification across damage parameter values")
