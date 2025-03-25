@@ -1214,10 +1214,10 @@ def categ_corr_lineplot(
 
     # >>> ADD THIS DICTIONARY HERE <<<
     pair_to_color = {
-        ("IT", "IT"): "blue",
-        ("IT", "V4"): "red",
-        ("IT", "V2"): "green",
-        ("IT", "V1"): "orange"
+        ("IT", "IT"): "dodgerblue",
+        ("V4", "IT"): "orangered",
+        ("V2", "IT"): "limegreen",
+        ("V1", "IT"): "orange"
         # etc. Add as many pairs as you want to give a custom color.
     }
 
