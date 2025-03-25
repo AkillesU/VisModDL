@@ -27,6 +27,30 @@ tasks:
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      ylim: [0,0.2]
+      data_type: "selectivity"
+      scatter: True
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      ylim: [0,0.2]
+      data_type: "selectivity"
+      scatter: True
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1","V2","V4"]
       activations_layers: ["V4"]
       damage_type: "noise"
