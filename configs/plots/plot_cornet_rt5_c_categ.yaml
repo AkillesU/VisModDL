@@ -40,7 +40,7 @@ tasks:
       activations_layers: ["IT"]
       damage_type: "noise"
       verbose: 0
-      damage_levels: ["0.0","1.15"]
+      damage_levels: ["0.0","1.1"]
       comparison: True
       scatter: True
       ylim: [0,1.2]
