@@ -2668,7 +2668,7 @@ def svm_process_file(pkl_file, training_samples=15, clip_val=1e6, max_permutatio
     categories = {
         "animal": cat1,
         "face":   cat2,
-        "scene":  cat3,
+        "place":  cat3, # Changed from "scene" to "place"
         "object": cat4
     }
 
