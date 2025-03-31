@@ -19,6 +19,7 @@ from sklearn.preprocessing import RobustScaler, StandardScaler
 from sklearn.svm import SVC
 from itertools import combinations, product
 import random
+import hashlib
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -996,6 +997,7 @@ def get_sorted_filenames(image_dir):
     # Sort using a helper function
     return sorted(base_names, key=lambda name: extract_string_numeric_parts(name))
 
+
 def extract_string_numeric_parts(name):
     """Extract the string prefix and numeric index (integer or float) from a name."""
     match = re.match(r"^([^\d]+)([\d\.]+)$", name)
@@ -1008,6 +1010,20 @@ def extract_string_numeric_parts(name):
             num = 0
         return prefix, num
     return name, 0
+
+
+def get_color_for_triple(layer, activation_layer, category):
+    """
+    Generate a stable RGB color from the hash of the triple.
+    This will be consistent across runs for the same triple.
+    """
+    triple_str = f"{layer}_{activation_layer}_{category}"
+    h = hashlib.md5(triple_str.encode("utf-8")).hexdigest()
+    # Use the first 6 hex characters (3 bytes) for R, G, B
+    r = int(h[0:2], 16) / 255.0
+    g = int(h[2:4], 16) / 255.0
+    b = int(h[4:6], 16) / 255.0
+    return (r, g, b)
 
 
 def safe_load_pickle(file_path):
@@ -1034,13 +1050,13 @@ def categ_corr_lineplot(
     subdir_regex=r"damaged_([\d\.]+)$",
     plot_dir="plots/",
     data_type="selectivity",  # either "selectivity" or e.g. "svm_15"
-    scatter=False,  # <--- NEW ARGUMENT
-    verbose=0,      # 0 or 1
+    scatter=False,
+    verbose=0,
     ylim=None
 ):
     """
     If data_type == "selectivity":
-        - Expects subdirectories with pickled dictionaries (one value per file per category/metric).
+        - Expects subdirectories with pickled dictionaries (one value per file per category & metric).
         - Aggregates file-level averages by computing the mean, std and sample size across files.
         
     If data_type starts with "svm":
@@ -1055,55 +1071,46 @@ def categ_corr_lineplot(
     # raw_points[(layer, activation_layer, category)] -> { fraction_value : list_of_all_values }
     data = {}
     raw_points = {}
-    # 1. Suppose these are all pairs you ever expect to plot:
 
     # For folder naming, use data_type as given.
     data_subfolder = data_type
 
-    # Helper to get aggregated filename, e.g., "avg_selectivity_0.1.pkl" or "avg_svm_0.1.pkl"
     def get_aggregated_filename(fraction_rounded):
         return f"avg_{data_type}_{fraction_rounded}.pkl"
 
-    # Loop over each damage layer and activation layer to gather data
+    # Gather data
     for layer in damage_layers:
         for activation_layer in activations_layers:
-            # Construct the directory for this combination
             layer_path = os.path.join(main_dir, damage_type, layer, data_subfolder, activation_layer)
             if not os.path.isdir(layer_path):
                 continue
 
-            # Construct output file path for aggregated data
             output_path = os.path.join(main_dir, damage_type, layer, f"avg_{data_type}", activation_layer)
             os.makedirs(output_path, exist_ok=True)
 
-            # Initialize data dict for each (layer, activation_layer, category)
             for cat in categories:
                 data[(layer, activation_layer, cat)] = {}
                 raw_points[(layer, activation_layer, cat)] = {}
 
-            # Loop over all subdirectories in layer_path
             for subdir_name in os.listdir(layer_path):
                 subdir_path = os.path.join(layer_path, subdir_name)
                 if not os.path.isdir(subdir_path):
                     continue
 
-                # Extract the numeric portion from the subdirectory name
                 match = re.search(subdir_regex, subdir_name)
                 if not match:
                     continue
                 fraction_raw = float(match.group(1))
                 fraction_rounded = round(fraction_raw, 3)
 
-                # Aggregated stats file for this fraction
                 fraction_file_name = get_aggregated_filename(fraction_rounded)
                 fraction_file_path = os.path.join(output_path, fraction_file_name)
 
-                # If aggregated file does not exist, compute it
+                # If aggregated file doesn't exist, compute it
                 if not os.path.exists(fraction_file_path):
                     aggregated_data = {}
 
                     if data_type == "selectivity":
-                        # For selectivity, each file provides a single value per category & metric.
                         tmp_storage = {}
                         for fname in os.listdir(subdir_path):
                             if fname.lower().endswith(".pkl"):
@@ -1112,7 +1119,6 @@ def categ_corr_lineplot(
                                     content = pickle.load(f)
                                 if not isinstance(content, dict):
                                     continue
-                                # Use all keys available in the file—not just those passed in.
                                 for cat_name, metrics_dict in content.items():
                                     if not isinstance(metrics_dict, dict):
                                         continue
@@ -1121,7 +1127,7 @@ def categ_corr_lineplot(
                                     for metric_name, val in metrics_dict.items():
                                         tmp_storage[cat_name].setdefault(metric_name, [])
                                         tmp_storage[cat_name][metric_name].append(val)
-                        # Compute mean, std, and n across files (each file's value)
+                        # Compute mean, std, and n
                         for cat_name, metrics_map in tmp_storage.items():
                             if cat_name not in aggregated_data:
                                 aggregated_data[cat_name] = {}
@@ -1134,30 +1140,25 @@ def categ_corr_lineplot(
                                     "mean": mean_val,
                                     "std": std_val,
                                     "n": n_val,
-                                    "vals": vals_list  # <--- store the raw values
+                                    "vals": vals_list
                                 }
 
-                    else:
-                        # For svm, we want to compute for all SVM categories even if not requested.
+                    else:  # e.g. "svm_15"
                         svm_categories = ["animal", "face", "object", "scene", "total"]
                         cat_tmp = {cat: [] for cat in svm_categories}
                         for fname in os.listdir(subdir_path):
                             if fname.lower().endswith(".pkl"):
                                 pkl_path = os.path.join(subdir_path, fname)
                                 df = pd.read_pickle(pkl_path)
-                                # For each full svm category, compute the file average.
                                 for cat_name in svm_categories:
                                     if cat_name.lower() == "total":
                                         cols = df.columns
                                     else:
-                                        # Case-insensitive column matching.
                                         cols = [c for c in df.columns if cat_name.lower() in c.lower()]
                                     if len(cols) == 0:
                                         continue
-                                    # Compute the average for this file (across all rows and selected columns)
                                     file_avg = df[cols].values.mean()
                                     cat_tmp[cat_name].append(file_avg)
-                        # Compute aggregated mean, std and n of file-level averages
                         for cat_name, all_vals in cat_tmp.items():
                             if len(all_vals) == 0:
                                 continue
@@ -1170,25 +1171,23 @@ def categ_corr_lineplot(
                                     "mean": mean_val,
                                     "std": std_val,
                                     "n": n_val,
-                                    "vals": all_vals  # <--- store the raw values
+                                    "vals": all_vals
                                 }
                             }
 
-                    # Save the aggregated stats to file
                     with open(fraction_file_path, "wb") as f:
                         pickle.dump(aggregated_data, f)
 
-                # Load the aggregated content
+                # Load aggregated content
                 aggregated_content = safe_load_pickle(fraction_file_path)
                 if not isinstance(aggregated_content, dict):
                     continue
 
-                # For each requested category, store (mean, std, n) in data dictionary.
+                # Store (mean, std, n) in data
                 for cat in categories:
                     if cat in aggregated_content:
                         if data_type == "selectivity":
-                            # Check that we have the right metric and that "n" in the dict
-                            if (isinstance(aggregated_content[cat], dict) and 
+                            if (isinstance(aggregated_content[cat], dict) and
                                 metric in aggregated_content[cat] and 
                                 "n" in aggregated_content[cat][metric]):
                                 mean_val = aggregated_content[cat][metric]["mean"]
@@ -1196,34 +1195,24 @@ def categ_corr_lineplot(
                                 n_val = aggregated_content[cat][metric]["n"]
                                 data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val, n_val)
 
-                                # Also store raw points if needed
+                                # Raw points
                                 raw_vals = aggregated_content[cat][metric].get("vals", [])
                                 raw_points[(layer, activation_layer, cat)][fraction_rounded] = raw_vals
 
                         else:  # SVM
-                            if ("score" in aggregated_content[cat] 
-                                and "n" in aggregated_content[cat]["score"]):
+                            if ("score" in aggregated_content[cat] and
+                                "n" in aggregated_content[cat]["score"]):
                                 mean_val = aggregated_content[cat]["score"]["mean"]
                                 std_val = aggregated_content[cat]["score"]["std"]
                                 n_val = aggregated_content[cat]["score"]["n"]
                                 data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val, n_val)
 
-                                # Also store raw points if needed
+                                # Raw points
                                 raw_vals = aggregated_content[cat]["score"].get("vals", [])
                                 raw_points[(layer, activation_layer, cat)][fraction_rounded] = raw_vals
 
-    # >>> ADD THIS DICTIONARY HERE <<<
-    pair_to_color = {
-        ("IT", "IT"): "dodgerblue",
-        ("V4", "IT"): "orangered",
-        ("V2", "IT"): "limegreen",
-        ("V1", "IT"): "orange"
-        # etc. Add as many pairs as you want to give a custom color.
-    }
-
-    # Now start the plotting:
+    # Plotting
     plt.figure(figsize=(8, 6))
-    
     for (layer, activation_layer, cat), fraction_dict in data.items():
         if len(fraction_dict) == 0:
             continue
@@ -1237,47 +1226,42 @@ def categ_corr_lineplot(
             mean_val, std_val, n_val = fraction_dict[frac]
             x_vals.append(frac)
             y_means.append(mean_val)
-            # ci could be 1.96*(std_val / np.sqrt(n_val)) if you prefer
-            ci = std_val
-            y_errs.append(ci)
+            # Could also use the 95% CI if you prefer: 1.96*(std_val / np.sqrt(n_val))
+            y_errs.append(std_val)
 
-        # Decide on label as before
+        # Label for legend
         if data_type == "selectivity":
             label_str = f"{layer} - {activation_layer} - {cat} ({metric})"
         else:
             label_str = f"{layer} - {activation_layer} - {cat} (svm)"
 
-        # >>> LOOK UP THE COLOR FROM THE DICTIONARY <<<
-        # Fallback to None if not found, so MPL picks a default
-        this_color = pair_to_color.get((layer, activation_layer), None)
+        # Pick a stable color based on (layer, activation_layer, cat)
+        this_color = get_color_for_triple(layer, activation_layer, cat)
 
-        # >>> PASS THE COLOR EXPLICITLY HERE <<<
-        line = plt.errorbar(
-            x_vals, 
-            y_means, 
-            yerr=y_errs, 
-            fmt='-o', 
-            capsize=4, 
-            label=label_str, 
+        plt.errorbar(
+            x_vals,
+            y_means,
+            yerr=y_errs,
+            fmt='-o',
+            capsize=4,
+            label=label_str,
             zorder=2,
-            color=this_color  # <--- use the looked-up or fallback color
+            color=this_color
         )
 
-        # If scatter is enabled, also pass the same color so points match the line
+        # If scatter is enabled, plot all points
         if scatter:
             for frac in fractions_sorted:
                 raw_vals = raw_points[(layer, activation_layer, cat)].get(frac, [])
                 if len(raw_vals) == 0:
                     continue
-
                 jitter_scale = 0.005
                 x_jitter = frac + np.random.normal(0, jitter_scale, size=len(raw_vals))
-                
                 plt.scatter(
                     x_jitter,
                     raw_vals,
                     alpha=0.5,
-                    color=this_color,  # <--- ensure scatter matches line color
+                    color=this_color,
                     zorder=1
                 )
 
