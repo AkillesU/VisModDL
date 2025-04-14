@@ -1531,6 +1531,13 @@ def plot_categ_differences(
         "selectivity" (the default) or anything starting with "svm" for SVM approach.
     """
     # ------------- HELPER FUNCTIONS -------------
+    def get_base_path_for(dmg_layer, act_layer):
+        if data_type.startswith("svm"):
+            # e.g. .../<dmg_layer>/svm_15/<act_layer>/
+            return os.path.join(main_dir, damage_type, dmg_layer, data_type, act_layer)
+        else:
+            # selectivity => we load correlation matrices from RDM
+            return os.path.join(main_dir, damage_type, dmg_layer, "RDM", act_layer)
 
     def get_sorted_filenames(folder):
         """Return sorted list of filenames, ignoring subdirectories."""
@@ -1769,7 +1776,7 @@ def plot_categ_differences(
             # For both data_type cases, we assume that the pickles (matrices or DataFrames)
             # are found in main_dir / damage_type / dmg_layer / "RDM" / act_layer
             # or some analogous folder. Adjust as needed.
-            base_path = os.path.join(main_dir, damage_type, dmg_layer, "RDM", act_layer)
+            base_path = get_base_path_for(dmg_layer, act_layer)
             if not os.path.isdir(base_path):
                 raise FileNotFoundError(
                     f"Directory '{base_path}' does not exist. "
