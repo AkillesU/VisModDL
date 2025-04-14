@@ -1495,6 +1495,15 @@ def plot_categ_differences(
     """
 
     # ---------------- HELPER FUNCTIONS ----------------
+    def unify_svm_name(cat_str):
+        """
+        For SVM columns, treat "place" and "scene" as the same substring.
+
+        """
+        cat_str = cat_str.lower()
+        if cat_str == "place":
+            return "scene"
+        return cat_str
     def get_sorted_filenames(folder):
         """Return sorted list of filenames, ignoring subdirectories."""
         if not os.path.isdir(folder):
@@ -1626,11 +1635,11 @@ def plot_categ_differences(
         for df in dataframes:
             lower_cols = [c.lower() for c in df.columns]
             for cat in categories_list:
-                cat_l = cat.lower()
+                cat_l = cat_l = unify_svm_name(cat)  # map "place" -> "scene"
                 for oc in categories_list:
                     if oc == cat:
                         continue
-                    oc_l = oc.lower()
+                    oc_l = oc_l  = unify_svm_name(oc)   # map "place" -> "scene"
                     # gather columns that have BOTH cat_l and oc_l
                     # e.g. "object_vs_face", "face_vs_object", etc.
                     pair_cols_idx = [
@@ -1666,7 +1675,7 @@ def plot_categ_differences(
     n_files = len(sorted_filenames)
 
     # We'll define a custom category order if you want:
-    custom_category_order = ["face", "scene", "object", "animal"]
+    custom_category_order = ["face", "place", "object", "animal"]
     # Build categories_map: {cat_name: [filenames]}
     categories_map = {}
     for fname in sorted_filenames:
