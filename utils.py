@@ -1061,12 +1061,23 @@ def categ_corr_lineplot(
         
     If data_type starts with "svm":
         - Expects subdirectories with pickled Pandas DataFrames (each file has several rows).
-        - For each file, computes the average for the relevant columns (or all columns if "total").
-        - For each category (except "total"), it searches for columns that contain the category string.
-        - Always aggregates averages for "animal", "face", "object", "scene", and "total".
-          The aggregated stats include the mean, std, and n, so that 95% CI = 1.96*std/sqrt(n).
+        - For each file, for each category, we gather columns that match that category (or all cols if "total").
+        - Special case: if user says "place", we unify it to "scene" to match the .pkl columns.
+        - Aggregates into mean, std, n, so that 95% CI = 1.96 * std / sqrt(n).
     """
 
+    # ------------------ HELPER: unify 'place' -> 'scene' for SVM columns ------------------
+    def unify_svm_name(cat_str):
+        """
+        If the user calls the category 'place', but the SVM columns say 'scene',
+        we rename 'place' -> 'scene' just for column matching.
+        """
+        cat_str = cat_str.lower()
+        if cat_str == "place":
+            return "scene"
+        return cat_str
+
+    # ------------------ Setup data structures ------------------
     # data[(layer, activation_layer, category)] -> { fraction_value : (mean, std, n) }
     # raw_points[(layer, activation_layer, category)] -> { fraction_value : list_of_all_values }
     data = {}
@@ -1078,20 +1089,23 @@ def categ_corr_lineplot(
     def get_aggregated_filename(fraction_rounded):
         return f"avg_{data_type}_{fraction_rounded}.pkl"
 
-    # Gather data
+    # ------------------ MAIN LOOP: gather data ------------------
     for layer in damage_layers:
         for activation_layer in activations_layers:
             layer_path = os.path.join(main_dir, damage_type, layer, data_subfolder, activation_layer)
             if not os.path.isdir(layer_path):
                 continue
 
+            # We'll store aggregated .pkl in a parallel folder named avg_<data_type>
             output_path = os.path.join(main_dir, damage_type, layer, f"avg_{data_type}", activation_layer)
             os.makedirs(output_path, exist_ok=True)
 
+            # Initialize data structures for each category
             for cat in categories:
                 data[(layer, activation_layer, cat)] = {}
                 raw_points[(layer, activation_layer, cat)] = {}
 
+            # Look for subdirs that match subdir_regex => e.g. "damaged_0.0"
             for subdir_name in os.listdir(layer_path):
                 subdir_path = os.path.join(layer_path, subdir_name)
                 if not os.path.isdir(subdir_path):
@@ -1106,10 +1120,11 @@ def categ_corr_lineplot(
                 fraction_file_name = get_aggregated_filename(fraction_rounded)
                 fraction_file_path = os.path.join(output_path, fraction_file_name)
 
-                # If aggregated file doesn't exist, compute it
+                # If aggregated file doesn't exist, compute it now
                 if not os.path.exists(fraction_file_path):
                     aggregated_data = {}
 
+                    # ------------------ SELECTIVITY MODE ------------------
                     if data_type == "selectivity":
                         tmp_storage = {}
                         for fname in os.listdir(subdir_path):
@@ -1119,6 +1134,7 @@ def categ_corr_lineplot(
                                     content = pickle.load(f)
                                 if not isinstance(content, dict):
                                     continue
+                                # content is like: { "face": {"observed_difference": 0.12, ...}, "object": {...}, ... }
                                 for cat_name, metrics_dict in content.items():
                                     if not isinstance(metrics_dict, dict):
                                         continue
@@ -1127,7 +1143,8 @@ def categ_corr_lineplot(
                                     for metric_name, val in metrics_dict.items():
                                         tmp_storage[cat_name].setdefault(metric_name, [])
                                         tmp_storage[cat_name][metric_name].append(val)
-                        # Compute mean, std, and n
+
+                        # Compute mean, std, and n => store in aggregated_data
                         for cat_name, metrics_map in tmp_storage.items():
                             if cat_name not in aggregated_data:
                                 aggregated_data[cat_name] = {}
@@ -1143,22 +1160,38 @@ def categ_corr_lineplot(
                                     "vals": vals_list
                                 }
 
+                    # ------------------ SVM MODE ------------------
                     else:  # e.g. "svm_15"
-                        svm_categories = ["animal", "face", "object", "scene", "total"]
-                        cat_tmp = {cat: [] for cat in svm_categories}
+                        # We'll unify "place" -> "scene", but the aggregator uses "scene" as the key:
+                        # So let's define which categories we want to store in aggregated_data.
+                        # The original code used a fixed list: ["animal", "face", "object", "scene", "total"].
+                        # We'll do something similar, but if user passes "place", we know it is "scene" in columns:
+                        # We'll just keep a standard "scene" key in the aggregator. We'll do minimal changes:
+                        svm_internal_cats = ["animal", "face", "object", "scene", "total"]
+
+                        # cat_tmp[ cat_name ] = list of all means for that cat
+                        cat_tmp = {sc: [] for sc in svm_internal_cats}
+
                         for fname in os.listdir(subdir_path):
                             if fname.lower().endswith(".pkl"):
                                 pkl_path = os.path.join(subdir_path, fname)
                                 df = pd.read_pickle(pkl_path)
-                                for cat_name in svm_categories:
-                                    if cat_name.lower() == "total":
+                                if not isinstance(df, pd.DataFrame):
+                                    continue
+
+                                # For each "svm_internal_cats" entry, gather relevant columns
+                                for cat_name in svm_internal_cats:
+                                    if cat_name == "total":
                                         cols = df.columns
                                     else:
-                                        cols = [c for c in df.columns if cat_name.lower() in c.lower()]
+                                        # unify cat_name in the DF => if cat_name='scene', columns containing 'scene'
+                                        cols = [c for c in df.columns if cat_name in c.lower()]
                                     if len(cols) == 0:
                                         continue
                                     file_avg = df[cols].values.mean()
                                     cat_tmp[cat_name].append(file_avg)
+
+                        # Now store into aggregated_data
                         for cat_name, all_vals in cat_tmp.items():
                             if len(all_vals) == 0:
                                 continue
@@ -1175,43 +1208,55 @@ def categ_corr_lineplot(
                                 }
                             }
 
+                    # Save the newly computed aggregated_data
                     with open(fraction_file_path, "wb") as f:
                         pickle.dump(aggregated_data, f)
 
-                # Load aggregated content
+                # ------------------ Load aggregated file & fill data structures ------------------
                 aggregated_content = safe_load_pickle(fraction_file_path)
                 if not isinstance(aggregated_content, dict):
                     continue
 
-                # Store (mean, std, n) in data
-                for cat in categories:
-                    if cat in aggregated_content:
+                # For each user-specified category, read out the aggregated stats
+                for user_cat in categories:
+                    # If we are in SVM mode, unify "place" => "scene" for dictionary lookup
+                    # If "total", keep as "total".
+                    if data_type.startswith("svm"):
+                        if user_cat.lower() == "place":
+                            cat_key = "scene"
+                        else:
+                            cat_key = user_cat.lower()
+                    else:
+                        cat_key = user_cat
+
+                    if cat_key in aggregated_content:
                         if data_type == "selectivity":
-                            if (isinstance(aggregated_content[cat], dict) and
-                                metric in aggregated_content[cat] and 
-                                "n" in aggregated_content[cat][metric]):
-                                mean_val = aggregated_content[cat][metric]["mean"]
-                                std_val = aggregated_content[cat][metric]["std"]
-                                n_val = aggregated_content[cat][metric]["n"]
-                                data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val, n_val)
+                            # Must have the right metric
+                            if (isinstance(aggregated_content[cat_key], dict) and
+                                metric in aggregated_content[cat_key] and
+                                "n" in aggregated_content[cat_key][metric]):
+                                mean_val = aggregated_content[cat_key][metric]["mean"]
+                                std_val = aggregated_content[cat_key][metric]["std"]
+                                n_val = aggregated_content[cat_key][metric]["n"]
+                                data[(layer, activation_layer, user_cat)][fraction_rounded] = (mean_val, std_val, n_val)
 
-                                # Raw points
-                                raw_vals = aggregated_content[cat][metric].get("vals", [])
-                                raw_points[(layer, activation_layer, cat)][fraction_rounded] = raw_vals
+                                # store raw
+                                raw_vals = aggregated_content[cat_key][metric].get("vals", [])
+                                raw_points[(layer, activation_layer, user_cat)][fraction_rounded] = raw_vals
 
-                        else:  # SVM
-                            if ("score" in aggregated_content[cat] and
-                                "n" in aggregated_content[cat]["score"]):
-                                mean_val = aggregated_content[cat]["score"]["mean"]
-                                std_val = aggregated_content[cat]["score"]["std"]
-                                n_val = aggregated_content[cat]["score"]["n"]
-                                data[(layer, activation_layer, cat)][fraction_rounded] = (mean_val, std_val, n_val)
+                        else:  # SVM path
+                            if ("score" in aggregated_content[cat_key] and
+                                "n" in aggregated_content[cat_key]["score"]):
+                                mean_val = aggregated_content[cat_key]["score"]["mean"]
+                                std_val = aggregated_content[cat_key]["score"]["std"]
+                                n_val = aggregated_content[cat_key]["score"]["n"]
+                                data[(layer, activation_layer, user_cat)][fraction_rounded] = (mean_val, std_val, n_val)
 
-                                # Raw points
-                                raw_vals = aggregated_content[cat]["score"].get("vals", [])
-                                raw_points[(layer, activation_layer, cat)][fraction_rounded] = raw_vals
+                                # store raw
+                                raw_vals = aggregated_content[cat_key]["score"].get("vals", [])
+                                raw_points[(layer, activation_layer, user_cat)][fraction_rounded] = raw_vals
 
-    # Plotting
+    # ------------------ Plotting ------------------
     plt.figure(figsize=(8, 6))
     for (layer, activation_layer, cat), fraction_dict in data.items():
         if len(fraction_dict) == 0:
@@ -1226,16 +1271,16 @@ def categ_corr_lineplot(
             mean_val, std_val, n_val = fraction_dict[frac]
             x_vals.append(frac)
             y_means.append(mean_val)
-            # Could also use the 95% CI if you prefer: 1.96*(std_val / np.sqrt(n_val))
+            # If you prefer 95% CI bars: 1.96 * std_val / sqrt(n_val). Currently just raw std.
             y_errs.append(std_val)
 
-        # Label for legend
+        # label for legend
         if data_type == "selectivity":
             label_str = f"{layer} - {activation_layer} - {cat} ({metric})"
         else:
             label_str = f"{layer} - {activation_layer} - {cat} (svm)"
 
-        # Pick a stable color based on (layer, activation_layer, cat)
+        # pick a stable color
         this_color = get_color_for_triple(layer, activation_layer, cat)
 
         plt.errorbar(
@@ -1249,7 +1294,7 @@ def categ_corr_lineplot(
             color=this_color
         )
 
-        # If scatter is enabled, plot all points
+        # scatter if desired
         if scatter:
             for frac in fractions_sorted:
                 raw_vals = raw_points[(layer, activation_layer, cat)].get(frac, [])
