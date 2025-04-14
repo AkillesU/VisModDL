@@ -20,7 +20,7 @@ tasks:
       damage_type: "noise"
       verbose: 0
       damage_levels: ["0.0","3.0"]
-      comparison: False
+      comparison: True
       scatter: True
       ylim: [0.45,1.05]
       data_type: "svm_15"
@@ -32,7 +32,7 @@ tasks:
       damage_type: "noise"
       verbose: 0
       damage_levels: ["0.0","3.0"]
-      comparison: False
+      comparison: True
       scatter: True
       ylim: [0.45,1.05]
       data_type: "svm_15"
