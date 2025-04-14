@@ -24,7 +24,7 @@ tasks:
     parameters:
       damage_layers: ["V1","V2","V4"]
       activations_layers: ["V4"]
-      damage_type: "noise"
+      damage_type: "connections"
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       categories: ["total"]
       verbose: 0
@@ -44,7 +44,7 @@ tasks:
     parameters:
       damage_layers: ["V1","V2"]
       activations_layers: ["V2"]
-      damage_type: "noise"
+      damage_type: "connections"
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       categories: ["total"]
       verbose: 0
@@ -64,7 +64,7 @@ tasks:
     parameters:
       damage_layers: ["V1"]
       activations_layers: ["V1"]
-      damage_type: "noise"
+      damage_type: "connections"
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       categories: ["total"]
       verbose: 0
