@@ -18,7 +18,7 @@ tasks:
       damage_layers: ["V1"]
       activations_layers: ["IT"]
       damage_type: "noise"
-      categories: ["animal","face","object","scene"]
+      categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
       ylim: [0.45,1.05]
@@ -42,7 +42,7 @@ tasks:
       damage_layers: ["V1"]
       activations_layers: ["IT"]
       damage_type: "connections"
-      categories: ["animal","face","object","scene"]
+      categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
       ylim: [0.45,1.05]
@@ -66,7 +66,7 @@ tasks:
       damage_layers: ["V2"]
       activations_layers: ["IT"]
       damage_type: "connections"
-      categories: ["animal","face","object","scene"]
+      categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
       ylim: [0.45,1.05]
