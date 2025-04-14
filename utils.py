@@ -1473,19 +1473,33 @@ def plot_categ_differences(
     plot_dir="plots/",
     verbose=0,
     scatter=False,
-    ylim=None
+    ylim=None,
+    data_type="selectivity"   # <-- NEW PARAMETER
 ):
     """
-    Plot mean (with std error bars) of within-vs-between-category correlations,
-    excluding the diagonal. Each "item" becomes a row in the final plot
-    unless comparison=True, in which case all items are plotted together.
+    Plot mean (with std error bars) of within-vs-between-category metrics
+    (where the metric depends on data_type).
+
+    If data_type == "selectivity":
+        - We assume each item_path is or contains correlation matrices (square).
+        - We compute within-vs-between correlation differences.
+
+    If data_type starts with "svm":
+        - We assume each item_path is or contains .pkl DataFrames with columns
+          like 'animal_...', 'face_...', etc. We compute for each category:
+            'within' = average columns that match the category
+            'between' = average columns for other categories
+          and then do (within - between).
+
+    The rest of the function's behavior (grouped bar plots, subplots, etc.)
+    remains the same as the original implementation.
 
     Parameters
     ----------
     damage_layers : list of str
         List of layer names where damage was applied.
     activations_layers : list of str
-        List of layer names from which activations (RDMs) were computed.
+        List of layer names from which activations (RDMs or DataFrames) were computed.
     damage_type : str
         Subdirectory under main_dir specifying a particular damage type.
     main_dir : str
@@ -1493,41 +1507,30 @@ def plot_categ_differences(
     image_dir : str
         Directory containing image filenames (used to determine categories).
     mode : {'files', 'dirs'}
-        If 'files', each matching file is one item. If 'dirs', each matching 
+        If 'files', each matching file is one item. If 'dirs', each matching
         directory is one item.
     file_prefix : str
         Only consider files/subdirs that start with this prefix.
     damage_levels : list of str
-        Only consider files/subdirs ending with these suffixes (e.g. multiple damage fractions).
+        Only consider files/subdirs ending with these suffixes
+        (e.g. multiple damage fractions).
     comparison : bool
-        If False (default), each (damage_layer, activation_layer, damage_level) combination is plotted 
-        as its own row of subplots (the original behavior).
-        If True, all (damage_layer, activation_layer, damage_level) combos share the same subplots, 
-        so there is only one subplot per category (grouped bar chart).
+        If False (default), each (damage_layer, activation_layer, damage_level)
+        combination is plotted as its own row of subplots.
+        If True, all combos share the same subplots (grouped bars).
     plot_dir : str
         Directory to save the resulting plot.
     verbose : {0, 1}
         If 1, prompts interactively to save or not.
         If 0, silently saves without prompting.
-
-    Raises
-    ------
-    FileNotFoundError
-        If directories or files do not exist.
-    ValueError
-        If any correlation matrix is non-square or doesn't match the image count, 
-        or if invalid `verbose` was provided.
+    scatter : bool
+        If True, scatter the individual data points on the bars.
+    ylim : tuple or None
+        If provided, sets the y-axis limits for all subplots.
+    data_type : str
+        "selectivity" (the default) or anything starting with "svm" for SVM approach.
     """
-
     # ------------- HELPER FUNCTIONS -------------
-    def extract_string_numeric_parts(fname):
-        """Extract leading string and trailing numeric part from filename."""
-        import re
-        match = re.match(r"([^\d]+)([\d\.]*)", os.path.splitext(fname)[0])
-        if match:
-            return (match.group(1), match.group(2))
-        else:
-            return (fname, "")
 
     def get_sorted_filenames(folder):
         """Return sorted list of filenames, ignoring subdirectories."""
@@ -1539,53 +1542,66 @@ def plot_categ_differences(
         ]
         return sorted(files)
 
-    def _validate_matrix(mat, path_str):
-        """Ensures 'mat' is square and matches the number of sorted_filenames."""
-        if len(mat) != n_files:
-            raise ValueError(
-                f"Matrix in '{path_str}' has {len(mat)} rows, "
-                f"but there are {n_files} image files."
-            )
-        for row in mat:
-            if len(row) != n_files:
-                raise ValueError(f"Non-square row in '{path_str}'.")
+    def extract_string_numeric_parts(fname):
+        """
+        Extract leading string and trailing numeric part from filename,
+        e.g. "face01" -> ("face", "01"), "animal12.3" -> ("animal", "12.3").
+        """
+        match = re.match(r"([^\d]+)([\d\.]*)", os.path.splitext(fname)[0])
+        if match:
+            return (match.group(1), match.group(2))
+        else:
+            return (fname, "")
 
-    def load_matrices_from_item(item_path):
+    # For SELECTIVITY: load correlation matrices, do within-vs-between
+    def load_correlation_matrices(item_path, n_files):
         """
-        If 'item_path' is a file -> load that single pickle file, return [one matrix].
-        If 'item_path' is a directory -> load all .pkl files, return list of matrices.
+        If `item_path` is a file -> load that single pickle correlation matrix.
+        If `item_path` is a directory -> load all .pkl files (each a correlation matrix).
+        Returns a list of square matrices of shape [n_files x n_files].
         """
+        def _validate_matrix(mat, path_str):
+            if len(mat) != n_files:
+                raise ValueError(
+                    f"Matrix in '{path_str}' has {len(mat)} rows, "
+                    f"but there are {n_files} image files."
+                )
+            for row in mat:
+                if len(row) != n_files:
+                    raise ValueError(f"Non-square row in '{path_str}'.")
+
+        matrices = []
         if os.path.isfile(item_path):
             with open(item_path, 'rb') as f:
                 mat = pickle.load(f)
             _validate_matrix(mat, item_path)
-            return [mat]
+            matrices.append(mat)
         elif os.path.isdir(item_path):
             allfiles = sorted(os.listdir(item_path))
             matching = [os.path.join(item_path, x) for x in allfiles if x.endswith(".pkl")]
-            matrices = []
             for mfile in matching:
                 with open(mfile, 'rb') as f:
                     mat = pickle.load(f)
                 _validate_matrix(mat, mfile)
                 matrices.append(mat)
-            return matrices
         else:
-            raise FileNotFoundError(f"'{item_path}' is neither a file nor directory.")
+            raise FileNotFoundError(f"'{item_path}' is neither file nor directory.")
+        return matrices
 
-    def compute_differences_across_matrices(matrices):
+    def compute_differences_selectivity(matrices, sorted_filenames, categories_list):
         """
-        For a list of correlation matrices, compute the within-vs-between difference
-        for each category (excluding diagonals).
-        Returns: dict[category] = (other_cats, mean_diffs, std_diffs, raw_diffs)
+        Given correlation matrices, compute within-vs-between differences:
+            difference = average(within_cat) - average(between_cat).
+        Returns a dict: diffs_dict[cat] = (other_cats, mean_vals, std_vals, list_of_arrays)
         """
+        # accum[cat][oc] = list of all (within - between) for that pair
         accum = {
             cat: {oc: [] for oc in categories_list if oc != cat}
             for cat in categories_list
         }
 
         for mat in matrices:
-            single_res = {}
+            # For each category, gather 'within' and 'between' correlation values
             for cat in categories_list:
                 within = []
                 between = {oc: [] for oc in categories_list if oc != cat}
@@ -1594,76 +1610,165 @@ def plot_categ_differences(
                     cat_r = extract_string_numeric_parts(sorted_filenames[r_i])[0]
                     for c_i, val in enumerate(row):
                         if r_i == c_i:
-                            continue  # exclude diagonal
+                            continue  # skip diagonal
                         cat_c = extract_string_numeric_parts(sorted_filenames[c_i])[0]
 
+                        # within cat?
                         if cat_r == cat and cat_c == cat:
                             within.append(val)
+                        # between cat?
                         elif cat_r == cat and cat_c != cat:
                             between[cat_c].append(val)
                         elif cat_c == cat and cat_r != cat:
                             between[cat_r].append(val)
 
                 w_avg = np.mean(within) if within else 0.0
-                b_avg = {k: (np.mean(v) if v else 0.0) for k, v in between.items()}
-                oc_list = [x for x in categories_list if x != cat]
-                diffs = [w_avg - b_avg[x] for x in oc_list]
-                single_res[cat] = (oc_list, diffs)
+                for oc in between:
+                    b_vals = between[oc]
+                    b_avg = np.mean(b_vals) if b_vals else 0.0
+                    diff = w_avg - b_avg
+                    accum[cat][oc].append(diff)
 
-            # Accumulate
-            for cat, (ocs, diffvals) in single_res.items():
-                for oc, dv in zip(ocs, diffvals):
-                    accum[cat][oc].append(dv)
-
-        # Convert to mean ±1.96*std and keep raw data
-        result = {}
+        # Now convert accum -> final structure
+        diffs_dict = {}
         for cat in accum:
             other_cats = sorted(accum[cat].keys())
             mean_vals = []
             std_vals = []
-            raw_diffs = []  # Store raw differences for individual points
+            raw_diffs = []
+            for oc in other_cats:
+                arr = np.array(accum[cat][oc])
+                mean_vals.append(arr.mean())
+                # 95% CI ~ 1.96*std
+                std_vals.append(arr.std() * 1.96)
+                raw_diffs.append(arr)
+            diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_diffs)
+        return diffs_dict
+
+    # For SVM: load data frames, compute within-vs-between
+    def load_svm_dataframes(item_path):
+        """
+        If `item_path` is a file -> load that single DataFrame.
+        If `item_path` is a directory -> load all .pkl files as DataFrames.
+        Returns a list of DataFrames.
+        """
+        dfs = []
+        if os.path.isfile(item_path):
+            with open(item_path, 'rb') as f:
+                df = pickle.load(f)
+            if not isinstance(df, pd.DataFrame):
+                raise ValueError(f"File '{item_path}' did not contain a Pandas DataFrame.")
+            dfs.append(df)
+        elif os.path.isdir(item_path):
+            allfiles = sorted(os.listdir(item_path))
+            matching = [os.path.join(item_path, x) for x in allfiles if x.endswith(".pkl")]
+            for mfile in matching:
+                df = pd.read_pickle(mfile)
+                if not isinstance(df, pd.DataFrame):
+                    raise ValueError(f"File '{mfile}' did not contain a Pandas DataFrame.")
+                dfs.append(df)
+        else:
+            raise FileNotFoundError(f"'{item_path}' is neither file nor directory.")
+        return dfs
+
+    def compute_differences_svm(dataframes, categories_list):
+        """
+        For each DataFrame, we compute, for each category:
+            'within' = average of columns that match that category (e.g. 'animal' in col name)
+            'between' = average of columns for the *other* categories
+          Then difference = within - between.
+
+        Returns diffs_dict in the same structure:
+          diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
+        """
+        # We'll accumulate (within - between) for each cat-other_cat pair
+        # though "other_cat" is more conceptual here.
+        accum = {
+            cat: {oc: [] for oc in categories_list if oc != cat}
+            for cat in categories_list
+        }
+
+        # For each DataFrame, compute differences
+        for df in dataframes:
+            # Convert columns to lower for matching
+            lower_cols = [c.lower() for c in df.columns]
+            for cat in categories_list:
+                cat_lower = cat.lower()
+                # columns for "within" cat
+                within_cols_idx = [i for i, c in enumerate(lower_cols) if cat_lower in c]
+                # average of those columns
+                if within_cols_idx:
+                    within_vals = df.iloc[:, within_cols_idx].values.flatten()
+                    within_mean = np.mean(within_vals)
+                else:
+                    within_mean = 0.0
+
+                # columns for "between" cat
+                for oc in categories_list:
+                    if oc == cat:
+                        continue
+                    oc_lower = oc.lower()
+                    between_cols_idx = [i for i, c in enumerate(lower_cols) if oc_lower in c]
+                    if between_cols_idx:
+                        between_vals = df.iloc[:, between_cols_idx].values.flatten()
+                        between_mean = np.mean(between_vals)
+                    else:
+                        between_mean = 0.0
+
+                    diff = within_mean - between_mean
+                    accum[cat][oc].append(diff)
+
+        # Convert accum -> final diffs_dict
+        diffs_dict = {}
+        for cat in accum:
+            other_cats = sorted(accum[cat].keys())
+            mean_vals = []
+            std_vals = []
+            raw_diffs = []
             for oc in other_cats:
                 arr = np.array(accum[cat][oc])
                 mean_vals.append(arr.mean())
                 std_vals.append(arr.std() * 1.96)  # 95% CI
-                raw_diffs.append(arr)  # Keep all raw differences
-            result[cat] = (other_cats, mean_vals, std_vals, raw_diffs)
-        return result
+                raw_diffs.append(arr)
+            diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_diffs)
+
+        return diffs_dict
+
     # ------------- END HELPER FUNCTIONS -------------
 
-    # -------------------------------------------------------------------------
-    # 1. Load and sort all image filenames, then group by category
-    # -------------------------------------------------------------------------
-    if image_dir is None or not os.path.isdir(image_dir):
+    # ------------------- 1. GET IMAGE FILENAMES / CATEGORIES -------------------
+    if not os.path.isdir(image_dir):
         raise FileNotFoundError(f"Image directory '{image_dir}' does not exist.")
 
     sorted_filenames = get_sorted_filenames(image_dir)
     n_files = len(sorted_filenames)
 
-    # Create a dict: {category: [filenames]}
-    categories = {}
+    # Build category -> [file1, file2, ...]
+    # We only need category names to define 'within' vs. 'between'.
+    categories_map = {}
     for fname in sorted_filenames:
         cat = extract_string_numeric_parts(fname)[0]
-        categories.setdefault(cat, []).append(fname)
+        categories_map.setdefault(cat, []).append(fname)
 
+    # You can define any custom ordering you like:
     custom_category_order = ["face", "place", "object", "animal"]
-    # Make sure these names actually match the keys in the "categories" dict:
-    categories_list = custom_category_order
+    # Keep only those that actually appear:
+    categories_list = [c for c in custom_category_order if c in categories_map]
     n_categories = len(categories_list)
 
-    # -------------------------------------------------------------------------
-    # 2. Gather all (damage_layer, activation_layer, suffix, item_path, diffs_dict)
-    # -------------------------------------------------------------------------
+    # ------------------- 2. GATHER RESULTS ACROSS ITEMS -----------------------
     if not damage_layers:
         raise ValueError("No damage_layers specified. Provide at least one damage layer.")
     if not activations_layers:
         raise ValueError("No activations_layers specified. Provide at least one activation layer.")
 
-    all_results = []  # will hold tuples (dmg_layer, act_layer, suffix, item_path, diffs_dict)
+    all_results = []  # list of (dmg_layer, act_layer, suffix, item_path, diffs_dict)
 
     for dmg_layer in damage_layers:
         for act_layer in activations_layers:
-            # We assume the RDM matrices are in: main_dir / damage_type / dmg_layer / "RDM" / act_layer
+            # For both data_type cases, we assume that the pickles (matrices or DataFrames)
+            # are found in main_dir / damage_type / dmg_layer / "RDM" / act_layer
+            # or some analogous folder. Adjust as needed.
             base_path = os.path.join(main_dir, damage_type, dmg_layer, "RDM", act_layer)
             if not os.path.isdir(base_path):
                 raise FileNotFoundError(
@@ -1671,7 +1776,6 @@ def plot_categ_differences(
                     f"Check your 'damage_type', 'damage_layers', or 'activations_layers'."
                 )
 
-            # Now loop over each suffix in damage_levels
             for suffix in damage_levels:
                 items = []
                 if mode == 'files':
@@ -1697,58 +1801,62 @@ def plot_categ_differences(
                     )
 
                 for item_path in items:
-                    mats = load_matrices_from_item(item_path)
-                    diffs_dict = compute_differences_across_matrices(mats)
+                    # Depending on data_type, we load and compute differences differently:
+                    if data_type == "selectivity" or data_type.startswith("selectivity"):
+                        matrices = load_correlation_matrices(item_path, n_files)
+                        diffs_dict = compute_differences_selectivity(
+                            matrices, sorted_filenames, categories_list
+                        )
+                    elif data_type.startswith("svm"):
+                        dfs = load_svm_dataframes(item_path)
+                        diffs_dict = compute_differences_svm(dfs, categories_list)
+                    else:
+                        raise ValueError(
+                            f"data_type='{data_type}' not recognized. "
+                            f"Use 'selectivity' or something starting with 'svm'."
+                        )
+
                     all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
 
-    # -------------------------------------------------------------------------
-    # 3. Plot the results
-    # -------------------------------------------------------------------------
+    # ------------------- 3. PLOTTING -----------------------
     if not comparison:
-        # ------------------------------------------------
-        # Original behavior: one row per combination
-        # (dmg_layer, act_layer, suffix, item_path),
-        # one column per category
-        # ------------------------------------------------
+        # ============================================
+        # Original style: one row per combination
+        # and one column per category
+        # ============================================
         num_rows = len(all_results)
         fig, axes = plt.subplots(
             num_rows, n_categories,
             figsize=(3*n_categories, 3*num_rows),
             sharey=True
         )
-        axes = np.array(axes, ndmin=2)  # ensure 2D array
+        axes = np.array(axes, ndmin=2)  # ensure 2D
 
         for i, (dmg_layer, act_layer, suffix, item_path, diffs_dict) in enumerate(all_results):
-            label = os.path.basename(item_path.rstrip("/\\"))
-
             for j, cat in enumerate(categories_list):
                 ax = axes[i, j]
                 if cat not in diffs_dict:
                     ax.set_visible(False)
                     continue
-
                 other_cats, mean_vals, std_vals, raw_diffs = diffs_dict[cat]
                 x_pos = np.arange(len(other_cats))
 
-                # Plot bars
+                # Bars
                 bars = ax.bar(
                     x_pos, mean_vals,
                     yerr=std_vals,
                     capsize=4,
-                    )
-                
-                # Plot individual points if requested
+                )
+
                 if scatter:
-                    for idx, (x, raw_vals) in enumerate(zip(x_pos, raw_diffs)):
-                        # Get bar color for matching
-                        bar_color = bars[idx].get_edgecolor()
-                        # Add jitter to x position
-                        jitter = np.random.normal(0, 0.05, size=len(raw_vals))
-                        # Plot points with transparency
+                    # scatter the individual points
+                    for idx, arr in enumerate(raw_diffs):
+                        if len(arr) == 0:
+                            continue
+                        jitter = np.random.normal(0, 0.05, size=len(arr))
                         ax.scatter(
-                            x + jitter, raw_vals,
-                            color=bar_color, alpha=0.4,
-                            s=20, zorder=0
+                            x_pos[idx] + jitter, arr,
+                            alpha=0.4, s=20, zorder=0
                         )
 
                 ax.set_xticks(x_pos)
@@ -1756,17 +1864,16 @@ def plot_categ_differences(
                 if ylim is not None:
                     ax.set_ylim(ylim)
 
-                # Show info in the subplot title
-                ax.set_title(f"{dmg_layer}, {act_layer}, Damage={suffix}\n{cat}")
+                ax.set_title(f"{dmg_layer}, {act_layer}, dmg={suffix}\n{cat}")
                 if j == 0:
-                    ax.set_ylabel("Avg(Within) - Avg(Between)")
+                    ax.set_ylabel("Within - Between")
 
         plt.tight_layout()
-        # Saving plot
         os.makedirs(plot_dir, exist_ok=True)
-        model_name = main_dir.strip("/").split("/")[-1]
-        plot_name = f"{model_name}_categ-diff_{damage_type}"
 
+        # Construct a filename
+        model_name = main_dir.strip("/").split("/")[-1]
+        plot_name = f"{model_name}_{data_type}_categ-diff_{damage_type}"
         for layer in damage_layers:
             plot_name += f"_{layer}"
         for al in activations_layers:
@@ -1774,128 +1881,89 @@ def plot_categ_differences(
         plot_name += f"_{len(damage_levels)}-levels"
         if scatter:
             plot_name += "_with-points"
-
-        save_path = os.path.join(plot_dir, plot_name)
+        plot_path = os.path.join(plot_dir, plot_name)
 
         if verbose == 1:
-            save_plot = input(f"Save plot under {save_path}? Y/N: ")
+            save_plot = input(f"Save plot under {plot_path}? Y/N: ")
             if save_plot.capitalize() == "Y":
-                plt.savefig(save_path, dpi=500)
+                plt.savefig(plot_path, dpi=500)
             plt.show()
         elif verbose == 0:
-            plt.savefig(save_path, dpi=500)
+            plt.savefig(plot_path, dpi=500)
             plt.show()
         else:
-            raise ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
+            raise ValueError(f"{verbose} is not valid. Use 0 or 1.")
 
     else:
-        # ------------------------------------------------
-        # comparison=True
-        # Plot all combos in the SAME subplots,
-        # so there is only ONE subplot per category
-        # We'll create grouped bars for each "other cat" across combos.
-        # ------------------------------------------------
-        # 1) Build a dictionary: results_by_cat[cat][(dmg_layer, act_layer, suffix, item_path)] = (other_cats, mean_vals, std_vals, raw_diffs)
-        # 1) Build a dictionary: results_by_cat[cat][(dmg_layer, act_layer, suffix, item_path)]
+        # ============================================
+        # comparison=True -> grouped bars in the SAME subplots
+        # One subplot per category
+        # ============================================
+        # 1) Gather results by category
         results_by_cat = {cat: {} for cat in categories_list}
-
-        combos = []  # keep track of all (dmg_layer, act_layer, suffix, item_path)
+        combos = []
         for (dmg_layer, act_layer, suffix, item_path, diffs_dict) in all_results:
             combo_key = (dmg_layer, act_layer, suffix, item_path)
             if combo_key not in combos:
                 combos.append(combo_key)
             for cat in categories_list:
-                if cat in diffs_dict:
-                    results_by_cat[cat][combo_key] = diffs_dict[cat]
-                else:
-                    results_by_cat[cat][combo_key] = ([], [], [], [])
+                results_by_cat[cat][combo_key] = diffs_dict.get(cat, ([], [], [], []))
 
-        # 2) Create one subplot per category
-        fig, axes = plt.subplots(
-            1, n_categories,
-            figsize=(4*n_categories, 4),
-            sharey=True
-        )
+        # 2) Plot
+        fig, axes = plt.subplots(1, n_categories, figsize=(4*n_categories, 4), sharey=True)
         if n_categories == 1:
-            axes = [axes]  # ensure axes is iterable if only one category
-
+            axes = [axes]
 
         bar_width = 0.8 / len(combos)
         for j, cat in enumerate(categories_list):
             ax = axes[j]
             ax.set_title(f"Comparison for Category: {cat}")
-            ax.set_ylabel("Avg(Within) - Avg(Between)")
+            ax.set_ylabel("Within - Between")
 
-            # Find a consistent ordering of other_cats using the first non-empty entry
-            all_other_cats = None
             for i, combo_key in enumerate(combos):
                 (oc_list, mean_vals, std_vals, raw_diffs) = results_by_cat[cat][combo_key]
-    
                 if not oc_list:
-                    # If empty, skip plotting or fill with zeros
-                    # (Here we'll just skip.)
+                    # skip if no data
                     continue
 
-                # =========== REORDER "OTHER CATS" =============
+                # Reorder other_cats to a consistent order (matching custom_category_order)
+                # but only those that appear in oc_list
                 index_map = {c: idx for idx, c in enumerate(oc_list)}
-
-                # Filter to only those categories that exist in 'index_map'
-                # This ensures we don't try to index into something that isn't present
                 new_oc_list = [c for c in custom_category_order if c in index_map]
 
-                # Now reorder all the data arrays
                 new_mean_vals = [mean_vals[index_map[c]] for c in new_oc_list]
                 new_std_vals = [std_vals[index_map[c]] for c in new_oc_list]
                 new_raw_diffs = [raw_diffs[index_map[c]] for c in new_oc_list]
-
-                # We only define x_pos once (for each combo) if it doesn't exist,
-                # but *ideally* it's consistent across combos. So let's do it
-                # each time for safety, or we can do once outside the combos loop
                 x_pos = np.arange(len(new_oc_list))
 
                 offset = i * bar_width
+                bar_color = f"C{i}"
 
-                # bar color
-                bar_edge_color = f"C{i}"
-
-                # Plot the bars (transparent fill, thicker edges)
                 bars = ax.bar(
                     x_pos + offset,
                     new_mean_vals,
                     yerr=new_std_vals,
                     width=bar_width,
-                    label=f"{dmg_layer}, {act_layer}, dmg={suffix}",
+                    label=f"{combo_key[0]}, {combo_key[1]}, dmg={combo_key[2]}",
                     capsize=4,
                     facecolor="none",
-                    edgecolor=bar_edge_color,
+                    edgecolor=bar_color,
                     linewidth=2
                 )
 
-                # Scatter if desired
                 if scatter:
-                    for idx, rv in enumerate(new_raw_diffs):
-                        if len(rv) > 0:
-                            jitter = np.random.normal(0, bar_width/6, size=len(rv))
-                            ax.scatter(
-                                (x_pos[idx] + offset) + jitter,
-                                rv,
-                                color=bar_edge_color,
-                                alpha=0.4,
-                                s=20,
-                                zorder=0  # behind bars, if you prefer
-                            )
-            for bar in bars:
-                # Get the bar geometry
-                x = bar.get_x()                     # left edge of the bar
-                width = bar.get_width()             # width of the bar
-                bottom = bar.get_y()                # usually 0 (unless you set a bottom)
-                height = bar.get_height()           # bar height
-                top = bottom + height               # the top y-coordinate
+                    for idx, arr in enumerate(new_raw_diffs):
+                        if len(arr) == 0:
+                            continue
+                        jitter = np.random.normal(0, bar_width/6, size=len(arr))
+                        ax.scatter(
+                            (x_pos[idx] + offset) + jitter,
+                            arr,
+                            alpha=0.4, s=20,
+                            color=bar_color,
+                            zorder=0
+                        )
 
-                # Draw a black line across the top
-                ax.plot([x, x + width], [top, top],
-                        color='black', linewidth=2, zorder=5)
-            # After we've plotted all combos, set x-ticks & labels using the new_oc_list
             ax.set_xticks(x_pos + bar_width*(len(combos)/2 - 0.5))
             ax.set_xticklabels(new_oc_list, rotation=45, ha='right')
             if ylim is not None:
@@ -1904,28 +1972,29 @@ def plot_categ_differences(
         ax.legend(bbox_to_anchor=(1.05, 1.0), loc='upper left')
         plt.tight_layout()
 
-        # Saving plot
         os.makedirs(plot_dir, exist_ok=True)
         model_name = main_dir.strip("/").split("/")[-1]
-        plot_name = f"{model_name}_categ-diff_{damage_type}"
+        plot_name = f"{model_name}_{data_type}_categ-diff_{damage_type}"
         for layer in damage_layers:
             plot_name += f"_{layer}"
         for al in activations_layers:
             plot_name += f"_{al}"
         plot_name += f"_{len(damage_levels)}-levels_comparison"
-
-        save_path = os.path.join(plot_dir, plot_name)
+        if scatter:
+            plot_name += "_with-points"
+        plot_path = os.path.join(plot_dir, plot_name)
 
         if verbose == 1:
-            save_plot = input(f"Save plot under {save_path}? Y/N: ")
+            save_plot = input(f"Save plot under {plot_path}? Y/N: ")
             if save_plot.capitalize() == "Y":
-                plt.savefig(save_path, dpi=500)
+                plt.savefig(plot_path, dpi=500)
             plt.show()
         elif verbose == 0:
-            plt.savefig(save_path, dpi=500)
+            plt.savefig(plot_path, dpi=500)
             plt.show()
         else:
-            raise ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
+            raise ValueError(f"{verbose} is not valid. Use 0 or 1.")
+
 
 def aggregate_permutations(
     main_dir,
