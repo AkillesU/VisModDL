@@ -1666,7 +1666,7 @@ def plot_categ_differences(
     n_files = len(sorted_filenames)
 
     # We'll define a custom category order if you want:
-    custom_category_order = ["face", "place", "object", "animal"]
+    custom_category_order = ["face", "scene", "object", "animal"]
     # Build categories_map: {cat_name: [filenames]}
     categories_map = {}
     for fname in sorted_filenames:
