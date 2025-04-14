@@ -3,92 +3,24 @@ tasks:
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V1","V2","V4","IT"]
+      damage_layers: ["V1"]
       activations_layers: ["IT"]
       damage_type: "noise"
-      categories: ["total"]
+      categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0,0.2]
+      ylim: [0,0.5]
       data_type: "selectivity"
       scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V1","V2","V4","IT"]
-      activations_layers: ["IT"]
-      damage_type: "connections"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [0,0.2]
-      data_type: "selectivity"
-      scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["IT"]
-      activations_layers: ["IT"]
-      damage_type: "connections"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [0,0.2]
-      data_type: "selectivity"
-      scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V4","IT"]
-      activations_layers: ["IT"]
-      damage_type: "connections"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [0,0.2]
-      data_type: "selectivity"
-      scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V1","V2","V4"]
-      activations_layers: ["V4"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [0,0.1]
-      data_type: "selectivity"
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V1","V2","V4"]
-      activations_layers: ["V4"]
-      damage_type: "connections"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [0,0.1]
-      data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1"]
       activations_layers: ["IT"]
       damage_type: "noise"
-      categories: ["animal","object","face","place"]
+      categories: ["animal","face","object","scene"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [-0.1,0.5]
-      data_type: "selectivity"
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V1"]
-      activations_layers: ["IT"]
-      damage_type: "connections"
-      categories: ["animal","object","face","place"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [-0.1,0.5]
-      data_type: "selectivity"
+      ylim: [0.45,1.05]
+      data_type: "svm_15"
+      scatter: True
