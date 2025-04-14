@@ -7,7 +7,7 @@ tasks:
       activations_layers: ["IT"]
       damage_type: "connections"
       verbose: 0
-      damage_levels: ["0.0","3.0"]
+      damage_levels: ["0.0","2.9"]
       comparison: True
       scatter: True
       ylim: [0.45,1.05]
@@ -19,7 +19,7 @@ tasks:
       activations_layers: ["IT"]
       damage_type: "noise"
       verbose: 0
-      damage_levels: ["0.0","3.0"]
+      damage_levels: ["0.0","2.9"]
       comparison: False
       scatter: True
       ylim: [0.45,1.05]
@@ -31,7 +31,7 @@ tasks:
       activations_layers: ["IT"]
       damage_type: "noise"
       verbose: 0
-      damage_levels: ["0.0","3.0"]
+      damage_levels: ["0.0","2.9"]
       comparison: False
       scatter: True
       ylim: [0.45,1.05]
