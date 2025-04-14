@@ -1480,8 +1480,8 @@ def plot_categ_differences(
     Plot either:
       - Selectivity: bars = (within-cat) - (between-cat) for correlation-based data
       - SVM: bars = average classification accuracy between focal cat and other cat
-        (i.e., columns that contain cat and the other cat, aggregated).
-    
+        (i.e., columns that contain both cat and the other cat, aggregated).
+
     If comparison=False, each (damage_layer, activation_layer, damage_level) combo
     is its own row of subplots (columns = categories). If comparison=True, everything
     is combined in fewer subplots with grouped bars.
@@ -1495,15 +1495,26 @@ def plot_categ_differences(
     """
 
     # ---------------- HELPER FUNCTIONS ----------------
+    def unify_image_name(cat_str):
+        """
+        Make sure that if the image file prefix is 'scene', we treat it as 'place'
+        for the SELECTIVITY categories. That way the user always sees 'place' in plots.
+        """
+        cat_str = cat_str.lower()
+        if cat_str == "scene":
+            return "place"
+        return cat_str
+
     def unify_svm_name(cat_str):
         """
-        For SVM columns, treat "place" and "scene" as the same substring.
-
+        For SVM columns, treat 'place' the same as 'scene': if the user category is 'place',
+        we look for columns containing 'scene'. For example 'scene_vs_object'.
         """
         cat_str = cat_str.lower()
         if cat_str == "place":
             return "scene"
         return cat_str
+
     def get_sorted_filenames(folder):
         """Return sorted list of filenames, ignoring subdirectories."""
         if not os.path.isdir(folder):
@@ -1525,7 +1536,7 @@ def plot_categ_differences(
         else:
             return (fname, "")
 
-    # For SELECTIVITY (load correlation matrices, do within-between).
+    # ----------- SELECTIVITY FUNCTIONS -------------
     def load_correlation_matrices(item_path, n_files):
         def _validate_matrix(mat, path_str):
             if len(mat) != n_files:
@@ -1562,16 +1573,17 @@ def plot_categ_differences(
             cat: {oc: [] for oc in categories_list if oc != cat}
             for cat in categories_list
         }
+
         for mat in matrices:
             for cat in categories_list:
                 within = []
                 between = {oc: [] for oc in categories_list if oc != cat}
                 for r_i, row in enumerate(mat):
-                    cat_r = extract_string_numeric_parts(sorted_filenames[r_i])[0]
+                    cat_r = unify_image_name(extract_string_numeric_parts(sorted_filenames[r_i])[0])
                     for c_i, val in enumerate(row):
                         if r_i == c_i:
                             continue  # skip diagonal
-                        cat_c = extract_string_numeric_parts(sorted_filenames[c_i])[0]
+                        cat_c = unify_image_name(extract_string_numeric_parts(sorted_filenames[c_i])[0])
                         if cat_r == cat and cat_c == cat:
                             within.append(val)
                         elif cat_r == cat and cat_c != cat:
@@ -1598,7 +1610,7 @@ def plot_categ_differences(
             diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
         return diffs_dict
 
-    # For SVM (load DataFrames, do direct classification accuracy).
+    # ----------- SVM FUNCTIONS -------------
     def load_svm_dataframes(item_path):
         """Load all .pkl files as DataFrames from a dir or a single file."""
         dfs = []
@@ -1621,11 +1633,13 @@ def plot_categ_differences(
 
     def compute_svm_pairwise_accuracies(dataframes, categories_list):
         """
-        We do NOT do 'within - between' here. For each focal cat 'cat' and other cat 'oc':
+        For each focal cat 'cat' and other cat 'oc':
           - find columns containing BOTH cat and oc (e.g., 'object_vs_face')
           - average them => that bar = classification accuracy for cat vs oc.
         So diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays),
         but 'mean_vals' are the direct classification accuracy for cat~oc columns.
+        
+        If cat == 'place', we unify to 'scene' for column matching, etc.
         """
         accum = {
             cat: {oc: [] for oc in categories_list if oc != cat}
@@ -1635,13 +1649,12 @@ def plot_categ_differences(
         for df in dataframes:
             lower_cols = [c.lower() for c in df.columns]
             for cat in categories_list:
-                cat_l = cat_l = unify_svm_name(cat)  # map "place" -> "scene"
+                cat_l = unify_svm_name(cat)  # map "place" -> "scene" for columns
                 for oc in categories_list:
                     if oc == cat:
                         continue
-                    oc_l = oc_l  = unify_svm_name(oc)   # map "place" -> "scene"
+                    oc_l = unify_svm_name(oc)
                     # gather columns that have BOTH cat_l and oc_l
-                    # e.g. "object_vs_face", "face_vs_object", etc.
                     pair_cols_idx = [
                         i for i, col in enumerate(lower_cols)
                         if (cat_l in col) and (oc_l in col)
@@ -1674,19 +1687,22 @@ def plot_categ_differences(
     sorted_filenames = get_sorted_filenames(image_dir)
     n_files = len(sorted_filenames)
 
-    # We'll define a custom category order if you want:
+    # We'll define a custom category order with "place" (not "scene"):
     custom_category_order = ["face", "place", "object", "animal"]
+
     # Build categories_map: {cat_name: [filenames]}
     categories_map = {}
     for fname in sorted_filenames:
-        cat = extract_string_numeric_parts(fname)[0]
+        # unify "scene" -> "place" if needed:
+        cat_raw = extract_string_numeric_parts(fname)[0]
+        cat = unify_image_name(cat_raw)  # if cat_raw == "scene" => cat = "place"
         categories_map.setdefault(cat, []).append(fname)
+
     # keep only categories that are actually found
     categories_list = [c for c in custom_category_order if c in categories_map]
     n_categories = len(categories_list)
 
     # ---------- 2) GATHER RESULTS (matrices or dataframes) -----------
-    # Decide how to find the base path (selectivity -> "RDM", svm -> "svm_XX")
     def get_base_path(dmg_layer, act_layer):
         if data_type.startswith("svm"):
             # e.g. .../<dmg_layer>/svm_15/<act_layer>/
@@ -1738,11 +1754,9 @@ def plot_categ_differences(
                 # load each item and compute diffs
                 for item_path in items:
                     if data_type.startswith("svm"):
-                        # SVM => classification accuracy
                         dfs = load_svm_dataframes(item_path)
                         diffs_dict = compute_svm_pairwise_accuracies(dfs, categories_list)
                     else:
-                        # selectivity => correlation matrix
                         mats = load_correlation_matrices(item_path, n_files)
                         diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
 
@@ -1922,7 +1936,6 @@ def plot_categ_differences(
             plt.show()
         else:
             raise ValueError(f"{verbose} is not valid. Use 0 or 1.")
-
 
 
 def aggregate_permutations(
