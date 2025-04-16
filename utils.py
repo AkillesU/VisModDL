@@ -1534,8 +1534,9 @@ def plot_categ_differences(
     subplots with grouped bars.
 
     When percentages=True, the first damage level (damage_levels[0]) is treated
-    as baseline (100%) within each (damage_layer, activation_layer) group. All
-    other bars in that group are scaled relative to this baseline.
+    as the baseline. We compute ratio = (current / baseline) * 100 for each raw
+    replicate. That includes re-scaling the baseline itself, so the baseline
+    bar is at 100%.  
 
     data_type:
        "selectivity" -> correlation-based data from ".../RDM/<act_layer>"
@@ -1544,18 +1545,14 @@ def plot_categ_differences(
 
     # ---------------- HELPER FUNCTIONS ----------------
     def unify_image_name(cat_str):
-        """
-        Convert 'scene' -> 'place' for selectivity categories.
-        """
+        """ Convert 'scene' -> 'place' for selectivity categories. """
         cat_str = cat_str.lower()
         if cat_str == "scene":
             return "place"
         return cat_str
 
     def unify_svm_name(cat_str):
-        """
-        Convert 'place' -> 'scene' for matching columns in SVM data.
-        """
+        """ Convert 'place' -> 'scene' for matching columns in SVM data. """
         cat_str = cat_str.lower()
         if cat_str == "place":
             return "scene"
@@ -1728,19 +1725,24 @@ def plot_categ_differences(
         Given two diffs_dict structures:
           - diffs_dict_current: { cat: (oc_list, mean_vals, std_vals, raw_arrays) }
           - diffs_dict_baseline: same structure, used as baseline.
-        We produce a new scaled version of diffs_dict_current,
-        so that each raw replicate is (current/baseline) * 100.
+
+        Produce a new scaled version of diffs_dict_current where each raw replicate
+        is (current / baseline) * 100. The baseline's own replicate also becomes 100%
+        (since baseline / baseline = 1).
+
+        If baseline replicate is 0, we get NaN for that ratio.
         """
         scaled_dict = {}
         for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_dict_current.items():
-            # If cat not in baseline, keep the original
+            # If cat not in baseline, keep original (or set to NaN).
             if cat not in diffs_dict_baseline:
                 scaled_dict[cat] = (oc_list, mean_vals, std_vals, raw_arrays)
                 continue
 
             base_oc_list, base_mean_vals, base_std_vals, base_raw_arrays = diffs_dict_baseline[cat]
-            # We'll assume oc_list and base_oc_list are in the same sorted order of other cats:
-            # If they differ, you may want a robust 'index matching' approach:
+
+            # We'll assume oc_list and base_oc_list are in the same sorted order
+            # If they differ, you could do a more robust 'index matching'.
             scaled_oc_list = oc_list
             new_mean_vals = []
             new_std_vals = []
@@ -1748,13 +1750,11 @@ def plot_categ_differences(
 
             for i, oc in enumerate(oc_list):
                 # find the corresponding baseline index for oc
-                # (assuming sorted in the same order by default)
                 if i >= len(base_oc_list) or oc != base_oc_list[i]:
                     # fallback: search by name
                     try:
                         base_i = base_oc_list.index(oc)
                     except ValueError:
-                        # no match => skip or store NaN
                         new_mean_vals.append(np.nan)
                         new_std_vals.append(np.nan)
                         new_raw_arrays.append([])
@@ -1765,7 +1765,7 @@ def plot_categ_differences(
                 arr_base = np.array(base_raw_arrays[base_i])
                 arr_curr = np.array(raw_arrays[i])
 
-                # If arrays differ in length for some reason, use the smaller
+                # If arrays differ in length for some reason, match the smaller
                 min_len = min(len(arr_base), len(arr_curr))
                 arr_base = arr_base[:min_len]
                 arr_curr = arr_curr[:min_len]
@@ -1778,7 +1778,6 @@ def plot_categ_differences(
                         ratio_arr.append(np.nan)
 
                 ratio_arr = np.array(ratio_arr)
-                # Compute new mean + 95% CI
                 new_mean_vals.append(np.nanmean(ratio_arr))
                 new_std_vals.append(np.nanstd(ratio_arr) * 1.96)
                 new_raw_arrays.append(ratio_arr.tolist())
@@ -1891,14 +1890,10 @@ def plot_categ_differences(
                 continue
             baseline_diffs = baseline_item[2]
 
-            # Scale the other suffixes to the baseline
+            # Scale *every* suffix (including the baseline) 
+            # so that baseline ÷ baseline = 1 => 100%.
             for (sfx, ipath, current_diffs, idx_in_all) in items:
-                if sfx == baseline_sfx:
-                    # The baseline remains unscaled => effectively 100%
-                    continue
-
                 scaled_diffs = scale_to_baseline(current_diffs, baseline_diffs)
-
                 # Overwrite in updated_all_results
                 old_tuple = list(updated_all_results[idx_in_all])
                 old_tuple[4] = scaled_diffs
@@ -2091,6 +2086,7 @@ def plot_categ_differences(
             plt.show()
         else:
             raise ValueError(f"{verbose} is not valid. Use 0 or 1.")
+
 
 
 def aggregate_permutations(
