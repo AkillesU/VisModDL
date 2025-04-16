@@ -20,6 +20,8 @@ from sklearn.svm import SVC
 from itertools import combinations, product
 import random
 import hashlib
+from collections import defaultdict
+
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -1532,7 +1534,7 @@ def plot_categ_differences(
     is its own row of subplots (columns = categories). 
     If comparison=True, fewer subplots with grouped bars.
 
-    When percentages=True, the first damage level in 'damage_levels' is used as 
+    When percentage=True, the first damage level in 'damage_levels' is used as 
     the baseline (set to 100%) for each category-othercat measure. Other levels 
     are scaled relative to it.
 
@@ -1806,7 +1808,7 @@ def plot_categ_differences(
                     all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
 
     # 3) (OPTIONAL) CONVERT TO PERCENTAGES RELATIVE TO THE FIRST DAMAGE LEVEL
-    if percentages:
+    if percentage:
         # Group results by (dmg_layer, act_layer) so we can do the ratio 
         # with the first damage_level as baseline within each group.
         grouped = defaultdict(list)
@@ -1931,7 +1933,7 @@ def plot_categ_differences(
                     ylab = "Classification Accuracy"
                 else:
                     ylab = "Within - Between"
-                if percentages:
+                if percentage:
                     ylab += " (%)"
                 ax.set_ylabel(ylab)
                 ax.set_title(f"{dmg_layer}, {act_layer}, dmg={suffix}\n{cat}")
@@ -1947,7 +1949,7 @@ def plot_categ_differences(
         plot_name += f"_{len(damage_levels)}-levels"
         if scatter:
             plot_name += "_with-points"
-        if percentages:
+        if percentage:
             plot_name += "_percent"
         plot_path = os.path.join(plot_dir, plot_name)
 
@@ -1987,7 +1989,7 @@ def plot_categ_differences(
                 ylab = "Classification Accuracy"
             else:
                 ylab = "Within - Between"
-            if percentages:
+            if percentage:
                 ylab += " (%)"
             ax.set_ylabel(ylab)
             ax.set_title(f"{cat}")
@@ -2051,7 +2053,7 @@ def plot_categ_differences(
         plot_name += f"_{len(damage_levels)}-levels_comparison"
         if scatter:
             plot_name += "_with-points"
-        if percentages:
+        if percentage:
             plot_name += "_percent"
         plot_path = os.path.join(plot_dir, plot_name)
 
