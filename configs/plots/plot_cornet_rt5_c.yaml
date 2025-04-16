@@ -12,7 +12,6 @@ tasks:
       percentage: True
       ylim: [-5,105]
       data_type: "selectivity"
-      scatter: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -25,7 +24,6 @@ tasks:
       percentage: True
       ylim: [-5,105]
       data_type: "svm_15"
-      scatter: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -38,7 +36,6 @@ tasks:
       percentage: True
       ylim: [-5,105]
       data_type: "selectivity"
-      scatter: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -51,7 +48,6 @@ tasks:
       percentage: True
       ylim: [-5,105]
       data_type: "svm_15"
-      scatter: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -64,7 +60,6 @@ tasks:
       percentage: True
       ylim: [-5,105]
       data_type: "selectivity"
-      scatter: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -77,7 +72,6 @@ tasks:
       percentage: True
       ylim: [-5,105]
       data_type: "svm_15"
-      scatter: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -90,7 +84,6 @@ tasks:
       percentage: True
       ylim: [-5,105]
       data_type: "selectivity"
-      scatter: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -101,6 +94,5 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       data_type: "svm_15"
-      scatter: True
       percentage: True
       ylim: [-5,105]
