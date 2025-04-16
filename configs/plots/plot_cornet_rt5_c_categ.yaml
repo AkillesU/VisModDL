@@ -11,6 +11,7 @@ tasks:
       comparison: True
       scatter: True
       ylim: [0,1.2]
+      percentage: True
   - function: plot_categ_differences
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -22,6 +23,7 @@ tasks:
       comparison: True
       scatter: True
       ylim: [0,1.2]
+      percentage: True
   - function: plot_categ_differences
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -33,6 +35,7 @@ tasks:
       comparison: True
       scatter: True
       ylim: [0,1.2]
+      percentage: True
   - function: plot_categ_differences
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -44,6 +47,7 @@ tasks:
       comparison: True
       scatter: True
       ylim: [0,1.2]
+      percentage: True
   - function: plot_categ_differences
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -55,6 +59,7 @@ tasks:
       comparison: True
       scatter: True
       ylim: [0,1.2]
+      percentage: True
   - function: plot_categ_differences
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -66,6 +71,7 @@ tasks:
       comparison: True
       scatter: True
       ylim: [0,1.2]
+      percentage: True
   - function: plot_categ_differences
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -77,6 +83,7 @@ tasks:
       comparison: True
       scatter: True
       ylim: [0,1.2]
+      percentage: True
   - function: plot_categ_differences
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -88,3 +95,4 @@ tasks:
       comparison: True
       scatter: True
       ylim: [0,1.2]
+      percentage: True
