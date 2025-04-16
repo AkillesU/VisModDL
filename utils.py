@@ -1520,7 +1520,7 @@ def plot_categ_differences(
     scatter=False,
     ylim=None,
     data_type="selectivity",   # "selectivity" or e.g. "svm_15"
-    percentages=False
+    percentage=False
 ):
     """
     Plot either:
