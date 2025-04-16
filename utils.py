@@ -1054,21 +1054,26 @@ def categ_corr_lineplot(
     data_type="selectivity",  # either "selectivity" or e.g. "svm_15"
     scatter=False,
     verbose=0,
-    ylim=None
+    ylim=None,
+    percentage=False   # <-- NEW ARGUMENT
 ):
     """
     If data_type == "selectivity":
         - Expects subdirectories with pickled dictionaries (one value per file per category & metric).
-        - Aggregates file-level averages by computing the mean, std and sample size across files.
+          The aggregator lumps them into an 'aggregated_data' dictionary with mean/std/n/vals.
         
     If data_type starts with "svm":
         - Expects subdirectories with pickled Pandas DataFrames (each file has several rows).
-        - For each file, for each category, we gather columns that match that category (or all cols if "total").
-        - Special case: if user says "place", we unify it to "scene" to match the .pkl columns.
-        - Aggregates into mean, std, n, so that 95% CI = 1.96 * std / sqrt(n).
+        - For each file, we gather columns matching each category (including 'total' == all columns).
+        - Aggregates into mean, std, n, so 95% CI could be computed if desired.
+
+    When percentage=True, the smallest fraction (damage param) for each 
+    (damage_layer, activation_layer, category) is set to 100%, and all other 
+    fractions are scaled as (current / baseline) * 100. This scaling is done 
+    on the raw replicates to correctly re-compute mean and std.
     """
 
-    # ------------------ HELPER: unify 'place' -> 'scene' for SVM columns ------------------
+    # ------------------ HELPER: unify 'place' -> 'scene' for SVM columns ------------------    
     def unify_svm_name(cat_str):
         """
         If the user calls the category 'place', but the SVM columns say 'scene',
@@ -1107,7 +1112,7 @@ def categ_corr_lineplot(
                 data[(layer, activation_layer, cat)] = {}
                 raw_points[(layer, activation_layer, cat)] = {}
 
-            # Look for subdirs that match subdir_regex => e.g. "damaged_0.0"
+            # Look for subdirs that match subdir_regex => e.g. "damaged_0.0", "damaged_0.1", etc.
             for subdir_name in os.listdir(layer_path):
                 subdir_path = os.path.join(layer_path, subdir_name)
                 if not os.path.isdir(subdir_path):
@@ -1164,14 +1169,9 @@ def categ_corr_lineplot(
 
                     # ------------------ SVM MODE ------------------
                     else:  # e.g. "svm_15"
-                        # We'll unify "place" -> "scene", but the aggregator uses "scene" as the key:
-                        # So let's define which categories we want to store in aggregated_data.
-                        # The original code used a fixed list: ["animal", "face", "object", "scene", "total"].
-                        # We'll do something similar, but if user passes "place", we know it is "scene" in columns:
-                        # We'll just keep a standard "scene" key in the aggregator. We'll do minimal changes:
+                        # We'll unify "place" -> "scene" inside the aggregator:
+                        # We'll store keys: "animal", "face", "object", "scene", "total"
                         svm_internal_cats = ["animal", "face", "object", "scene", "total"]
-
-                        # cat_tmp[ cat_name ] = list of all means for that cat
                         cat_tmp = {sc: [] for sc in svm_internal_cats}
 
                         for fname in os.listdir(subdir_path):
@@ -1181,12 +1181,13 @@ def categ_corr_lineplot(
                                 if not isinstance(df, pd.DataFrame):
                                     continue
 
-                                # For each "svm_internal_cats" entry, gather relevant columns
+                                # For each of the known categories, gather relevant columns
                                 for cat_name in svm_internal_cats:
                                     if cat_name == "total":
+                                        # "total" means all columns
                                         cols = df.columns
                                     else:
-                                        # unify cat_name in the DF => if cat_name='scene', columns containing 'scene'
+                                        # unify cat_name => if 'scene', columns containing 'scene'
                                         cols = [c for c in df.columns if cat_name in c.lower()]
                                     if len(cols) == 0:
                                         continue
@@ -1258,12 +1259,55 @@ def categ_corr_lineplot(
                                 raw_vals = aggregated_content[cat_key]["score"].get("vals", [])
                                 raw_points[(layer, activation_layer, user_cat)][fraction_rounded] = raw_vals
 
+    # ------------- OPTIONAL: Convert to Percentage vs. Baseline -------------
+    if percentage:
+        for key in data:
+            fraction_dict = data[key]        # { fraction_value : (mean, std, n) }
+            fraction_raws = raw_points[key]  # { fraction_value : [list_of_values] }
+            if not fraction_dict:
+                continue
+
+            # Sort the available fraction values, and pick the smallest as baseline
+            fractions_sorted = sorted(fraction_dict.keys())
+            baseline_frac = fractions_sorted[0]
+
+            # We'll re-scale *all* fractions, including the baseline itself,
+            # so that baseline's replicates => 100%.
+            if baseline_frac not in fraction_raws:
+                # if no replicates found, skip
+                continue
+
+            base_vals = fraction_raws[baseline_frac]
+            # For safety, handle any length mismatch by using the minimum length
+            base_len = len(base_vals)
+
+            for frac in fractions_sorted:
+                cur_vals = fraction_raws.get(frac, [])
+                min_len = min(base_len, len(cur_vals))
+                ratio_arr = []
+                for i in range(min_len):
+                    vb = base_vals[i]
+                    vc = cur_vals[i]
+                    if vb != 0:
+                        ratio_arr.append((vc / vb) * 100.0)
+                    else:
+                        ratio_arr.append(np.nan)
+
+                ratio_arr = np.array(ratio_arr)
+                mean_val = float(np.nanmean(ratio_arr))
+                std_val = float(np.nanstd(ratio_arr))
+                n_val = np.count_nonzero(~np.isnan(ratio_arr))
+
+                fraction_dict[frac] = (mean_val, std_val, n_val)
+                raw_points[key][frac] = ratio_arr.tolist()
+
     # ------------------ Plotting ------------------
     plt.figure(figsize=(8, 6))
     for (layer, activation_layer, cat), fraction_dict in data.items():
         if len(fraction_dict) == 0:
             continue
 
+        # Sort fraction keys so we plot from smallest to largest
         fractions_sorted = sorted(fraction_dict.keys())
         x_vals = []
         y_means = []
@@ -1273,16 +1317,16 @@ def categ_corr_lineplot(
             mean_val, std_val, n_val = fraction_dict[frac]
             x_vals.append(frac)
             y_means.append(mean_val)
-            # If you prefer 95% CI bars: 1.96 * std_val / sqrt(n_val). Currently just raw std.
+            # If you prefer 95% CI from the replicates, you could do 1.96*std_val / sqrt(n_val).
+            # This code uses raw std, as per the aggregator. We'll keep it consistent here:
             y_errs.append(std_val)
 
         # label for legend
         if data_type == "selectivity":
-            label_str = f"{layer} - {activation_layer} - {cat} ({metric})"
+            label_str = f"{layer}-{activation_layer}-{cat} ({metric})"
         else:
-            label_str = f"{layer} - {activation_layer} - {cat} (svm)"
+            label_str = f"{layer}-{activation_layer}-{cat} (svm)"
 
-        # pick a stable color
         this_color = get_color_for_triple(layer, activation_layer, cat)
 
         plt.errorbar(
@@ -1320,6 +1364,9 @@ def categ_corr_lineplot(
         plt.ylabel("Classification Accuracy")
         plt.title("SVM classification across damage parameter values")
 
+    if percentage:
+        plt.ylabel(plt.gca().get_ylabel() + " (%)")
+
     if ylim is not None:
         plt.ylim(ylim)
 
@@ -1337,6 +1384,8 @@ def categ_corr_lineplot(
         plot_name += f"_{category[0]}"
     if data_type == "selectivity":
         plot_name += f"_{metric}"
+    if percentage:
+        plot_name += "_percent"
     plot_name += ".png"
     save_path = os.path.join(plot_dir, plot_name)
 
