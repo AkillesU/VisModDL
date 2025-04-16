@@ -9,7 +9,8 @@ tasks:
       categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [-0.05,0.5]
+      percentage: True
+      ylim: [-5,105]
       data_type: "selectivity"
       scatter: True
   - function: categ_corr_lineplot
@@ -21,7 +22,8 @@ tasks:
       categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0.45,1.05]
+      percentage: True
+      ylim: [-5,105]
       data_type: "svm_15"
       scatter: True
   - function: categ_corr_lineplot
@@ -33,7 +35,8 @@ tasks:
       categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [-0.05,0.5]
+      percentage: True
+      ylim: [-5,105]
       data_type: "selectivity"
       scatter: True
   - function: categ_corr_lineplot
@@ -45,7 +48,8 @@ tasks:
       categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0.45,1.05]
+      percentage: True
+      ylim: [-5,105]
       data_type: "svm_15"
       scatter: True
   - function: categ_corr_lineplot
@@ -57,7 +61,8 @@ tasks:
       categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [-0.05,0.5]
+      percentage: True
+      ylim: [-5,105]
       data_type: "selectivity"
       scatter: True
   - function: categ_corr_lineplot
@@ -69,7 +74,8 @@ tasks:
       categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0.45,1.05]
+      percentage: True
+      ylim: [-5,105]
       data_type: "svm_15"
       scatter: True
   - function: categ_corr_lineplot
@@ -81,7 +87,8 @@ tasks:
       categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [-0.05,0.5]
+      percentage: True
+      ylim: [-5,105]
       data_type: "selectivity"
       scatter: True
   - function: categ_corr_lineplot
@@ -93,104 +100,7 @@ tasks:
       categories: ["animal","face","object","place"]
       metric: "observed_difference"
       verbose: 0
-      ylim: [0.45,1.05]
       data_type: "svm_15"
       scatter: True
-subdir: "cornet_rt5_c/"
-tasks:
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V1"]
-      activations_layers: ["IT"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [-0.05,0.5]
-      data_type: "selectivity"
-      scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V1"]
-      activations_layers: ["IT"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [0.45,1.05]
-      data_type: "svm_15"
-      scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V2"]
-      activations_layers: ["IT"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [-0.05,0.5]
-      data_type: "selectivity"
-      scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V2"]
-      activations_layers: ["IT"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [0.45,1.05]
-      data_type: "svm_15"
-      scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V4"]
-      activations_layers: ["IT"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [-0.05,0.5]
-      data_type: "selectivity"
-      scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["V4"]
-      activations_layers: ["IT"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [0.45,1.05]
-      data_type: "svm_15"
-      scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["IT"]
-      activations_layers: ["IT"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [-0.05,0.5]
-      data_type: "selectivity"
-      scatter: True
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
-      damage_layers: ["IT"]
-      activations_layers: ["IT"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      ylim: [0.45,1.05]
-      data_type: "svm_15"
-      scatter: True
+      percentage: True
+      ylim: [-5,105]
