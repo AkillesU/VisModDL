@@ -1519,7 +1519,8 @@ def plot_categ_differences(
     verbose=0,
     scatter=False,
     ylim=None,
-    data_type="selectivity"   # "selectivity" or e.g. "svm_15"
+    data_type="selectivity",   # "selectivity" or e.g. "svm_15"
+    percentages=False
 ):
     """
     Plot either:
@@ -1528,22 +1529,25 @@ def plot_categ_differences(
         (i.e., columns that contain both cat and the other cat, aggregated).
 
     If comparison=False, each (damage_layer, activation_layer, damage_level) combo
-    is its own row of subplots (columns = categories). If comparison=True, everything
-    is combined in fewer subplots with grouped bars.
+    is its own row of subplots (columns = categories). 
+    If comparison=True, fewer subplots with grouped bars.
+
+    When percentages=True, the first damage level in 'damage_levels' is used as 
+    the baseline (set to 100%) for each category-othercat measure. Other levels 
+    are scaled relative to it.
 
     data_type:
-       "selectivity" -> load correlation matrices from ".../RDM/<activation_layer>"
-                        and do within-between differences.
-       "svm_15" (or anything starting "svm") -> load DataFrame .pkl's from
-                        ".../svm_15/<activation_layer>" and do direct
-                        classification-accuracy bars (focal-cat vs. other-cat).
+       "selectivity" -> loads correlation matrices from ".../RDM/<activation_layer>"
+                        and computes within-between differences.
+       "svm_..." -> loads DataFrame .pkl's from ".../svm_15/<activation_layer>"
+                    and uses classification accuracy directly.
     """
 
     # ---------------- HELPER FUNCTIONS ----------------
     def unify_image_name(cat_str):
         """
         Make sure that if the image file prefix is 'scene', we treat it as 'place'
-        for the SELECTIVITY categories. That way the user always sees 'place' in plots.
+        for the SELECTIVITY categories. 
         """
         cat_str = cat_str.lower()
         if cat_str == "scene":
@@ -1552,8 +1556,8 @@ def plot_categ_differences(
 
     def unify_svm_name(cat_str):
         """
-        For SVM columns, treat 'place' the same as 'scene': if the user category is 'place',
-        we look for columns containing 'scene'. For example 'scene_vs_object'.
+        For SVM columns, treat 'place' the same as 'scene': 
+        if the user category is 'place', we look for columns with 'scene'.
         """
         cat_str = cat_str.lower()
         if cat_str == "place":
@@ -1586,7 +1590,7 @@ def plot_categ_differences(
         def _validate_matrix(mat, path_str):
             if len(mat) != n_files:
                 raise ValueError(
-                    f"Matrix in '{path_str}' has {len(mat)} rows, but we expected {n_files}."
+                    f"Matrix in '{path_str}' has {len(mat)} rows, but expected {n_files}."
                 )
             for row in mat:
                 if len(row) != n_files:
@@ -1679,12 +1683,9 @@ def plot_categ_differences(
     def compute_svm_pairwise_accuracies(dataframes, categories_list):
         """
         For each focal cat 'cat' and other cat 'oc':
-          - find columns containing BOTH cat and oc (e.g., 'object_vs_face')
+          - find columns containing BOTH cat and oc (e.g. 'object_vs_face')
           - average them => that bar = classification accuracy for cat vs oc.
-        So diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays),
-        but 'mean_vals' are the direct classification accuracy for cat~oc columns.
-        
-        If cat == 'place', we unify to 'scene' for column matching, etc.
+        Return diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays).
         """
         accum = {
             cat: {oc: [] for oc in categories_list if oc != cat}
@@ -1723,12 +1724,11 @@ def plot_categ_differences(
                 raw_arrays.append(arr)
             diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
         return diffs_dict
-    # ---------------- END HELPER FUNCTIONS ----------------
+    # ------------------------------------------------------
 
-    # ---------- 1) LOAD & GROUP IMAGES BY CATEGORY -----------
+    # 1) LOAD & GROUP IMAGES BY CATEGORY
     if not os.path.isdir(image_dir):
         raise FileNotFoundError(f"Image directory '{image_dir}' does not exist.")
-
     sorted_filenames = get_sorted_filenames(image_dir)
     n_files = len(sorted_filenames)
 
@@ -1738,16 +1738,15 @@ def plot_categ_differences(
     # Build categories_map: {cat_name: [filenames]}
     categories_map = {}
     for fname in sorted_filenames:
-        # unify "scene" -> "place" if needed:
         cat_raw = extract_string_numeric_parts(fname)[0]
-        cat = unify_image_name(cat_raw)  # if cat_raw == "scene" => cat = "place"
+        cat = unify_image_name(cat_raw) 
         categories_map.setdefault(cat, []).append(fname)
 
     # keep only categories that are actually found
     categories_list = [c for c in custom_category_order if c in categories_map]
     n_categories = len(categories_list)
 
-    # ---------- 2) GATHER RESULTS (matrices or dataframes) -----------
+    # 2) GATHER RESULTS (matrices or dataframes)
     def get_base_path(dmg_layer, act_layer):
         if data_type.startswith("svm"):
             # e.g. .../<dmg_layer>/svm_15/<act_layer>/
@@ -1769,9 +1768,8 @@ def plot_categ_differences(
             if not os.path.isdir(base_path):
                 raise FileNotFoundError(
                     f"Directory '{base_path}' does not exist.\n"
-                    f"Check your damage_type='{damage_type}', damage_layer='{dmg_layer}', or activation_layer='{act_layer}'."
+                    f"Check damage_type='{damage_type}', damage_layer='{dmg_layer}', or activation_layer='{act_layer}'."
                 )
-
             for suffix in damage_levels:
                 # find items (dirs or files) that match <file_prefix>*<suffix>
                 items = []
@@ -1807,7 +1805,85 @@ def plot_categ_differences(
 
                     all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
 
-    # ---------- 3) PLOTTING -----------
+    # 3) (OPTIONAL) CONVERT TO PERCENTAGES RELATIVE TO THE FIRST DAMAGE LEVEL
+    if percentages:
+        # Group results by (dmg_layer, act_layer) so we can do the ratio 
+        # with the first damage_level as baseline within each group.
+        grouped = defaultdict(list)
+        # We'll store the results in the order we found them:
+        for entry in all_results:
+            dmg_l, act_l, sfx, path, d_dict = entry
+            grouped[(dmg_l, act_l)].append((sfx, path, d_dict))
+
+        # For each (dmg_layer, act_layer), reorder items by the order in damage_levels
+        # and normalize them to the first suffix in that list (damage_levels[0]).
+        new_all_results = []
+        suffix_index_map = {s: i for i, s in enumerate(damage_levels)}
+
+        for key, items_list in grouped.items():
+            # items_list is a list of (suffix, path, diffs_dict)
+            # sort them so that they appear in the same order as damage_levels
+            items_sorted = sorted(items_list, key=lambda x: suffix_index_map[x[0]])
+            # We'll gather raw arrays so we can do ratio per replicate.
+            # raw_data[cat][oc][index_of_suffix] = array_of_values
+            raw_data = defaultdict(lambda: defaultdict(lambda: [None]*len(items_sorted)))
+
+            # Extract all raw arrays
+            for idx, (sfx, pth, diffs_d) in enumerate(items_sorted):
+                for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_d.items():
+                    for oc_idx, oc in enumerate(oc_list):
+                        raw_data[cat][oc][idx] = raw_arrays[oc_idx]
+
+            # Now do ratio with respect to the baseline idx=0
+            base_idx = 0
+            for idx in range(len(items_sorted)):
+                for cat in raw_data:
+                    for oc, array_over_suffixes in raw_data[cat].items():
+                        base_arr = array_over_suffixes[base_idx]
+                        curr_arr = array_over_suffixes[idx]
+                        if base_arr is None or curr_arr is None:
+                            continue
+                        new_arr = []
+                        # ratio per replicate
+                        for v_b, v_c in zip(base_arr, curr_arr):
+                            if v_b != 0:
+                                new_arr.append((v_c / v_b) * 100.0)
+                            else:
+                                new_arr.append(np.nan)
+                        array_over_suffixes[idx] = new_arr
+
+            # Recompute means/stds from the new raw arrays
+            for idx, (sfx, pth, diffs_d) in enumerate(items_sorted):
+                new_diffs = {}
+                for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_d.items():
+                    new_mean_vals = []
+                    new_std_vals = []
+                    new_raw_arrays = []
+                    for oc_idx, oc in enumerate(oc_list):
+                        arr = raw_data[cat][oc][idx]
+                        arr_np = np.array(arr)
+                        new_mean_vals.append(arr_np.mean())
+                        new_std_vals.append(arr_np.std() * 1.96)  # recalc 95% CI
+                        new_raw_arrays.append(arr)
+                    new_diffs[cat] = (oc_list, new_mean_vals, new_std_vals, new_raw_arrays)
+                # Overwrite with new diffs
+                items_sorted[idx] = (sfx, pth, new_diffs)
+
+            grouped[key] = items_sorted
+
+        # Reconstruct all_results in original order, but with updated diffs
+        updated_all_results = []
+        for dmg_layer, act_layer, sfx, path, old_diffs in all_results:
+            items_sorted = grouped[(dmg_layer, act_layer)]
+            # find matching (sfx, path) in items_sorted
+            for it_sfx, it_path, it_diffs in items_sorted:
+                if it_sfx == sfx and it_path == path:
+                    updated_all_results.append((dmg_layer, act_layer, sfx, path, it_diffs))
+                    break
+
+        all_results = updated_all_results
+
+    # ---------- 4) PLOTTING -----------
     if not comparison:
         # One row per (dmg_layer, act_layer, suffix, item_path), columns = categories
         num_rows = len(all_results)
@@ -1837,12 +1913,12 @@ def plot_categ_differences(
 
                 # scatter if desired
                 if scatter:
-                    for idx, arr in enumerate(raw_diffs):
+                    for idx_oc, arr in enumerate(raw_diffs):
                         if len(arr) == 0:
                             continue
                         jitter = np.random.normal(0, 0.05, size=len(arr))
                         ax.scatter(
-                            x_pos[idx] + jitter, arr,
+                            x_pos[idx_oc] + jitter, arr,
                             alpha=0.4, s=20, zorder=0
                         )
 
@@ -1852,10 +1928,12 @@ def plot_categ_differences(
                     ax.set_ylim(ylim)
 
                 if data_type.startswith("svm"):
-                    ax.set_ylabel("Classification Accuracy")
+                    ylab = "Classification Accuracy"
                 else:
-                    ax.set_ylabel("Within - Between")
-
+                    ylab = "Within - Between"
+                if percentages:
+                    ylab += " (%)"
+                ax.set_ylabel(ylab)
                 ax.set_title(f"{dmg_layer}, {act_layer}, dmg={suffix}\n{cat}")
 
         plt.tight_layout()
@@ -1869,6 +1947,8 @@ def plot_categ_differences(
         plot_name += f"_{len(damage_levels)}-levels"
         if scatter:
             plot_name += "_with-points"
+        if percentages:
+            plot_name += "_percent"
         plot_path = os.path.join(plot_dir, plot_name)
 
         if verbose == 1:
@@ -1903,11 +1983,14 @@ def plot_categ_differences(
         bar_width = 0.8 / len(combos)
         for idx_cat, cat in enumerate(categories_list):
             ax = axes[idx_cat]
-            ax.set_title(f"{cat}")
             if data_type.startswith("svm"):
-                ax.set_ylabel("Classification Accuracy")
+                ylab = "Classification Accuracy"
             else:
-                ax.set_ylabel("Within - Between")
+                ylab = "Within - Between"
+            if percentages:
+                ylab += " (%)"
+            ax.set_ylabel(ylab)
+            ax.set_title(f"{cat}")
 
             for i, combo_key in enumerate(combos):
                 (oc_list, mean_vals, std_vals, raw_diffs) = results_by_cat[cat][combo_key]
@@ -1916,18 +1999,17 @@ def plot_categ_differences(
 
                 # reorder oc_list to match custom_category_order minus cat
                 index_map = {c: k for k, c in enumerate(oc_list)}
-                # which "others" are relevant? any that appear in oc_list
                 new_oc_list = [c for c in custom_category_order if c != cat and c in index_map]
 
                 new_mean_vals = [mean_vals[index_map[c]] for c in new_oc_list]
                 new_std_vals = [std_vals[index_map[c]] for c in new_oc_list]
                 new_raw_diffs = [raw_diffs[index_map[c]] for c in new_oc_list]
+
                 x_pos = np.arange(len(new_oc_list))
                 offset = i * bar_width
+                color_id = f"C{i}"
 
-                color_id = f"C{i}"  # or you could generate a more advanced color
-
-                bars = ax.bar(
+                ax.bar(
                     x_pos + offset,
                     new_mean_vals,
                     yerr=new_std_vals,
@@ -1969,6 +2051,8 @@ def plot_categ_differences(
         plot_name += f"_{len(damage_levels)}-levels_comparison"
         if scatter:
             plot_name += "_with-points"
+        if percentages:
+            plot_name += "_percent"
         plot_path = os.path.join(plot_dir, plot_name)
 
         if verbose == 1:
@@ -2724,8 +2808,8 @@ def svm_process_file(pkl_file, training_samples=15, clip_val=1e6, max_permutatio
     categories = {
         "animal": cat1,
         "face":   cat2,
-        "place":  cat3, # Changed from "scene" to "place"
-        "object": cat4
+        "object":  cat3, 
+        "place": cat4 
     }
 
     # Clip raw activations
