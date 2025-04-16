@@ -10,7 +10,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: True
-      ylim: [-5,105]
+      ylim: [-15,105]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -22,7 +22,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: True
-      ylim: [-5,105]
+      ylim: [60,105]
       data_type: "svm_15"
   - function: categ_corr_lineplot
     parameters:
@@ -34,7 +34,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: True
-      ylim: [-5,105]
+      ylim: [-15,105]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -46,7 +46,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: True
-      ylim: [-5,105]
+      ylim: [60,105]
       data_type: "svm_15"
   - function: categ_corr_lineplot
     parameters:
@@ -58,7 +58,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: True
-      ylim: [-5,105]
+      ylim: [-15,105]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -70,7 +70,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: True
-      ylim: [-5,105]
+      ylim: [60,105]
       data_type: "svm_15"
   - function: categ_corr_lineplot
     parameters:
@@ -82,7 +82,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: True
-      ylim: [-5,105]
+      ylim: [-15,105]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -95,4 +95,4 @@ tasks:
       verbose: 0
       data_type: "svm_15"
       percentage: True
-      ylim: [-5,105]
+      ylim: [60,105]
