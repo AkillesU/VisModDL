@@ -10,7 +10,6 @@ tasks:
       damage_levels: ["0.0","1.8"]
       comparison: True
       scatter: True
-      ylim: [0,1.2]
       percentage: True
   - function: plot_categ_differences
     parameters:
@@ -22,7 +21,6 @@ tasks:
       damage_levels: ["0.0","1.4"]
       comparison: True
       scatter: True
-      ylim: [0,1.2]
       percentage: True
   - function: plot_categ_differences
     parameters:
@@ -34,7 +32,6 @@ tasks:
       damage_levels: ["0.0","1.1"]
       comparison: True
       scatter: True
-      ylim: [0,1.2]
       percentage: True
   - function: plot_categ_differences
     parameters:
@@ -46,7 +43,6 @@ tasks:
       damage_levels: ["0.0","0.9"]
       comparison: True
       scatter: True
-      ylim: [0,1.2]
       percentage: True
   - function: plot_categ_differences
     parameters:
@@ -58,7 +54,6 @@ tasks:
       damage_levels: ["0.0","0.7"]
       comparison: True
       scatter: True
-      ylim: [0,1.2]
       percentage: True
   - function: plot_categ_differences
     parameters:
@@ -70,7 +65,6 @@ tasks:
       damage_levels: ["0.0","0.25"]
       comparison: True
       scatter: True
-      ylim: [0,1.2]
       percentage: True
   - function: plot_categ_differences
     parameters:
@@ -82,7 +76,6 @@ tasks:
       damage_levels: ["0.0","0.45"]
       comparison: True
       scatter: True
-      ylim: [0,1.2]
       percentage: True
   - function: plot_categ_differences
     parameters:
@@ -94,5 +87,4 @@ tasks:
       damage_levels: ["0.0","0.6"]
       comparison: True
       scatter: True
-      ylim: [0,1.2]
       percentage: True
