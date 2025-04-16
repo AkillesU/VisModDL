@@ -1522,7 +1522,7 @@ def plot_categ_differences(
     scatter=False,
     ylim=None,
     data_type="selectivity",   # "selectivity" or e.g. "svm_15"
-    percentages=False
+    percentage=False
 ):
     """
     Plot either:
@@ -1868,7 +1868,7 @@ def plot_categ_differences(
                     all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
 
     # ---------- 3) (OPTIONAL) CONVERT TO PERCENTAGES -----------
-    if percentages:
+    if percentage:
         # Group entries by (damage_layer, act_layer) so we can scale 
         # each suffix to the baseline suffix = damage_levels[0] in that group.
         baseline_sfx = damage_levels[0]
@@ -1956,7 +1956,7 @@ def plot_categ_differences(
                     ylabel = "Classification Accuracy"
                 else:
                     ylabel = "Within - Between"
-                if percentages:
+                if percentage:
                     ylabel += " (%)"
 
                 ax.set_ylabel(ylabel)
@@ -1973,7 +1973,7 @@ def plot_categ_differences(
         plot_name += f"_{len(damage_levels)}-levels"
         if scatter:
             plot_name += "_with-points"
-        if percentages:
+        if percentage:
             plot_name += "_percent"
         plot_path = os.path.join(plot_dir, plot_name)
 
@@ -2012,7 +2012,7 @@ def plot_categ_differences(
                 ylabel = "Classification Accuracy"
             else:
                 ylabel = "Within - Between"
-            if percentages:
+            if percentage:
                 ylabel += " (%)"
 
             ax.set_ylabel(ylabel)
@@ -2077,7 +2077,7 @@ def plot_categ_differences(
         plot_name += f"_{len(damage_levels)}-levels_comparison"
         if scatter:
             plot_name += "_with-points"
-        if percentages:
+        if percentage:
             plot_name += "_percent"
         plot_path = os.path.join(plot_dir, plot_name)
 
