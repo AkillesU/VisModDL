@@ -1178,6 +1178,7 @@ def categ_corr_lineplot(
                             if fname.lower().endswith(".pkl"):
                                 pkl_path = os.path.join(subdir_path, fname)
                                 df = pd.read_pickle(pkl_path)
+                                print("DataFrame columns are:", df.columns)
                                 if not isinstance(df, pd.DataFrame):
                                     continue
 
@@ -1193,6 +1194,8 @@ def categ_corr_lineplot(
                                         continue
                                     file_avg = df[cols].values.mean()
                                     cat_tmp[cat_name].append(file_avg)
+                                    
+
 
                         # Now store into aggregated_data
                         for cat_name, all_vals in cat_tmp.items():
@@ -1258,7 +1261,7 @@ def categ_corr_lineplot(
                                 # store raw
                                 raw_vals = aggregated_content[cat_key]["score"].get("vals", [])
                                 raw_points[(layer, activation_layer, user_cat)][fraction_rounded] = raw_vals
-
+    print(aggregated_content)
     # ------------- OPTIONAL: Convert to Percentage vs. Baseline -------------
     if percentage:
         for key in data:
