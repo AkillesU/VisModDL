@@ -1055,22 +1055,24 @@ def categ_corr_lineplot(
     scatter=False,
     verbose=0,
     ylim=None,
-    percentage=False   # <-- NEW ARGUMENT
+
+    # STEP 1: Add the new argument (default = False)
+    percentage=False
 ):
     """
+    Original docstring:
+    -------------------
     If data_type == "selectivity":
         - Expects subdirectories with pickled dictionaries (one value per file per category & metric).
           The aggregator lumps them into an 'aggregated_data' dictionary with mean/std/n/vals.
-        
+
     If data_type starts with "svm":
         - Expects subdirectories with pickled Pandas DataFrames (each file has several rows).
         - For each file, we gather columns matching each category (including 'total' == all columns).
         - Aggregates into mean, std, n, so 95% CI could be computed if desired.
 
-    When percentage=True, the smallest fraction (damage param) for each 
-    (damage_layer, activation_layer, category) is set to 100%, and all other 
-    fractions are scaled as (current / baseline) * 100. This scaling is done 
-    on the raw replicates to correctly re-compute mean and std.
+    When percentage=True, for each category, we find that category's *lowest* fraction
+    (e.g. 0.0) and treat it as 100%. Everything else is scaled to (current / baseline) * 100.
     """
 
     # ------------------ HELPER: unify 'place' -> 'scene' for SVM columns ------------------    
@@ -1101,6 +1103,7 @@ def categ_corr_lineplot(
         for activation_layer in activations_layers:
             layer_path = os.path.join(main_dir, damage_type, layer, data_subfolder, activation_layer)
             if not os.path.isdir(layer_path):
+                # If no such path, skip
                 continue
 
             # We'll store aggregated .pkl in a parallel folder named avg_<data_type>
@@ -1141,7 +1144,7 @@ def categ_corr_lineplot(
                                     content = pickle.load(f)
                                 if not isinstance(content, dict):
                                     continue
-                                # content is like: { "face": {"observed_difference": 0.12, ...}, "object": {...}, ... }
+                                # e.g. content = { "face": {"observed_difference": 0.12, ...}, ... }
                                 for cat_name, metrics_dict in content.items():
                                     if not isinstance(metrics_dict, dict):
                                         continue
@@ -1178,7 +1181,6 @@ def categ_corr_lineplot(
                             if fname.lower().endswith(".pkl"):
                                 pkl_path = os.path.join(subdir_path, fname)
                                 df = pd.read_pickle(pkl_path)
-                                print("DataFrame columns are:", df.columns)
                                 if not isinstance(df, pd.DataFrame):
                                     continue
 
@@ -1194,8 +1196,6 @@ def categ_corr_lineplot(
                                         continue
                                     file_avg = df[cols].values.mean()
                                     cat_tmp[cat_name].append(file_avg)
-                                    
-
 
                         # Now store into aggregated_data
                         for cat_name, all_vals in cat_tmp.items():
@@ -1236,54 +1236,56 @@ def categ_corr_lineplot(
                         cat_key = user_cat
 
                     if cat_key in aggregated_content:
+                        # SELECTIVITY style => look for 'metric'
                         if data_type == "selectivity":
-                            # Must have the right metric
                             if (isinstance(aggregated_content[cat_key], dict) and
                                 metric in aggregated_content[cat_key] and
                                 "n" in aggregated_content[cat_key][metric]):
                                 mean_val = aggregated_content[cat_key][metric]["mean"]
                                 std_val = aggregated_content[cat_key][metric]["std"]
                                 n_val = aggregated_content[cat_key][metric]["n"]
-                                data[(layer, activation_layer, user_cat)][fraction_rounded] = (mean_val, std_val, n_val)
 
-                                # store raw
+                                data[(layer, activation_layer, user_cat)][fraction_rounded] = (mean_val, std_val, n_val)
+                                # store raw replicates
                                 raw_vals = aggregated_content[cat_key][metric].get("vals", [])
                                 raw_points[(layer, activation_layer, user_cat)][fraction_rounded] = raw_vals
 
-                        else:  # SVM path
+                        # SVM style => look for 'score'
+                        else:
                             if ("score" in aggregated_content[cat_key] and
                                 "n" in aggregated_content[cat_key]["score"]):
                                 mean_val = aggregated_content[cat_key]["score"]["mean"]
                                 std_val = aggregated_content[cat_key]["score"]["std"]
                                 n_val = aggregated_content[cat_key]["score"]["n"]
-                                data[(layer, activation_layer, user_cat)][fraction_rounded] = (mean_val, std_val, n_val)
 
-                                # store raw
+                                data[(layer, activation_layer, user_cat)][fraction_rounded] = (mean_val, std_val, n_val)
+                                # store raw replicates
                                 raw_vals = aggregated_content[cat_key]["score"].get("vals", [])
                                 raw_points[(layer, activation_layer, user_cat)][fraction_rounded] = raw_vals
-    print(aggregated_content)
-    # ------------- OPTIONAL: Convert to Percentage vs. Baseline -------------
+
+    # STEP 2: Add a block that does the ratio scaling if percentage=True
     if percentage:
+        # We do the scaling per (layer, activation_layer, category)
         for key in data:
-            fraction_dict = data[key]        # { fraction_value : (mean, std, n) }
-            fraction_raws = raw_points[key]  # { fraction_value : [list_of_values] }
+            fraction_dict = data[key]       # { fraction_value: (mean, std, n) }
+            fraction_raws = raw_points[key] # { fraction_value: list_of_raw_values }
             if not fraction_dict:
                 continue
 
-            # Sort the available fraction values, and pick the smallest as baseline
+            # Sort fraction keys (e.g. [0.0, 0.1, 0.2, ...])
             fractions_sorted = sorted(fraction_dict.keys())
+            # The FIRST in sorted order is the smallest fraction => baseline
             baseline_frac = fractions_sorted[0]
-
-            # We'll re-scale *all* fractions, including the baseline itself,
-            # so that baseline's replicates => 100%.
+            # If we have no replicates for that baseline fraction, skip
             if baseline_frac not in fraction_raws:
-                # if no replicates found, skip
                 continue
 
+            # baseline replicates
             base_vals = fraction_raws[baseline_frac]
-            # For safety, handle any length mismatch by using the minimum length
             base_len = len(base_vals)
 
+            # For each fraction (including the baseline one),
+            # compute ratio = current / baseline * 100
             for frac in fractions_sorted:
                 cur_vals = fraction_raws.get(frac, [])
                 min_len = min(base_len, len(cur_vals))
@@ -1296,11 +1298,13 @@ def categ_corr_lineplot(
                     else:
                         ratio_arr.append(np.nan)
 
-                ratio_arr = np.array(ratio_arr)
+                ratio_arr = np.array(ratio_arr, dtype=float)
+                # Recompute stats
                 mean_val = float(np.nanmean(ratio_arr))
                 std_val = float(np.nanstd(ratio_arr))
                 n_val = np.count_nonzero(~np.isnan(ratio_arr))
 
+                # Store them back
                 fraction_dict[frac] = (mean_val, std_val, n_val)
                 raw_points[key][frac] = ratio_arr.tolist()
 
@@ -1308,6 +1312,7 @@ def categ_corr_lineplot(
     plt.figure(figsize=(8, 6))
     for (layer, activation_layer, cat), fraction_dict in data.items():
         if len(fraction_dict) == 0:
+            # skip combos with no data
             continue
 
         # Sort fraction keys so we plot from smallest to largest
@@ -1320,17 +1325,18 @@ def categ_corr_lineplot(
             mean_val, std_val, n_val = fraction_dict[frac]
             x_vals.append(frac)
             y_means.append(mean_val)
-            # If you prefer 95% CI from the replicates, you could do 1.96*std_val / sqrt(n_val).
-            # This code uses raw std, as per the aggregator. We'll keep it consistent here:
+            # This code uses the aggregator's raw std. If you want 95% CI from replicates:
+            #   y_err = std_val / sqrt(n_val) * 1.96
+            # But we'll keep it consistent with your aggregator logic:
             y_errs.append(std_val)
 
-        # label for legend
+        # label for the legend
         if data_type == "selectivity":
             label_str = f"{layer}-{activation_layer}-{cat} ({metric})"
         else:
             label_str = f"{layer}-{activation_layer}-{cat} (svm)"
 
-        this_color = get_color_for_triple(layer, activation_layer, cat)
+        color_ = get_color_for_triple(layer, activation_layer, cat)
 
         plt.errorbar(
             x_vals,
@@ -1340,7 +1346,7 @@ def categ_corr_lineplot(
             capsize=4,
             label=label_str,
             zorder=2,
-            color=this_color
+            color=color_
         )
 
         # scatter if desired
@@ -1355,11 +1361,12 @@ def categ_corr_lineplot(
                     x_jitter,
                     raw_vals,
                     alpha=0.5,
-                    color=this_color,
+                    color=color_,
                     zorder=1
                 )
 
     plt.xlabel("Damage Parameter Value")
+
     if data_type == "selectivity":
         plt.ylabel("Differentiation (within-between)")
         plt.title("Differentiation across damage parameter values")
@@ -1367,6 +1374,7 @@ def categ_corr_lineplot(
         plt.ylabel("Classification Accuracy")
         plt.title("SVM classification across damage parameter values")
 
+    # If we scaled the data, rename the y-axis to indicate percentages
     if percentage:
         plt.ylabel(plt.gca().get_ylabel() + " (%)")
 
