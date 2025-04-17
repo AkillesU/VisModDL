@@ -2068,7 +2068,7 @@ def plot_categ_differences(
             else:
                 ylabel = "Within - Between"
             if percentage:
-                ylabel += " (%)"
+                ylabel += " (scaled %)"
 
             ax.set_ylabel(ylabel)
             ax.set_title(f"{cat}")
