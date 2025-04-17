@@ -68,7 +68,9 @@ def main():
         activation_layers_to_save=layer_path,
         image_dir=image_dir,
         only_conv=only_conv,
-        include_bias=include_bias)
+        include_bias=include_bias,
+        masking_level=masking_level
+        )
 
     run_damage(model_info=model_info, 
         pretrained=pretrained,
@@ -82,7 +84,9 @@ def main():
         activation_layers_to_save=layer_path,
         image_dir=image_dir,
         only_conv=only_conv,
-        include_bias=include_bias)
+        include_bias=include_bias,
+        masking_level=masking_level
+        )
 
 if __name__ == "__main__":
     main()

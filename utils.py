@@ -870,13 +870,14 @@ def run_damage(
     noise_levels_params,
     layer_paths_to_damage,
     apply_to_all_layers,
-    manipulation_method,   # "connections" or "noise"
+    manipulation_method,          # "connections" or "noise"
     mc_permutations,
-    layer_name,            # We keep this for naming folders, but we'll also handle multiple layers
-    activation_layers_to_save,  # <--- list of layers to actually hook
+    layer_name,
+    activation_layers_to_save,
     image_dir,
     only_conv,
     include_bias,
+    masking_level="connections",  #  ← NEW (keeps old behaviour by default)
     run_suffix=""
 ):
     """
@@ -946,6 +947,16 @@ def run_damage(
 
     total_iterations = len(damage_levels_list) * mc_permutations
 
+    # ------------------------------------------------------------------
+    # C)  Folder tag: 'noise', 'connections', or 'units'
+    # ------------------------------------------------------------------
+    if manipulation_method == "noise":
+        dir_tag = "noise"
+    elif manipulation_method == "connections":
+        dir_tag = "units" if masking_level == "units" else "connections"
+    else:
+        dir_tag = manipulation_method          # fallback, should not occur
+
     # -------------------------------------------------------------------------
     # SECTION 4: (Kept) The original style: one forward pass per image.
     #            We'll do it slightly adapted so we can handle multi-layer hooking
@@ -970,7 +981,7 @@ def run_damage(
                         fraction_to_mask=damage_level,
                         layer_paths=layer_paths_to_damage,
                         apply_to_all_layers=apply_to_all_layers,
-                        masking_level='connections',
+                        masking_level=masking_level,  
                         only_conv=only_conv,
                         include_bias=include_bias
                     )
@@ -1026,7 +1037,7 @@ def run_damage(
                     # save activations
                     activation_dir = (
                         f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                        f"{manipulation_method}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
+                        f"{dir_tag}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
                     )
                     os.makedirs(activation_dir, exist_ok=True)
                     activation_dir_path = os.path.join(activation_dir, f"{permutation_index}.pkl")
@@ -1040,7 +1051,7 @@ def run_damage(
                     # save correlation matrix
                     corrmat_dir = (
                         f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                        f"{manipulation_method}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
+                        f"{dir_tag}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
                     )
                     os.makedirs(corrmat_dir, exist_ok=True)
                     corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}.pkl")
@@ -1055,7 +1066,7 @@ def run_damage(
                     # save selectivity
                     selectivity_dir = (
                         f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                        f"{manipulation_method}/{layer_name}/selectivity/{lp_name}/damaged_{round(damage_level,3)}"
+                        f"{dir_tag}/{layer_name}/selectivity/{lp_name}/damaged_{round(damage_level,3)}"
                     )
                     os.makedirs(selectivity_dir, exist_ok=True)
                     selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.pkl")
