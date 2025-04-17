@@ -286,95 +286,179 @@ def apply_noise(model, noise_level, noise_dict, layer_paths=None, apply_to_all_l
                     else:
                         raise AttributeError(f"layer {w_path} does not have weights")
 
-
-def apply_masking(model, fraction_to_mask, layer_paths=None, apply_to_all_layers=False, masking_level='connections', only_conv=True, include_bias=False):
+def apply_masking(
+    model,
+    fraction_to_mask,
+    layer_paths=None,
+    apply_to_all_layers=False,
+    masking_level="connections",
+    only_conv=True,
+    include_bias=False,
+):
     """
-    Apply masking to either units or connections.
-    If masking_level='connections', randomly zero out a fraction of weights individually.
-    If masking_level='units', randomly zero out entire units.
+    Mask either individual connections or whole units (filters / neurons).
 
-    apply_to_all_layers not yet working with bias
+    • masking_level == "connections": randomly zero a fraction of individual
+      weights. Biases are treated independently.
+
+    • masking_level == "units": randomly zero a fraction of whole filters /
+      neurons (dim‑0 rows).  **If include_bias is True the matching bias
+      elements are zeroed with the *same* unit indices.**
+
+    Note
+    ----
+    The helper functions `get_layer_from_path`, `get_all_conv_layers`,
+    `get_all_weight_layers`, and `create_mask` are assumed to exist
+    unchanged elsewhere in the codebase.
     """
     param_masks = {}
 
+    # Build the mask tensors
     with torch.no_grad():
         if apply_to_all_layers:
             for name, param in model.named_parameters():
-                if 'weight' in name and param.requires_grad:
-                    mask = create_mask(param, fraction_to_mask, masking_level=masking_level)
-                    param_masks[name] = mask
+                if "weight" in name and param.requires_grad:
+                    param_masks[name] = create_mask(
+                        param, fraction_to_mask, masking_level=masking_level
+                    )
         else:
             for path in layer_paths:
                 target_layer = get_layer_from_path(model, path)
                 if only_conv:
-                    weight_layer_paths = get_all_conv_layers(target_layer, path, include_bias)
+                    weight_layer_paths = get_all_conv_layers(
+                        target_layer, path, include_bias
+                    )
                 else:
-                    weight_layer_paths = get_all_weight_layers(target_layer, path, include_bias)
+                    weight_layer_paths = get_all_weight_layers(
+                        target_layer, path, include_bias
+                    )
 
                 for w_path in weight_layer_paths:
                     w_layer = get_layer_from_path(model, w_path)
-                    if hasattr(w_layer, 'weight') and w_layer.weight is not None:
-                        weight_mask = create_mask(w_layer.weight, fraction_to_mask, masking_level=masking_level)
-                        param_masks[w_path] = weight_mask
-                        # include bias
-                        if include_bias and hasattr(w_layer, 'bias') and w_layer.bias is not None:
-                            bias_mask = create_mask(w_layer.bias, fraction_to_mask, masking_level=masking_level)
-                            param_masks[f"{w_path}_bias"] = bias_mask
-                    else:
-                        raise AttributeError(f"layer {w_path} does not have weights")
 
-    # For simplicity if apply_to_all_layers is complex, let's just handle layer_paths case well.
+                    # unit‑level masking with bias: draw indices once
+                    if masking_level == "units" and include_bias:
+                        num_units = w_layer.weight.shape[0]
+                        k = int(fraction_to_mask * num_units)
+                        device = w_layer.weight.device
+                        if k == 0:
+                            unit_idx = torch.empty(
+                                0, dtype=torch.long, device=device
+                            )
+                        else:
+                            unit_idx = torch.randperm(
+                                num_units, device=device
+                            )[:k]
+
+                        # weight mask (same shape as weight tensor)
+                        weight_mask = torch.ones_like(w_layer.weight)
+                        if k > 0:
+                            weight_mask[unit_idx, ...] = 0
+                        param_masks[w_path] = weight_mask
+
+                        # matching bias mask (1‑D)
+                        if (
+                            hasattr(w_layer, "bias")
+                            and w_layer.bias is not None
+                        ):
+                            bias_mask = torch.ones_like(w_layer.bias)
+                            if k > 0:
+                                bias_mask[unit_idx] = 0
+                            param_masks[f"{w_path}_bias"] = bias_mask
+
+                    else:
+                        if (
+                            hasattr(w_layer, "weight")
+                            and w_layer.weight is not None
+                        ):
+                            weight_mask = create_mask(
+                                w_layer.weight,
+                                fraction_to_mask,
+                                masking_level=masking_level,
+                            )
+                            param_masks[w_path] = weight_mask
+
+                            if (
+                                include_bias
+                                and hasattr(w_layer, "bias")
+                                and w_layer.bias is not None
+                            ):
+                                bias_mask = create_mask(
+                                    w_layer.bias,
+                                    fraction_to_mask,
+                                    masking_level=masking_level,
+                                )
+                                param_masks[f"{w_path}_bias"] = bias_mask
+                        else:
+                            raise AttributeError(
+                                f"layer {w_path} does not have weights"
+                            )
+
+    # ------------------------------------------------------------------ #
+    # 2. Register forward‑pre hooks that multiply in the masks           #
+    # ------------------------------------------------------------------ #
     if not apply_to_all_layers:
         for path in layer_paths:
-            # Get all weight-bearing sub-layers under this path
             if only_conv:
-                weight_layer_paths = get_all_conv_layers(get_layer_from_path(model, path), path)
+                weight_layer_paths = get_all_conv_layers(
+                    get_layer_from_path(model, path), path
+                )
             else:
-                weight_layer_paths = get_all_weight_layers(get_layer_from_path(model, path), path)
-            
+                weight_layer_paths = get_all_weight_layers(
+                    get_layer_from_path(model, path), path
+                )
+
             if include_bias:
                 for w_path in weight_layer_paths:
                     layer = get_layer_from_path(model, w_path)
-                    weight_mask = param_masks[w_path]  # Access the mask using w_path
-                    if layer.bias is not None:
-                        bias_mask = param_masks[f"{w_path}_bias"]
-            
-                    def layer_mask_hook_bias(module, input, weight_mask=weight_mask, bias_mask=bias_mask):
-                        if hasattr(module, 'weight'):
-                            module.weight.data = module.weight.data * weight_mask
-                        if hasattr(module, 'bias') and module.bias is not None:
-                            module.bias.data = module.bias.data * bias_mask
+                    w_mask = param_masks[w_path]
+                    b_mask = (
+                        param_masks.get(f"{w_path}_bias")
+                        if layer.bias is not None
+                        else None
+                    )
+
+                    def _hook(module, _input, w_mask=w_mask, b_mask=b_mask):
+                        if hasattr(module, "weight"):
+                            module.weight.data.mul_(w_mask)
+                        if (
+                            b_mask is not None
+                            and hasattr(module, "bias")
+                            and module.bias is not None
+                        ):
+                            module.bias.data.mul_(b_mask)
                         return None
 
-                    layer.register_forward_pre_hook(layer_mask_hook_bias)
+                    layer.register_forward_pre_hook(_hook)
             else:
                 for w_path in weight_layer_paths:
                     layer = get_layer_from_path(model, w_path)
-                    mask = param_masks[w_path]  # Access the mask using w_path
-            
-                    def layer_mask_hook(module, input, mask=mask):
-                        if hasattr(module, 'weight'):
-                            module.weight.data = module.weight.data * mask
+                    w_mask = param_masks[w_path]
+
+                    def _hook(module, _input, w_mask=w_mask):
+                        if hasattr(module, "weight"):
+                            module.weight.data.mul_(w_mask)
                         return None
 
-                    layer.register_forward_pre_hook(layer_mask_hook)
+                    layer.register_forward_pre_hook(_hook)
 
     else:
-        # Global masking approach for all layers:
-        param_to_mask = {}
-        for name, param in model.named_parameters():
-            if name in param_masks:
-                param_to_mask[param] = param_masks[name]
+        param_to_mask = {
+            param: mask
+            for name, param in model.named_parameters()
+            if name in param_masks
+            for mask in [param_masks[name]]
+        }
 
-        def global_mask_hook(module, input):
-            for name, param in module.named_parameters(recurse=False):
-                if param in param_to_mask:
-                    param.data = param.data * param_to_mask[param]
+        def _global_hook(module, _input):
+            for _n, p in module.named_parameters(recurse=False):
+                if p in param_to_mask:
+                    p.data.mul_(param_to_mask[p])
             return None
 
         for m in model.modules():
             if len(list(m.parameters(recurse=False))) > 0:
-                m.register_forward_pre_hook(global_mask_hook)
+                m.register_forward_pre_hook(_global_hook)
 
 
 def create_mask(param, fraction, masking_level='connections'):
