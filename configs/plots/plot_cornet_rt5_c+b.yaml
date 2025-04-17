@@ -1,62 +1,26 @@
-subdir: "cornet_rt5/"
+subdir: "cornet_rt5_c/"
 tasks:
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
-      layers: ["V1","V2","V4","IT"]
-      damage_type: "noise"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [0,0.25]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
       categories: ["total"]
       metric: "observed_difference"
       verbose: 0
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
-      layers: ["V1","V2","V4","IT"]
-      damage_type: "connections"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
-      layers: ["V1","V2","V4","IT"]
-      damage_type: "connections"
-      categories: ["total"]
-      metric: "avg_within"
-      verbose: 0
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
-      layers: ["V1","V2","V4","IT"]
-      damage_type: "connections"
-      categories: ["total"]
-      metric: "avg_between"
-      verbose: 0
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
-      layers: ["V1","V2","V4","IT"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "avg_within"
-      verbose: 0
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
-      layers: ["V1","V2","V4","IT"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "avg_between"
-      verbose: 0
-  - function: "plot_avg_corr_mat"
-    parameters:
-      layers: ["V1"]
-      damage_type: "noise"
-      damage_levels: ["0.0", "0.5", "1.0", "2.0", "2.5", "3.0"] # List of str
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
-  - function: "plot_avg_corr_mat"
-    parameters:
-      layers: ["IT"]
-      damage_type: "noise"
-      damage_levels: ["0.0", "0.5", "1.0", "2.0", "2.5", "3.0"] # List of str
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      percentage: False
+      ylim: [0,0.25]
+      data_type: "selectivity"
