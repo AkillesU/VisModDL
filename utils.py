@@ -1376,7 +1376,7 @@ def categ_corr_lineplot(
 
     # If we scaled the data, rename the y-axis to indicate percentages
     if percentage:
-        plt.ylabel(plt.gca().get_ylabel() + " (%)")
+        plt.ylabel(plt.gca().get_ylabel() + " (scaled %)")
 
     if ylim is not None:
         plt.ylim(ylim)
