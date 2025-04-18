@@ -1170,16 +1170,6 @@ def categ_corr_lineplot(
     (e.g. 0.0) and treat it as 100%. Everything else is scaled to (current / baseline) * 100.
     """
 
-    # ------------------ HELPER: unify 'place' -> 'scene' for SVM columns ------------------    
-    def unify_svm_name(cat_str):
-        """
-        If the user calls the category 'place', but the SVM columns say 'scene',
-        we rename 'place' -> 'scene' just for column matching.
-        """
-        cat_str = cat_str.lower()
-        if cat_str == "place":
-            return "scene"
-        return cat_str
 
     # ------------------ Setup data structures ------------------
     # data[(layer, activation_layer, category)] -> { fraction_value : (mean, std, n) }
@@ -1706,12 +1696,6 @@ def plot_categ_differences(
             return "place"
         return cat_str
 
-    def unify_svm_name(cat_str):
-        """ Convert 'place' -> 'scene' for matching columns in SVM data. """
-        cat_str = cat_str.lower()
-        if cat_str == "place":
-            return "scene"
-        return cat_str
 
     def get_sorted_filenames(folder):
         """Return sorted list of filenames, ignoring subdirectories."""
@@ -1844,11 +1828,11 @@ def plot_categ_differences(
         for df in dataframes:
             lower_cols = [c.lower() for c in df.columns]
             for cat in categories_list:
-                cat_l = unify_svm_name(cat)  # map "place" -> "scene"
+                cat_l = cat 
                 for oc in categories_list:
                     if oc == cat:
                         continue
-                    oc_l = unify_svm_name(oc)
+                    oc_l = oc
                     # gather columns that have BOTH cat_l and oc_l
                     pair_cols_idx = [
                         i for i, col in enumerate(lower_cols)
