@@ -1,50 +1,52 @@
 """
-Run ImageNet accuracy for the model specified
-in a YAML config file.
-
-Usage
------
-python run_imagenet.py configs/imagenet/my_cfg.yaml
+Run all damage jobs listed under `damage_jobs:` in a YAML.
+Automatically honours include_bias per job.
 """
 
-import sys, yaml, torch, random
+import os, copy, sys, yaml, torch
 from utils import run_damage_imagenet
 
-random.seed(1234)
-
-def main():
-    cfg_file = sys.argv[1] if len(sys.argv) > 1 else "configs/cornet_s_it.yaml"
+def main(cfg_file):
     cfg = yaml.safe_load(open(cfg_file))
 
-    # ---------- model info ----------
+    # global knobs
+    global_keys = {k: v for k, v in cfg.items() if k != "damage_jobs"}
     model_info = {
-        "source":  cfg.get("model_source", "cornet"),
-        "repo":    cfg.get("model_repo", "-"),
-        "name":    cfg.get("model_name", "cornet_s"),
-        "weights": cfg.get("model_weights", "")
+        "source":  global_keys.get("model_source", "cornet"),
+        "repo":    global_keys.get("model_repo", "-"),
+        "name":    global_keys.get("model_name", "cornet_rt"),
+        "weights": global_keys.get("model_weights", "")
     }
-    if "model_time_steps" in cfg:
-        model_info["time_steps"] = cfg["model_time_steps"]
+    if "model_time_steps" in global_keys:
+        model_info["time_steps"] = global_keys["model_time_steps"]
 
-    # ---------- call runner ----------
-    run_damage_imagenet(
-        model_info=model_info,
-        pretrained=cfg.get("pretrained", True),
-        fraction_to_mask_params=cfg.get("fraction_to_mask", [0.05,10,0.05]),
-        noise_levels_params=cfg.get("noise_levels",    [0.1, 10, 0.1]),
-        layer_paths_to_damage=cfg.get("layer_paths_to_damage", []),
-        apply_to_all_layers=cfg.get("apply_to_all_layers", False),
-        manipulation_method=cfg.get("manipulation_method", "connections"),  # or "noise"
-        mc_permutations=cfg.get("mc_permutations", 10),
-        layer_name=cfg.get("layer_name", "IT"),
-        imagenet_root=cfg["imagenet_root"],      # must be in YAML
-        only_conv=cfg.get("only_conv", True),
-        include_bias=cfg.get("include_bias", False),
-        masking_level=cfg.get("masking_level", "connections"),
-        batch_size=cfg.get("batch_size", 32),
-        num_workers=cfg.get("num_workers", 8),
-        subset_pct=cfg.get("subset_pct", 10)
-    )
+    if "torch_threads" in global_keys:
+        torch.set_num_threads(int(global_keys["torch_threads"]))
+
+    for job in cfg["damage_jobs"]:
+        # merge job-specific keys over the globals
+        params = copy.deepcopy(global_keys)
+        params.update(job)                 # job overrides/extends
+
+        print("\n=== Running damage job:", job, "===")
+        run_damage_imagenet(
+            model_info           = model_info,
+            pretrained           = params.get("pretrained", True),
+            fraction_to_mask_params = params.get("fraction_to_mask", [0,0,0]),
+            noise_levels_params     = params.get("noise_levels",    [0,0,0]),
+            layer_paths_to_damage   = [params["layer_paths_to_damage"]],
+            apply_to_all_layers     = params.get("apply_to_all_layers", False),
+            manipulation_method     = params["method"],
+            masking_level           = params.get("masking_level", "connections"),
+            include_bias            = params.get("include_bias", False),
+            mc_permutations         = params["mc_permutations"],
+            layer_name              = params["layer_name"],
+            imagenet_root           = params["imagenet_root"],
+            only_conv              = params.get("only_conv", True),
+            batch_size             = params["batch_size"],
+            num_workers            = params["num_workers"],
+            subset_pct             = params["subset_pct"],
+        )
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1])

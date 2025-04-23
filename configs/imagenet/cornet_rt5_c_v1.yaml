@@ -1,0 +1,34 @@
+model_source: cornet
+model_name:   cornet_rt
+model_time_steps: 5
+pretrained:   true
+
+subset_pct:    10          # Y = 10 %
+mc_permutations: 10        # X = 10
+batch_size:     64
+num_workers:    8
+torch_threads:  3         
+imagenet_root:  imagenet/imagenet-val
+only_conv:      true
+
+layer_name: V1
+layer_paths_to_damage:
+  - module._modules.V1
+
+damage_jobs:
+  # --- 1. mask *units* (include_bias = true)
+  - method:         connections
+    masking_level:  units
+    include_bias:   true
+    fraction_to_mask: [0.00, 21, 0.05]
+
+  # --- 2. mask *individual connections*
+  - method:         connections
+    masking_level:  connections
+    include_bias:   false
+    fraction_to_mask: [0.00, 21, 0.05]
+
+  # --- 3. add Gaussian noise
+  - method:         noise
+    include_bias:   false
+    noise_levels:   [0.00, 31, 0.1]
