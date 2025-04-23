@@ -6,8 +6,8 @@ pretrained:   true
 subset_pct:    10          # Y = 10 %
 mc_permutations: 10        # X = 10
 batch_size:     64
-num_workers:    8
-torch_threads:  3         
+num_workers:    4
+torch_threads:  10         
 imagenet_root:  imagenet/imagenet-val
 only_conv:      true
 
