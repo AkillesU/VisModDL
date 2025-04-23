@@ -3228,7 +3228,7 @@ def run_damage_imagenet(
     time_steps = str(model_info.get("time_steps", ""))  # "" if not temporal
     run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
 
-    # ---- 3 ImageNet DataLoader  (auto-download on first run) ------------
+    # ---- 3 ImageNet DataLoader -----------------------------------------
     trans = transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(224),
@@ -3236,8 +3236,8 @@ def run_damage_imagenet(
         transforms.Normalize(mean=[0.485,0.456,0.406],
                              std =[0.229,0.224,0.225])
     ])
-    imagenet_val = get_imagenet_val(
-        imagenet_root, transform=trans, download_if_missing=True
+    imagenet_val = torchvision.datasets.ImageNet(
+        imagenet_root, split="val", transform=trans
     )
     loader = torch.utils.data.DataLoader(
         imagenet_val,
@@ -3295,34 +3295,3 @@ def run_damage_imagenet(
 
                 pbar.update(1)
     print("ImageNet evaluation finished.")
-
-
-def get_imagenet_val(root, transform, download_if_missing=True):
-    """
-    Return a torchvision ImageNet *val* dataset, downloading/extracting it
-    the first time if necessary.  Torchvision’s built-in `download=True`
-    already performs an atomic check, so a second Python process will just
-    reuse the files.
-
-    Parameters
-    ----------
-    root : str  – directory that will eventually contain:
-                      root/ILSVRC2012_img_val.tar   (≈6.4 GB)
-                      root/val/n01440764/ILSVRC2012_val_00010001.JPEG ...
-    transform : callable – the normal preprocessing pipeline
-    download_if_missing : bool
-    """
-    try:
-        ds = torchvision.datasets.ImageNet(
-            root, split="val", transform=transform, download=download_if_missing
-        )
-    except (RuntimeError, FileNotFoundError) as e:
-        if not download_if_missing:
-            raise
-        # If user is on an old torchvision that lacks ImageNet-download support
-        raise RuntimeError(
-            "Your torchvision build does not support automatic ImageNet "
-            "downloading.  Either upgrade torchvision>=0.15 or download the "
-            "validation tar manually as documented."
-        ) from e
-    return ds
