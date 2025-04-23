@@ -24,6 +24,8 @@ from collections import defaultdict
 import torchvision                       
 from torchvision.datasets.utils import download_url
 import os, tarfile, hashlib
+import copy
+
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -3261,12 +3263,13 @@ def run_damage_imagenet(
     total_iters = len(damage_levels) * mc_permutations
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    base_model, _ = load_model(model_info, pretrained, layer_name, layer_path=None)
+
     with tqdm(total=total_iters, desc="ImageNet damage eval") as pbar:
         for dmg in damage_levels:
             for perm in range(mc_permutations):
                 # fresh model
-                model, _ = load_model(model_info, pretrained, layer_name, layer_path="")
-                model.to(device)
+                model = copy.deepcopy(base_model).to(device)
 
                 # apply chosen damage
                 if manipulation_method == "connections":
