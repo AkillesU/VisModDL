@@ -162,7 +162,7 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
 
         elif model_name == "cornet_s":
             from cornet import cornet_s
-            model = cornet_s(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")), times=model_time_steps)
+            model = cornet_s(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
 
         elif model_name == "cornet_rt":
             from cornet import cornet_rt
