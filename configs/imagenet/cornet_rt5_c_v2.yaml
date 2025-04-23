@@ -13,7 +13,7 @@ only_conv:      true
 
 layer_name: V2
 layer_paths_to_damage:
-  - module._modules.V2
+  - "module._modules.V2"
 
 damage_jobs:
   # --- 1. mask *units* (include_bias = true)
