@@ -34,7 +34,7 @@ def main(cfg_file):
             pretrained           = params.get("pretrained", True),
             fraction_to_mask_params = params.get("fraction_to_mask", [0,0,0]),
             noise_levels_params     = params.get("noise_levels",    [0,0,0]),
-            layer_paths_to_damage   = [params["layer_paths_to_damage"]],
+            layer_paths_to_damage   = params["layer_paths_to_damage"],
             apply_to_all_layers     = params.get("apply_to_all_layers", False),
             manipulation_method     = params["method"],
             masking_level           = params.get("masking_level", "connections"),
