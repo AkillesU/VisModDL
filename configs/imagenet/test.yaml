@@ -15,7 +15,7 @@ layer_name: V1
 
 # evaluation
 imagenet_root: imagenet/imagenet-val          # REQUIRED
-batch_size:    512
-num_workers:   16
+batch_size:    32
+num_workers:   1
 only_conv:     true
 include_bias:  false
