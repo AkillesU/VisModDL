@@ -3140,10 +3140,17 @@ def train_and_test_svm_arrays(X_train, y_train, X_test, y_test):
     return np.mean(preds_test == y_test)
 
 
-def evaluate_imagenet_perclass(model, loader, device, topk=(1, 5)):
+def evaluate_imagenet_perclass(model, loader, device, topk=(1, 5), *,
+                               desc="ImageNet", position=1):
     """
-    Same logic as before but infer n_classes from the loader’s dataset
-    so it works with either ImageNet or ImageFolder.
+    Same functionality as before but now shows a tqdm bar that advances
+    once per minibatch.
+
+    Parameters
+    ----------
+    position : int
+        Position index used by tqdm so the bar nests nicely under the
+        outer bar (outer uses position = 0).
     """
     n_cls = len(loader.dataset.classes)
     total   = torch.zeros(n_cls, dtype=torch.long)
@@ -3151,11 +3158,15 @@ def evaluate_imagenet_perclass(model, loader, device, topk=(1, 5)):
     corr5   = torch.zeros(n_cls, dtype=torch.long)
 
     model.eval()
-    with torch.no_grad():
+    with torch.no_grad(), tqdm(total=len(loader),
+                               desc=desc,
+                               position=position,
+                               leave=False,
+                               unit="batch") as pbar:
         for x, y in loader:
             x, y = x.to(device), y.to(device)
             logits = model(x)
-            _, pred = logits.topk(max(topk), 1, True, True)  # [B,maxk]
+            _, pred = logits.topk(max(topk), 1, True, True)
             pred = pred.t()
             matches = pred.eq(y.view(1, -1).expand_as(pred))
 
@@ -3166,6 +3177,8 @@ def evaluate_imagenet_perclass(model, loader, device, topk=(1, 5)):
                     corr1[cls] += 1
                 if matches[:5, b].any():
                     corr5[cls] += 1
+
+            pbar.update(1)         # ← advance inner bar
 
     top1 = corr1.sum().item() / total.sum().item()
     top5 = corr5.sum().item() / total.sum().item()
