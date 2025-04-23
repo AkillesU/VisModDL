@@ -183,6 +183,12 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
     model.eval()
     activations = {} # Init activations dictionary for hook registration
 
+    # early-exit guard 
+    if layer_path in (None, ""):
+        # caller does not need hooks – just return the model as-is
+        return model, activations
+
+
     # We'll store all hooks in the same 'activations' dictionary, keyed by their path.
     if isinstance(layer_path, list):
         # If layer_path is already a list of paths, do multiple hooks
