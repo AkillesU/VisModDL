@@ -21,7 +21,9 @@ from itertools import combinations, product
 import random
 import hashlib
 from collections import defaultdict
-
+import torchvision                       
+from torchvision.datasets.utils import download_url
+import os, tarfile, hashlib
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -3130,3 +3132,197 @@ def train_and_test_svm_arrays(X_train, y_train, X_test, y_test):
     clf.fit(X_train, y_train)
     preds_test = clf.predict(X_test)
     return np.mean(preds_test == y_test)
+
+
+def evaluate_imagenet_perclass(model, dataloader, device, topk=(1, 5)):
+    """
+    Run ImageNet val set once and return:
+        {
+            "overall": {"top1": float, "top5": float},
+            "classes": {cls_id: {"top1": float, "top5": float}, ...}
+        }
+    Works on CPU or CUDA.  No progress bar inside – the caller should
+    handle the outer tqdm.
+    """
+    n_cls = 1000
+    total   = torch.zeros(n_cls, dtype=torch.long)
+    correct1 = torch.zeros(n_cls, dtype=torch.long)
+    correct5 = torch.zeros(n_cls, dtype=torch.long)
+
+    model.eval()
+    with torch.no_grad():
+        for x, y in dataloader:            # outer tqdm lives in the caller
+            x, y = x.to(device), y.to(device)
+            logits = model(x)              # [B,1000]
+            maxk = max(topk)
+            _, pred = logits.topk(maxk, 1, True, True)       # [B,maxk]
+            pred = pred.t()                                   # [maxk,B]
+            matches = pred.eq(y.view(1, -1).expand_as(pred))  # [maxk,B]
+
+            for b in range(x.size(0)):
+                cls = y[b].item()
+                total[cls] += 1
+                if matches[0, b]:
+                    correct1[cls] += 1
+                if matches[:5, b].any():
+                    correct5[cls] += 1
+
+    top1_glob = correct1.sum().item() / total.sum().item()
+    top5_glob = correct5.sum().item() / total.sum().item()
+
+    per_cls = {
+        i: {
+            "top1": (correct1[i].item() / total[i].item()) if total[i] else float("nan"),
+            "top5": (correct5[i].item() / total[i].item()) if total[i] else float("nan")
+        } for i in range(n_cls)
+    }
+
+    return {"overall": {"top1": top1_glob, "top5": top5_glob},
+            "classes": per_cls}
+
+
+def run_damage_imagenet(
+    model_info,
+    pretrained,
+    fraction_to_mask_params,
+    noise_levels_params,
+    layer_paths_to_damage,
+    apply_to_all_layers,
+    manipulation_method,          # "connections" | "noise"
+    mc_permutations,
+    layer_name,                   # kept for directory naming consistency
+    imagenet_root,                # ← path to ILSVRC2012 folder
+    only_conv,
+    include_bias,
+    masking_level="connections",
+    batch_size=32,
+    num_workers=8,
+    run_suffix=""
+):
+    """
+    Evaluate (top-1 / top-5) ImageNet accuracy for every damaged model
+    that would normally be produced by `run_damage`.
+
+    Saves one Pickle per damage-level × permutation under
+      .../imagenet/damaged_<param>/<perm_idx>.pkl
+    """
+    # ---- 1 damage-level list (same logic as run_damage) -----------------
+    if manipulation_method == "connections":
+        damage_levels = generate_params_list(fraction_to_mask_params)
+        noise_dict = None
+    elif manipulation_method == "noise":
+        damage_levels = generate_params_list(noise_levels_params)
+        # build once to get per-param std for scaling
+        tmp_model, _ = load_model(model_info, pretrained, layer_name, layer_path="")
+        noise_dict = get_params_sd(tmp_model)
+        del tmp_model
+    else:
+        raise ValueError("manipulation_method must be 'connections' or 'noise'.")
+
+    # ---- 2 folder tag (same naming scheme) ------------------------------
+    dir_tag = (
+        "units" if manipulation_method == "connections" and masking_level == "units"
+        else "connections" if manipulation_method == "connections"
+        else "noise"
+    )
+    time_steps = str(model_info.get("time_steps", ""))  # "" if not temporal
+    run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
+
+    # ---- 3 ImageNet DataLoader  (auto-download on first run) ------------
+    trans = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485,0.456,0.406],
+                             std =[0.229,0.224,0.225])
+    ])
+    imagenet_val = get_imagenet_val(
+        imagenet_root, transform=trans, download_if_missing=True
+    )
+    loader = torch.utils.data.DataLoader(
+        imagenet_val,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available()
+    )
+
+    # ---- 4 outer loop ---------------------------------------------------
+    total_iters = len(damage_levels) * mc_permutations
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    with tqdm(total=total_iters, desc="ImageNet damage eval") as pbar:
+        for dmg in damage_levels:
+            for perm in range(mc_permutations):
+                # fresh model
+                model, _ = load_model(model_info, pretrained, layer_name, layer_path="")
+                model.to(device)
+
+                # apply chosen damage
+                if manipulation_method == "connections":
+                    apply_masking(
+                        model,
+                        fraction_to_mask=dmg,
+                        layer_paths=layer_paths_to_damage,
+                        apply_to_all_layers=apply_to_all_layers,
+                        masking_level=masking_level,
+                        only_conv=only_conv,
+                        include_bias=include_bias
+                    )
+                else:  # noise
+                    apply_noise(
+                        model,
+                        noise_level=dmg,
+                        noise_dict=noise_dict,
+                        layer_paths=layer_paths_to_damage,
+                        apply_to_all_layers=apply_to_all_layers,
+                        only_conv=only_conv,
+                        include_bias=include_bias
+                    )
+
+                # run ImageNet once
+                results = evaluate_imagenet_perclass(model, loader, device)
+
+                # ---- 5 save ------------------------------------------------
+                save_dir = (
+                    f"data/haupt_stim_activ/damaged/"
+                    f"{model_info['name']}{time_steps}{run_suffix}/"
+                    f"{dir_tag}/{layer_name}/imagenet/damaged_{round(dmg,3)}"
+                )
+                os.makedirs(save_dir, exist_ok=True)
+                with open(os.path.join(save_dir, f"{perm}.pkl"), "wb") as f:
+                    pickle.dump(results, f)
+
+                pbar.update(1)
+    print("ImageNet evaluation finished.")
+
+
+def get_imagenet_val(root, transform, download_if_missing=True):
+    """
+    Return a torchvision ImageNet *val* dataset, downloading/extracting it
+    the first time if necessary.  Torchvision’s built-in `download=True`
+    already performs an atomic check, so a second Python process will just
+    reuse the files.
+
+    Parameters
+    ----------
+    root : str  – directory that will eventually contain:
+                      root/ILSVRC2012_img_val.tar   (≈6.4 GB)
+                      root/val/n01440764/ILSVRC2012_val_00010001.JPEG ...
+    transform : callable – the normal preprocessing pipeline
+    download_if_missing : bool
+    """
+    try:
+        ds = torchvision.datasets.ImageNet(
+            root, split="val", transform=transform, download=download_if_missing
+        )
+    except (RuntimeError, FileNotFoundError) as e:
+        if not download_if_missing:
+            raise
+        # If user is on an old torchvision that lacks ImageNet-download support
+        raise RuntimeError(
+            "Your torchvision build does not support automatic ImageNet "
+            "downloading.  Either upgrade torchvision>=0.15 or download the "
+            "validation tar manually as documented."
+        ) from e
+    return ds
