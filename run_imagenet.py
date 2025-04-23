@@ -35,14 +35,15 @@ def main():
         layer_paths_to_damage=cfg.get("layer_paths_to_damage", []),
         apply_to_all_layers=cfg.get("apply_to_all_layers", False),
         manipulation_method=cfg.get("manipulation_method", "connections"),  # or "noise"
-        mc_permutations=cfg.get("mc_permutations", 5),
+        mc_permutations=cfg.get("mc_permutations", 10),
         layer_name=cfg.get("layer_name", "IT"),
         imagenet_root=cfg["imagenet_root"],      # must be in YAML
         only_conv=cfg.get("only_conv", True),
         include_bias=cfg.get("include_bias", False),
         masking_level=cfg.get("masking_level", "connections"),
         batch_size=cfg.get("batch_size", 32),
-        num_workers=cfg.get("num_workers", 8)
+        num_workers=cfg.get("num_workers", 8),
+        subset_pct=cfg.get("subset_pct", 10)
     )
 
 if __name__ == "__main__":

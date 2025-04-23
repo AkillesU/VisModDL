@@ -3142,31 +3142,28 @@ def train_and_test_svm_arrays(X_train, y_train, X_test, y_test):
     return np.mean(preds_test == y_test)
 
 
-def evaluate_imagenet_perclass(model, loader, device, topk=(1, 5), *,
-                               desc="ImageNet", position=1):
+def evaluate_imagenet_perclass(model, loader, device, topk=(1, 5)):
     """
-    Same functionality as before but now shows a tqdm bar that advances
-    once per minibatch.
+    Works with ImageNet, ImageFolder *and* torch.utils.data.Subset.
+    """
+    # ---------------------------------------------------------------
+    if hasattr(loader.dataset, "classes"):                 # normal case
+        cls_names = loader.dataset.classes
+    elif hasattr(loader.dataset, "dataset") and hasattr(loader.dataset.dataset, "classes"):
+        cls_names = loader.dataset.dataset.classes        # Subset -> underlying
+    else:
+        raise AttributeError("Dataset has no 'classes' attribute.")
+    n_cls = len(cls_names)
+    # ---------------------------------------------------------------
 
-    Parameters
-    ----------
-    position : int
-        Position index used by tqdm so the bar nests nicely under the
-        outer bar (outer uses position = 0).
-    """
-    n_cls = len(loader.dataset.classes)
-    total   = torch.zeros(n_cls, dtype=torch.long)
-    corr1   = torch.zeros(n_cls, dtype=torch.long)
-    corr5   = torch.zeros(n_cls, dtype=torch.long)
+    total = torch.zeros(n_cls, dtype=torch.long)
+    corr1 = torch.zeros(n_cls, dtype=torch.long)
+    corr5 = torch.zeros(n_cls, dtype=torch.long)
 
     model.eval()
-    with torch.no_grad(), tqdm(total=len(loader),
-                               desc=desc,
-                               position=position,
-                               leave=False,
-                               unit="batch") as pbar:
+    with torch.no_grad():
         for x, y in loader:
-            x, y = x.to(device), y.to(device)
+            x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
             logits = model(x)
             _, pred = logits.topk(max(topk), 1, True, True)
             pred = pred.t()
@@ -3180,16 +3177,12 @@ def evaluate_imagenet_perclass(model, loader, device, topk=(1, 5), *,
                 if matches[:5, b].any():
                     corr5[cls] += 1
 
-            pbar.update(1)         # ← advance inner bar
-
     top1 = corr1.sum().item() / total.sum().item()
     top5 = corr5.sum().item() / total.sum().item()
 
-    per_cls = {
-        i: {"top1": corr1[i].item() / total[i].item(),
-            "top5": corr5[i].item() / total[i].item()}
-        for i in range(n_cls)
-    }
+    per_cls = {i: {"top1": corr1[i].item() / total[i].item(),
+                   "top5": corr5[i].item() / total[i].item()}
+               for i in range(n_cls)}
     return {"overall": {"top1": top1, "top5": top5},
             "classes": per_cls}
 
@@ -3203,45 +3196,36 @@ def run_damage_imagenet(
     apply_to_all_layers,
     manipulation_method,          # "connections" | "noise"
     mc_permutations,
-    layer_name,                   # kept for directory naming consistency
-    imagenet_root,                # ← path to ILSVRC2012 folder
+    layer_name,
+    imagenet_root,
     only_conv,
     include_bias,
     masking_level="connections",
-    batch_size=32,
+    batch_size=64,                # bigger batch, fits in 64 GB RAM
     num_workers=8,
+    subset_pct=10,                # NEW – 10 % by default
     run_suffix=""
 ):
-    """
-    Evaluate (top-1 / top-5) ImageNet accuracy for every damaged model
-    that would normally be produced by `run_damage`.
-
-    Saves one Pickle per damage-level × permutation under
-      .../imagenet/damaged_<param>/<perm_idx>.pkl
-    """
-    # ---- 1 damage-level list (same logic as run_damage) -----------------
+    # 1) damage-level list -----------------------------------------------
     if manipulation_method == "connections":
         damage_levels = generate_params_list(fraction_to_mask_params)
         noise_dict = None
     elif manipulation_method == "noise":
         damage_levels = generate_params_list(noise_levels_params)
-        # build once to get per-param std for scaling
-        tmp_model, _ = load_model(model_info, pretrained, layer_name, layer_path="")
+        tmp_model, _ = load_model(model_info, pretrained, layer_name, layer_path=None)
         noise_dict = get_params_sd(tmp_model)
         del tmp_model
     else:
         raise ValueError("manipulation_method must be 'connections' or 'noise'.")
 
-    # ---- 2 folder tag (same naming scheme) ------------------------------
-    dir_tag = (
-        "units" if manipulation_method == "connections" and masking_level == "units"
-        else "connections" if manipulation_method == "connections"
-        else "noise"
-    )
-    time_steps = str(model_info.get("time_steps", ""))  # "" if not temporal
+    # 2) naming pieces ----------------------------------------------------
+    dir_tag = ("units" if manipulation_method == "connections" and masking_level == "units"
+               else "connections" if manipulation_method == "connections"
+               else "noise")
+    time_steps = str(model_info.get("time_steps", ""))
     run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
 
-    # ---- 3  ImageNet DataLoader  -------------------------------------------
+    # 3) base dataset & transform ----------------------------------------
     trans = transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(224),
@@ -3249,61 +3233,52 @@ def run_damage_imagenet(
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std =[0.229, 0.224, 0.225])
     ])
+    full_dataset = get_val_dataset(imagenet_root, trans)
+    n_full = len(full_dataset)
 
-    imagenet_val = get_val_dataset(imagenet_root, trans)   # <- new helper
-    loader = torch.utils.data.DataLoader(
-        imagenet_val,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available()
-    )
-
-    # ---- 4 outer loop ---------------------------------------------------
+    # 4) outer loop -------------------------------------------------------
     total_iters = len(damage_levels) * mc_permutations
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     base_model, _ = load_model(model_info, pretrained, layer_name, layer_path=None)
 
     with tqdm(total=total_iters, desc="ImageNet damage eval") as pbar:
         for dmg in damage_levels:
             for perm in range(mc_permutations):
-                # fresh model
+                # --- fresh balanced 10 % subset each permutation ----------
+                subset = balanced_subset(full_dataset, subset_pct, seed=perm)
+                loader = torch.utils.data.DataLoader(
+                    subset,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    num_workers=num_workers,
+                    pin_memory=torch.cuda.is_available()
+                )
+
+                # --- copy model & apply damage ---------------------------
                 model = copy.deepcopy(base_model).to(device)
-
-                # apply chosen damage
                 if manipulation_method == "connections":
-                    apply_masking(
-                        model,
-                        fraction_to_mask=dmg,
-                        layer_paths=layer_paths_to_damage,
-                        apply_to_all_layers=apply_to_all_layers,
-                        masking_level=masking_level,
-                        only_conv=only_conv,
-                        include_bias=include_bias
-                    )
-                else:  # noise
-                    apply_noise(
-                        model,
-                        noise_level=dmg,
-                        noise_dict=noise_dict,
-                        layer_paths=layer_paths_to_damage,
-                        apply_to_all_layers=apply_to_all_layers,
-                        only_conv=only_conv,
-                        include_bias=include_bias
-                    )
+                    apply_masking(model, fraction_to_mask=dmg,
+                                  layer_paths=layer_paths_to_damage,
+                                  apply_to_all_layers=apply_to_all_layers,
+                                  masking_level=masking_level,
+                                  only_conv=only_conv,
+                                  include_bias=include_bias)
+                else:
+                    apply_noise(model, noise_level=dmg, noise_dict=noise_dict,
+                                layer_paths=layer_paths_to_damage,
+                                apply_to_all_layers=apply_to_all_layers,
+                                only_conv=only_conv,
+                                include_bias=include_bias)
 
-                # run ImageNet once
+                # --- one evaluation -------------------------------------
                 results = evaluate_imagenet_perclass(model, loader, device)
 
-                # ---- 5 save ------------------------------------------------
-                save_dir = (
-                    f"data/haupt_stim_activ/damaged/"
-                    f"{model_info['name']}{time_steps}{run_suffix}/"
-                    f"{dir_tag}/{layer_name}/imagenet/damaged_{round(dmg,3)}"
-                )
-                os.makedirs(save_dir, exist_ok=True)
-                with open(os.path.join(save_dir, f"{perm}.pkl"), "wb") as f:
+                # --- save -----------------------------------------------
+                out_dir = (f"data/haupt_stim_activ/damaged/"
+                           f"{model_info['name']}{time_steps}{run_suffix}/"
+                           f"{dir_tag}/{layer_name}/imagenet/damaged_{round(dmg,3)}")
+                os.makedirs(out_dir, exist_ok=True)
+                with open(os.path.join(out_dir, f"{perm}.pkl"), "wb") as f:
                     pickle.dump(results, f)
 
                 pbar.update(1)
@@ -3331,3 +3306,32 @@ def get_val_dataset(imagenet_root: str, transform):
                      if os.path.isdir(os.path.join(imagenet_root, "val"))
                      else imagenet_root)
         return torchvision.datasets.ImageFolder(candidate, transform=transform)
+
+
+def balanced_subset(dataset, pct, seed):
+    """
+    Return a torch.utils.data.Subset that contains `pct` percent of the
+    dataset, keeping *≈ equal* counts per class.
+
+    • pct must be in (0,100].
+    • seed makes the draw reproducible (one seed per permutation is fine).
+    """
+    if not (0 < pct <= 100):
+        raise ValueError("pct should be between 0 and 100.")
+    g = torch.Generator().manual_seed(seed)
+
+    cls_to_indices = {}
+    if hasattr(dataset, "targets"):            # ImageFolder / ImageNet
+        for idx, cls in enumerate(dataset.targets):
+            cls_to_indices.setdefault(cls, []).append(idx)
+    else:                                      # generic case
+        for idx, (_, cls) in enumerate(dataset.samples):
+            cls_to_indices.setdefault(cls, []).append(idx)
+
+    per_cls = max(1, int(len(dataset) * pct / 100 / len(cls_to_indices)))
+    subset_idx = []
+    for lst in cls_to_indices.values():
+        idx_tensor = torch.tensor(lst)
+        perm = idx_tensor[torch.randperm(len(lst), generator=g)]
+        subset_idx.extend(perm[:per_cls].tolist())
+    return torch.utils.data.Subset(dataset, subset_idx)
