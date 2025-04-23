@@ -3134,50 +3134,42 @@ def train_and_test_svm_arrays(X_train, y_train, X_test, y_test):
     return np.mean(preds_test == y_test)
 
 
-def evaluate_imagenet_perclass(model, dataloader, device, topk=(1, 5)):
+def evaluate_imagenet_perclass(model, loader, device, topk=(1, 5)):
     """
-    Run ImageNet val set once and return:
-        {
-            "overall": {"top1": float, "top5": float},
-            "classes": {cls_id: {"top1": float, "top5": float}, ...}
-        }
-    Works on CPU or CUDA.  No progress bar inside – the caller should
-    handle the outer tqdm.
+    Same logic as before but infer n_classes from the loader’s dataset
+    so it works with either ImageNet or ImageFolder.
     """
-    n_cls = 1000
+    n_cls = len(loader.dataset.classes)
     total   = torch.zeros(n_cls, dtype=torch.long)
-    correct1 = torch.zeros(n_cls, dtype=torch.long)
-    correct5 = torch.zeros(n_cls, dtype=torch.long)
+    corr1   = torch.zeros(n_cls, dtype=torch.long)
+    corr5   = torch.zeros(n_cls, dtype=torch.long)
 
     model.eval()
     with torch.no_grad():
-        for x, y in dataloader:            # outer tqdm lives in the caller
+        for x, y in loader:
             x, y = x.to(device), y.to(device)
-            logits = model(x)              # [B,1000]
-            maxk = max(topk)
-            _, pred = logits.topk(maxk, 1, True, True)       # [B,maxk]
-            pred = pred.t()                                   # [maxk,B]
-            matches = pred.eq(y.view(1, -1).expand_as(pred))  # [maxk,B]
+            logits = model(x)
+            _, pred = logits.topk(max(topk), 1, True, True)  # [B,maxk]
+            pred = pred.t()
+            matches = pred.eq(y.view(1, -1).expand_as(pred))
 
             for b in range(x.size(0)):
                 cls = y[b].item()
                 total[cls] += 1
                 if matches[0, b]:
-                    correct1[cls] += 1
+                    corr1[cls] += 1
                 if matches[:5, b].any():
-                    correct5[cls] += 1
+                    corr5[cls] += 1
 
-    top1_glob = correct1.sum().item() / total.sum().item()
-    top5_glob = correct5.sum().item() / total.sum().item()
+    top1 = corr1.sum().item() / total.sum().item()
+    top5 = corr5.sum().item() / total.sum().item()
 
     per_cls = {
-        i: {
-            "top1": (correct1[i].item() / total[i].item()) if total[i] else float("nan"),
-            "top5": (correct5[i].item() / total[i].item()) if total[i] else float("nan")
-        } for i in range(n_cls)
+        i: {"top1": corr1[i].item() / total[i].item(),
+            "top5": corr5[i].item() / total[i].item()}
+        for i in range(n_cls)
     }
-
-    return {"overall": {"top1": top1_glob, "top5": top5_glob},
+    return {"overall": {"top1": top1, "top5": top5},
             "classes": per_cls}
 
 
@@ -3228,17 +3220,16 @@ def run_damage_imagenet(
     time_steps = str(model_info.get("time_steps", ""))  # "" if not temporal
     run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
 
-    # ---- 3 ImageNet DataLoader -----------------------------------------
+    # ---- 3  ImageNet DataLoader  -------------------------------------------
     trans = transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(224),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485,0.456,0.406],
-                             std =[0.229,0.224,0.225])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std =[0.229, 0.224, 0.225])
     ])
-    imagenet_val = torchvision.datasets.ImageNet(
-        imagenet_root, split="val", transform=trans
-    )
+
+    imagenet_val = get_val_dataset(imagenet_root, trans)   # <- new helper
     loader = torch.utils.data.DataLoader(
         imagenet_val,
         batch_size=batch_size,
@@ -3295,3 +3286,26 @@ def run_damage_imagenet(
 
                 pbar.update(1)
     print("ImageNet evaluation finished.")
+
+
+def get_val_dataset(imagenet_root: str, transform):
+    """
+    Return a torchvision dataset for the ImageNet-1k validation set.
+
+    • Tries `torchvision.datasets.ImageNet(root, split="val")`
+      – works if the official metadata files are present.
+    • Otherwise falls back to `torchvision.datasets.ImageFolder`,
+      accepting either
+          imagenet_root/val/<wnid>/*.JPEG   or
+          imagenet_root/<wnid>/*.JPEG
+    """
+    try:
+        return torchvision.datasets.ImageNet(imagenet_root,
+                                             split="val",
+                                             transform=transform)
+    except (FileNotFoundError, RuntimeError):
+        # look for a nested “val” dir first
+        candidate = (os.path.join(imagenet_root, "val")
+                     if os.path.isdir(os.path.join(imagenet_root, "val"))
+                     else imagenet_root)
+        return torchvision.datasets.ImageFolder(candidate, transform=transform)
