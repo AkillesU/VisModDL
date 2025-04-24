@@ -10,3 +10,4 @@ tasks:
       data_type: imagenet
       metric: top1
       categories: [overall]
+      activation_layers: None
