@@ -6,7 +6,7 @@ tasks:
       damage_layers: [V1,V2,V4,IT]
       damage_type: connections
       verbose: 0
-      ylim: [-0.1,0.7]
+      ylim: [-0.1,1]
       data_type: imagenet
       metric: top5
       categories: [overall]
@@ -17,7 +17,7 @@ tasks:
       damage_layers: [V1,V2,V4,IT]
       damage_type: units
       verbose: 0
-      ylim: [-0.1,0.7]
+      ylim: [-0.1,1]
       data_type: imagenet
       metric: top5
       categories: [overall]
@@ -28,7 +28,7 @@ tasks:
       damage_layers: [V1,V2,V4,IT]
       damage_type: noise
       verbose: 0
-      ylim: [-0.1,0.7]
+      ylim: [-0.1,1]
       data_type: imagenet
       metric: top5
       categories: [overall]
