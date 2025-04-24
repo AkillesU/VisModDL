@@ -1,6 +1,13 @@
 ﻿/.vs
 /__pycache__
+<<<<<<< HEAD
 /test_activations
 /imagenet/imagenet-val
 /data/haupt_stim_activ/damaged
 /kaggle.json
+=======
+/kaggle.json
+/imagenet/imagenet-val
+/data/haupt_stim_activ/damaged
+/test_activations
+>>>>>>> svm_test

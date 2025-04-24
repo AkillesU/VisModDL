@@ -1,0 +1,22 @@
+# configs/cornet_s_imagenet.yaml
+model_source: cornet
+model_name:   cornet_rt
+model_time_steps: 5
+pretrained:   true
+
+# damage parameters
+manipulation_method: connections     # or "noise"
+masking_level: connections
+fraction_to_mask: [0.0, 1, 0.1]      # start, length, step
+mc_permutations: 10
+layer_paths_to_damage:
+  - module._modules.V1
+layer_name: V1
+
+# evaluation
+imagenet_root: imagenet/imagenet-val          # REQUIRED
+batch_size:    128
+num_workers:   6
+only_conv:     true
+include_bias:  false
+subset_pct:    10                      # Y

@@ -1,0 +1,8 @@
+training_samples: 15
+parent_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/noise/V1"
+activation_layers:
+ - "IT"
+ - "V1"
+ - "V2"
+ - "V4"
+max_permutations: 12 # How many of the possible training sample permutations to use (e.g., 16x16 = 256)
