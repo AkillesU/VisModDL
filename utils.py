@@ -1191,7 +1191,10 @@ def categ_corr_lineplot(
 
     # ------------ 2. helper for cache filename ----------------
     def agg_fname(frac):
-        return f"avg_{data_type}_{frac}.pkl"
+        if data_type == "imagenet":
+            return f"avg_imagenet_{metric}_{frac}.pkl"
+        else:
+            return f"avg_{data_type}_{frac}.pkl"
 
     # ------------ 3. containers -------------------------------
     data       = {}   # (layer, act_key, cat) -> {frac:(mean,std,n)}
