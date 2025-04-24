@@ -8,7 +8,7 @@ tasks:
       verbose: 0
       ylim: [-0.1,0.7]
       data_type: imagenet
-      metric: top1
+      metric: top5
       categories: [overall]
       activations_layers: None
   - function: categ_corr_lineplot
@@ -19,7 +19,7 @@ tasks:
       verbose: 0
       ylim: [-0.1,0.7]
       data_type: imagenet
-      metric: top1
+      metric: top5
       categories: [overall]
       activations_layers: None
   - function: categ_corr_lineplot
@@ -30,6 +30,6 @@ tasks:
       verbose: 0
       ylim: [-0.1,0.7]
       data_type: imagenet
-      metric: top1
+      metric: top5
       categories: [overall]
       activations_layers: None
