@@ -1,2 +1,6 @@
 ﻿/.vs
 /__pycache__
+/test_activations
+/imagenet/imagenet-val
+/data/haupt_stim_activ/damaged
+/kaggle.json
