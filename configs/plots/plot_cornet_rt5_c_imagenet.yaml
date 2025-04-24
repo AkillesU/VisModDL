@@ -4,9 +4,9 @@ tasks:
     parameters:
       main_dir: data/haupt_stim_activ/damaged/cornet_rt5_c/
       damage_layers: [V1,V2,V4,IT]
-      activations_layers: [decoder]
       damage_type: connections
       verbose: 0
       ylim: [-0.1,0.7]
       data_type: imagenet
       metric: top1
+      categories: [overall]

@@ -1152,188 +1152,210 @@ def categ_corr_lineplot(
     activations_layers,
     damage_type,
     main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
-    categories=("overall",),            # <- default for imagenet mode
-    metric="top1",                      # "top1" | "top5" | orig metric
+    categories=("overall",),              # default for imagenet
+    metric="observed_difference",          # or "top1"/"top5" for imagenet
     subdir_regex=r"damaged_([\d\.]+)$",
     plot_dir="plots/",
-    data_type="selectivity",            # "selectivity" | "svm_15" | "imagenet"
+    data_type="selectivity",               # "selectivity" | "svm_15" | "imagenet"
     scatter=False,
     verbose=0,
     ylim=None,
     percentage=False
 ):
     """
-    Aggregate & plot dose–response curves for:
+    Aggregate replicate files into mean±std curves.
 
-        • selectivity   (within–between corr)     ← existing
-        • svm_<N>       (binary SVM accuracy)     ← existing
-        • imagenet      (overall or per-class top-1 / top-5)   ← NEW
+    data_type == "selectivity"  -> original within-between correlation
+    data_type.startswith("svm") -> original SVM accuracy
+    data_type == "imagenet"     -> this NEW branch, needs .pkl of form
+           { "overall": {"top1": .., "top5": ..},
+             "classes": { cls_idx: {"top1": .., "top5": ..}, ... } }
 
-    Parameters (new or overloaded)
-    ------------------------------
-    data_type : "imagenet"
-        expects .../imagenet/<activation_layer>/damaged_<val>/perm.pkl
-    metric    : if data_type=="imagenet":  "top1"  or  "top5"
-    categories: iterable
-        • "overall"   → content["overall"][metric]
-        • int(s)      → ImageNet class indices (0‒999)
-        • any other string → ignored for imagenet
+    categories
+    ----------
+    selectivity / svm : list[str]   ("animal","face",...)
+    imagenet          : iterable of
+       "overall"                → use content["overall"][metric]
+       int 0-999 (or str digit) → use per-class entry
     """
-    # ------------------ Setup data structures ------------------
-    data = {}
-    raw_points = {}
 
-    # subfolder mapping
-    if data_type == "selectivity":
-        data_subfolder = "selectivity"
-    elif data_type.startswith("svm"):
-        data_subfolder = data_type          # e.g. "svm_15"
+    # ------------ 1. choose data sub-folder --------------------
+    if data_type in ("selectivity",) or data_type.startswith("svm"):
+        data_subfolder = data_type
     elif data_type == "imagenet":
         data_subfolder = "imagenet"
         if metric not in ("top1", "top5"):
-            raise ValueError("metric must be 'top1' or 'top5' in imagenet mode")
+            raise ValueError("metric must be 'top1' or 'top5' when data_type='imagenet'")
     else:
         raise ValueError(f"unknown data_type '{data_type}'")
 
-    def get_aggregated_filename(fraction):
-        return f"avg_{data_type}_{fraction}.pkl"
+    # ------------ 2. helper for cache filename ----------------
+    def agg_fname(frac):
+        return f"avg_{data_type}_{frac}.pkl"
 
-    # ------------------ MAIN LOOP ------------------
+    # ------------ 3. containers -------------------------------
+    data       = {}   # (layer, act_key, cat) -> {frac:(mean,std,n)}
+    raw_points = {}   # same keys -> {frac:[replicas]}
+
+    # ------------ 4. crawl the directory tree -----------------
     for layer in damage_layers:
-        for activation_layer in activations_layers:
-            layer_path = os.path.join(main_dir, damage_type, layer, data_subfolder, activation_layer)
+        for act in activations_layers:
+            # pick path & “act_key” (imagenet has no per-activation dir)
+            if data_type == "imagenet":
+                layer_path = os.path.join(main_dir, damage_type, layer, "imagenet")
+                out_base   = os.path.join(main_dir, damage_type, layer, "avg_imagenet")
+                act_key    = "imagenet"
+            else:
+                layer_path = os.path.join(main_dir, damage_type, layer, data_subfolder, act)
+                out_base   = os.path.join(main_dir, damage_type, layer, f"avg_{data_type}", act)
+                act_key    = act
+
             if not os.path.isdir(layer_path):
                 continue
+            os.makedirs(out_base, exist_ok=True)
 
-            out_path_root = os.path.join(main_dir, damage_type, layer, f"avg_{data_type}", activation_layer)
-            os.makedirs(out_path_root, exist_ok=True)
-
+            # init dict slots
             for cat in categories:
-                data[(layer, activation_layer, cat)] = {}
-                raw_points[(layer, activation_layer, cat)] = {}
+                data[(layer, act_key, cat)] = {}
+                raw_points[(layer, act_key, cat)] = {}
 
-            for subdir_name in os.listdir(layer_path):
-                subdir_path = os.path.join(layer_path, subdir_name)
+            # scan damaged_* subdirs
+            for subdir in os.listdir(layer_path):
+                subdir_path = os.path.join(layer_path, subdir)
                 if not os.path.isdir(subdir_path):
                     continue
-
-                m = re.search(subdir_regex, subdir_name)
+                m = re.search(subdir_regex, subdir)
                 if not m:
                     continue
                 frac = round(float(m.group(1)), 3)
-                agg_file = os.path.join(out_path_root, get_aggregated_filename(frac))
+                cache = os.path.join(out_base, agg_fname(frac))
 
-                # ------------ aggregate if not cached ------------
-                if not os.path.exists(agg_file):
-                    agg = {}
-                    for fname in os.listdir(subdir_path):
-                        if not fname.lower().endswith(".pkl"):
+                # ---------- build cache if missing ----------
+                if not os.path.exists(cache):
+                    agg = {}                      # cat -> list[values]
+
+                    for fn in os.listdir(subdir_path):
+                        if not fn.lower().endswith(".pkl"):
                             continue
-                        content = safe_load_pickle(os.path.join(subdir_path, fname))
+                        content = safe_load_pickle(os.path.join(subdir_path, fn))
                         if content is None:
                             continue
 
+                        # ---- IMAGE NET MODE ----
                         if data_type == "imagenet":
-                            #  ---- extract Imagenet accuracy values ----
                             for cat in categories:
-                                if isinstance(cat, (int, str)) and str(cat).isdigit():
-                                    cls_idx = int(cat)
-                                    val = content["classes"].get(cls_idx, {}).get(metric, np.nan)
-                                elif str(cat).lower() == "overall":
+                                if str(cat).lower() == "overall":
                                     val = content["overall"][metric]
+                                elif str(cat).isdigit():
+                                    cls = int(cat)
+                                    val = content["classes"].get(cls, {}).get(metric, np.nan)
                                 else:
                                     continue
                                 agg.setdefault(cat, []).append(float(val))
+
+                        # ---- SELECTIVITY MODE ----
                         elif data_type == "selectivity":
-                            # existing logic
-                            for cat in categories:
-                                if (isinstance(content, dict) and
-                                    cat in content and
-                                    metric in content[cat]):
-                                    agg.setdefault(cat, []).append(float(content[cat][metric]))
-                        else:   # svm
-                            for cat in categories:
-                                if cat in content:
-                                    agg.setdefault(cat, []).append(float(content[cat]["score"]))
+                            if not isinstance(content, dict):
+                                continue
+                            for cat_name, met_dict in content.items():
+                                if (cat_name in categories and
+                                    metric in met_dict):
+                                    agg.setdefault(cat_name, []).append(float(met_dict[metric]))
 
-                    # save cached
-                    with open(agg_file, "wb") as f:
-                        pickle.dump(agg, f)
-                else:
-                    agg = safe_load_pickle(agg_file) or {}
+                        # ---- SVM MODE ----
+                        else:   # data_type starts with "svm"
+                            for cat_name in categories:
+                                if cat_name in content:
+                                    agg.setdefault(cat_name, []).append(float(content[cat_name]["score"]))
 
-                # ------------ store in main data dict ------------
+                    # save aggregated stats
+                    packed = {
+                        c: {
+                            metric: {
+                                "mean": float(np.mean(v)),
+                                "std":  float(np.std(v)),
+                                "n":    len(v),
+                                "vals": v
+                            }
+                        } for c, v in agg.items()
+                    }
+                    with open(cache, "wb") as f:
+                        pickle.dump(packed, f)
+
+                # ---------- read cache and populate data ----------
+                agg_content = safe_load_pickle(cache) or {}
                 for cat in categories:
-                    vals = agg.get(cat, [])
-                    if len(vals):
-                        mean = float(np.mean(vals))
-                        std  = float(np.std(vals))
-                        n    = len(vals)
-                        data[(layer, activation_layer, cat)][frac] = (mean, std, n)
-                        raw_points[(layer, activation_layer, cat)][frac] = vals
+                    cat_key = str(cat).lower() if data_type.startswith("svm") else cat
+                    if (cat_key in agg_content and
+                        metric in agg_content[cat_key] and
+                        "n" in agg_content[cat_key][metric]):
+                        mean = agg_content[cat_key][metric]["mean"]
+                        std  = agg_content[cat_key][metric]["std"]
+                        n    = agg_content[cat_key][metric]["n"]
+                        vals = agg_content[cat_key][metric]["vals"]
 
-    # ------------------ optional percentage scaling -------------
+                        data[(layer, act_key, cat)][frac] = (mean, std, n)
+                        raw_points[(layer, act_key, cat)][frac] = vals
+
+    # ------------ 5. optional percentage scaling --------------
     if percentage:
         for key in data:
             frac_dict = data[key]
             raw_dict  = raw_points[key]
-            if len(frac_dict) == 0:
+            if not frac_dict:
                 continue
             base_frac = sorted(frac_dict.keys())[0]
-            base_vals = raw_dict[base_frac]
+            base_vals = np.array(raw_dict[base_frac], dtype=float)
             for frac in frac_dict:
-                ratios = []
-                for vb, vc in zip(base_vals, raw_dict[frac]):
-                    ratios.append(100 * vc / vb if vb != 0 else np.nan)
-                ratios = np.array(ratios, dtype=float)
-                frac_dict[frac] = (float(np.nanmean(ratios)),
-                                   float(np.nanstd(ratios)),
-                                   len(ratios))
-                raw_dict[frac]  = ratios.tolist()
+                cur_vals = np.array(raw_dict[frac], dtype=float)
+                min_len  = min(len(base_vals), len(cur_vals))
+                ratio    = 100.0 * cur_vals[:min_len] / np.where(base_vals[:min_len]==0, np.nan, base_vals[:min_len])
+                frac_dict[frac] = (float(np.nanmean(ratio)),
+                                   float(np.nanstd(ratio)),
+                                   len(ratio))
+                raw_dict[frac]  = ratio.tolist()
 
-    # ------------------ PLOT ------------------
+    # ------------ 6. PLOT --------------------------------------
     plt.figure(figsize=(8, 6))
-    for (layer, activation_layer, cat), frac_dict in data.items():
+    for (layer, act_key, cat), frac_dict in data.items():
         if not frac_dict:
             continue
         xs = sorted(frac_dict.keys())
         ys = [frac_dict[x][0] for x in xs]
         err= [frac_dict[x][1] for x in xs]
-        label = f"{layer}-{activation_layer}-{cat}"
-        color = get_color_for_triple(layer, activation_layer, cat)
-        plt.errorbar(xs, ys, yerr=err, fmt='-o', capsize=4, label=label, color=color)
+        lbl = f"{layer}-{act_key}-{cat}"
+        color = get_color_for_triple(layer, act_key, str(cat))
+        plt.errorbar(xs, ys, yerr=err, fmt='-o', capsize=4, label=lbl, color=color)
         if scatter:
             for x in xs:
-                jitter = np.random.normal(0, 0.005, size=len(raw_points[(layer, activation_layer, cat)][x]))
-                plt.scatter(x + jitter, raw_points[(layer, activation_layer, cat)][x],
+                jitter = np.random.normal(0, 0.005, size=len(raw_points[(layer, act_key, cat)][x]))
+                plt.scatter(x + jitter, raw_points[(layer, act_key, cat)][x],
                             color=color, alpha=0.5, s=10)
 
     plt.xlabel("Damage parameter")
     if data_type == "imagenet":
-        ylabel = f"ImageNet {metric.upper()} accuracy (%)"
+        ylabel = f"ImageNet {metric.upper()} accuracy"
     elif data_type == "selectivity":
-        ylabel = "Differentiation (within - between)"
+        ylabel = "Differentiation (within-between)"
     else:
         ylabel = "SVM accuracy"
     if percentage:
         ylabel += " (scaled %)"
     plt.ylabel(ylabel)
-    plt.title(f"{data_type} vs damage – {damage_type}")
-    if ylim:
-        plt.ylim(ylim)
+    plt.title(f"{data_type} vs damage — {damage_type}")
+    if ylim: plt.ylim(ylim)
     plt.legend()
     plt.tight_layout()
 
     os.makedirs(plot_dir, exist_ok=True)
-    name_parts = [damage_type, data_type, metric]
-    for l in damage_layers:        name_parts.append(l)
-    for a in activations_layers:   name_parts.append(a)
+    name_parts = [main_dir.strip("/").split("/")[-1],
+                  data_type, damage_type, metric]
+    name_parts.extend(damage_layers)
+    name_parts.extend(activations_layers)
     plot_path = os.path.join(plot_dir, "_".join(name_parts) + ".png")
     plt.savefig(plot_path, dpi=500)
-    if verbose:
-        plt.show()
-    else:
-        plt.close()
+    if verbose: plt.show()
+    else: plt.close()
 
 
 def plot_avg_corr_mat(
