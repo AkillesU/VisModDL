@@ -3376,45 +3376,77 @@ def _gather_svm(mv_root: Path,
                 train_samples: int,
                 allowed: set[str]):
     """
-    Walk   …/<damage_type>/<damage_layer>/svm_<train_samples>/<act_layer>/
-           damaged_xxx/*.pkl
+    Turn each SVM pickle into **replicate- × category** long rows.
 
-    Each Pickle is a DataFrame of pair-wise accuracies.
-    We collapse it to the *mean* across all columns (overall accuracy).
+    Parameters
+    ----------
+    metric
+        "overall"      → one value = mean of *all* pairwise columns
+        "by_category"  → one value per focal category (animal / face / …)
     """
-    rows = []
     folder_name = f"svm_{train_samples}"
+    rows = []
+
     for dmg_type in ("units", "noise", "connections"):
         if allowed and dmg_type not in allowed:
             continue
         type_dir = mv_root / dmg_type
         if not type_dir.exists():
             continue
+
         for dmg_layer in type_dir.iterdir():
             svm_dir = dmg_layer / folder_name
             if not svm_dir.exists():
                 continue
+
             for act_layer in svm_dir.iterdir():
                 for damaged in act_layer.iterdir():
                     if not damaged.name.startswith("damaged_"):
                         continue
                     lvl = float(damaged.name.split("_")[-1])
+
                     for pkl in sorted(damaged.glob("*.pkl")):
                         repl = int(pkl.stem)
-                        df = pd.read_pickle(pkl)
-                        if metric not in ("score",):
-                            raise ValueError("For SVM set dependent.metric to 'score'")
-                        val = float(df.mean().mean())   # grand mean over pairs
-                        rows.append(dict(
-                            value        = val,
-                            model_variant= mv_name,
-                            include_bias = bias_flag,
-                            damage_type  = dmg_type,
-                            damage_layer = dmg_layer.name,
-                            damage_level = lvl,
-                            category     = "overall",
-                            replicate    = repl,
-                        ))
+                        df   = pd.read_pickle(pkl)           # wide DataFrame
+                        df   = df.select_dtypes("number")    # numeric only
+
+                        if metric == "overall":
+                            # ─── single overall score per replicate ───
+                            val = float(df.mean(axis=1).mean())
+                            rows.append(dict(
+                                value        = val,
+                                model_variant= mv_name,
+                                include_bias = bias_flag,
+                                damage_type  = dmg_type,
+                                damage_layer = dmg_layer.name,
+                                damage_level = lvl,
+                                category     = "overall",
+                                replicate    = repl,
+                            ))
+
+                        elif metric == "by_category":
+                            # ─── one row per focal category ───────────
+                            all_cols = df.columns.str.lower()
+                            # categories present in the column names
+                            cats = sorted({part for col in all_cols
+                                                  for part in col.split("_vs_")})
+                            for cat in cats:
+                                mask = all_cols.str.contains(fr"\b{cat}\b")
+                                if mask.any():
+                                    val = float(df.loc[:, mask].mean(axis=1).mean())
+                                    rows.append(dict(
+                                        value        = val,
+                                        model_variant= mv_name,
+                                        include_bias = bias_flag,
+                                        damage_type  = dmg_type,
+                                        damage_layer = dmg_layer.name,
+                                        damage_level = lvl,
+                                        category     = cat,
+                                        replicate    = repl,
+                                    ))
+                        else:
+                            raise ValueError("dependent.metric for SVM must be "
+                                             "'overall' or 'by_category'")
     return rows
 
 
