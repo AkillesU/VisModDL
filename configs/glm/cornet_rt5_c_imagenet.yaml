@@ -12,7 +12,7 @@ use_bias_factor: false         # <- so no include_bias column is produced
 
 dependent:
   kind: imagenet
-  metric: accuracy
+  metric: top1
 
 glm:
   formula: |
