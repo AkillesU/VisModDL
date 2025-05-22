@@ -1,0 +1,15 @@
+﻿# Folder produced by run_damage; every model variant sits in a sub-folder
+root_dir: data/haupt_stim_activ/damaged
+
+# Sub-folder containing the results you want to analyse
+model_variant: cornet_rt5_c            #
+
+# statsmodels formula (full factorial of the four fixed factors)
+formula: |
+  observed_difference ~ damage_level * damage_type * damage_layer * category
+
+# Whether to add activation_layer as an extra fixed factor
+include_activation_layer: false
+
+# Prefix used when naming the summary and model files in glm_results/
+outfile_prefix: cornet_rt5_c
