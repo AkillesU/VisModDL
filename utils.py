@@ -3262,7 +3262,7 @@ def fit_selectivity_glm(
     ),
 ):
     """Fit a (full‑factorial) OLS model and return the result object."""
-    return smf.ols(formula, data=df).fit()
+    return smf.ols(formula, data=df).fit(cov_type='HC3')
 
 
 def _iter_selectivity_pkls(root_dir: str):

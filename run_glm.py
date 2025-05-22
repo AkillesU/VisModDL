@@ -67,6 +67,10 @@ def main(cfg_file):
     df_long = utils.build_selectivity_dataframe(
         str(full_root), include_activation_layer=include_activation_layer
     )
+    df_long['damage_scaled'] = (
+    df_long.groupby('damage_type')['damage_level']
+      .transform(lambda v: (v - v.mean()) / v.std())
+)
 
     long_path = data_dir / f"selectivity_long.parquet"
     df_long.to_parquet(long_path)
