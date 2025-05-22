@@ -25,6 +25,8 @@ import torchvision
 from torchvision.datasets.utils import download_url
 import os, tarfile, hashlib
 import copy
+from typing import Sequence
+import statsmodels.formula.api as smf
 
 
 def get_layer_from_path(model, layer_path):
@@ -3189,3 +3191,111 @@ def balanced_subset(dataset, pct, seed):
         perm = idx_tensor[torch.randperm(len(lst), generator=g)]
         subset_idx.extend(perm[:per_cls].tolist())
     return torch.utils.data.Subset(dataset, subset_idx)
+
+
+def build_selectivity_dataframe(
+    root_dir: str,
+    categories: Sequence[str] = ("animal", "face", "object", "place"),
+    include_activation_layer: bool = False,
+) -> pd.DataFrame:
+    """Walk `root_dir` and return a long‑format DataFrame.
+
+    Columns
+    -------
+    damage_type      : str   one of {connections, units, noise}
+    damage_layer     : str   brain‑inspired stage the damage was applied to
+    damage_level     : float severity parameter (masked fraction or noise sd)
+    category         : str   stimulus category (face, place, ...)
+    observed_difference : float (within − between) similarity
+    avg_within       : float within‑category correlation
+    avg_between      : float between‑category correlation
+    replicate        : str   source file stem (e.g. "0")
+    activation_layer : str   recording layer (optional)
+    """
+    rows = []
+    for (
+        damage_type,
+        damage_layer,
+        activation_layer,
+        dmg_level,
+        pkl_path,
+    ) in _iter_selectivity_pkls(root_dir):
+        with open(pkl_path, "rb") as f:
+            content = pickle.load(f)
+        for cat in categories:
+            if cat not in content:
+                continue
+            rec = {
+                "damage_type": damage_type,
+                "damage_layer": damage_layer,
+                "damage_level": dmg_level,
+                "category": cat,
+                "observed_difference": content[cat]["observed_difference"],
+                "avg_within": content[cat]["avg_within"],
+                "avg_between": content[cat]["avg_between"],
+                "replicate": os.path.splitext(os.path.basename(pkl_path))[0],
+            }
+            if include_activation_layer:
+                rec["activation_layer"] = activation_layer
+            rows.append(rec)
+    return pd.DataFrame.from_records(rows)
+
+
+def aggregate_selectivity(
+    df: pd.DataFrame,
+    by: Sequence[str] = ("damage_type", "damage_layer", "damage_level", "category"),
+    value_col: str = "observed_difference",
+) -> pd.DataFrame:
+    """Collapse replicate‑level data into mean ± SD."""
+    out = (
+        df.groupby(list(by))[value_col]
+        .agg(mean_selectivity="mean", sd_selectivity="std", n="size")
+        .reset_index()
+    )
+    return out
+
+
+def fit_selectivity_glm(
+    df: pd.DataFrame,
+    formula: str = (
+        "observed_difference ~ damage_level * damage_type * damage_layer * category"
+    ),
+):
+    """Fit a (full‑factorial) OLS model and return the result object."""
+    return smf.ols(formula, data=df).fit()
+
+
+def _iter_selectivity_pkls(root_dir: str):
+    _DMG_DIR_RE = re.compile(r"damaged_([\d\.]+)$")
+    """Yield information about every selectivity‑pkl found under *root_dir*."""
+    for damage_type in sorted(os.listdir(root_dir)):
+        type_dir = os.path.join(root_dir, damage_type)
+        if not os.path.isdir(type_dir):
+            continue
+
+        for damage_layer in sorted(os.listdir(type_dir)):
+            layer_dir = os.path.join(type_dir, damage_layer, "selectivity")
+            if not os.path.isdir(layer_dir):
+                continue
+
+            for activation_layer in sorted(os.listdir(layer_dir)):
+                act_dir = os.path.join(layer_dir, activation_layer)
+                if not os.path.isdir(act_dir):
+                    continue
+
+                for dmg_sub in os.listdir(act_dir):
+                    m = _DMG_DIR_RE.match(dmg_sub)
+                    if not m:
+                        continue
+                    dmg_level = float(m.group(1))
+                    subdir = os.path.join(act_dir, dmg_sub)
+
+                    for fname in os.listdir(subdir):
+                        if fname.endswith(".pkl"):
+                            yield (
+                                damage_type,
+                                damage_layer,
+                                activation_layer,
+                                dmg_level,
+                                os.path.join(subdir, fname),
+                            )
