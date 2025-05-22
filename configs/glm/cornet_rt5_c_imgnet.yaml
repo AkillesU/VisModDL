@@ -1,0 +1,22 @@
+# configs/glm/cornet_rt5_full.yaml
+root_dir: data/haupt_stim_activ/damaged
+
+model_variants:
+  - name: cornet_rt5_c         # take connections & noise only
+    take: [connections, noise]
+  - name: cornet_rt5_c+b       # take units only
+    take: [units]
+
+merge_bias_into_base: true
+use_bias_factor: false         # <- so no include_bias column is produced
+
+dependent:
+  kind: imagenet
+  metric: accuracy
+
+glm:
+  formula: |
+    value_z ~ damage_scaled * damage_type * damage_layer * category
+  cov_type: HC3
+
+outfile_prefix: rt5_c_imagenet
