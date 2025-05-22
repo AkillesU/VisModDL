@@ -3193,52 +3193,102 @@ def balanced_subset(dataset, pct, seed):
     return torch.utils.data.Subset(dataset, subset_idx)
 
 
-def build_selectivity_dataframe(
-    root_dir: str,
-    categories: Sequence[str] = ("animal", "face", "object", "place"),
-    include_activation_layer: bool = False,
-) -> pd.DataFrame:
-    """Walk `root_dir` and return a long‑format DataFrame.
-
-    Columns
-    -------
-    damage_type      : str   one of {connections, units, noise}
-    damage_layer     : str   brain‑inspired stage the damage was applied to
-    damage_level     : float severity parameter (masked fraction or noise sd)
-    category         : str   stimulus category (face, place, ...)
-    observed_difference : float (within − between) similarity
-    avg_within       : float within‑category correlation
-    avg_between      : float between‑category correlation
-    replicate        : str   source file stem (e.g. "0")
-    activation_layer : str   recording layer (optional)
+def build_long_df(root_dir: str,
+                  model_variants: list[str],
+                  dep_cfg: dict,
+                  merge_bias_into_base: bool = True,
+                  use_bias_factor: bool = True) -> pd.DataFrame:
     """
-    rows = []
-    for (
-        damage_type,
-        damage_layer,
-        activation_layer,
-        dmg_level,
-        pkl_path,
-    ) in _iter_selectivity_pkls(root_dir):
-        with open(pkl_path, "rb") as f:
-            content = pickle.load(f)
-        for cat in categories:
-            if cat not in content:
+    Gather all replicate *.pkl files for the requested `kind`
+    and return **one long (tidy) DataFrame**.
+
+    Common columns in the returned frame
+    ------------------------------------
+    value            – the chosen dependent metric
+    model_variant    – 'cornet_rt5_c'   ( +b rows renamed if merge_bias_into_base )
+    include_bias     – 0 / 1            (dropped if use_bias_factor=False)
+    damage_type      – 'connections' | 'units' | 'noise'
+    damage_layer     – 'V1' | 'V2' | 'IT' …
+    damage_level     – numeric parameter (raw, unscaled)
+    category         – face / place / … (NaN for ImageNet overall)
+    replicate        – integer file index (0,1,2,…)  ← optional but handy
+    """
+    kind = dep_cfg["kind"]
+    if kind not in DEP_OPTIONS:
+        raise ValueError(f"dependent.kind must be one of {DEP_OPTIONS}")
+
+    def _base_name(mv: str) -> str:
+        return mv[:-2] if (merge_bias_into_base and mv.endswith("+b")) else mv
+
+    def _gather_selectivity(mv_root: Path, mv_name: str, bias_flag: int):
+        rows = []
+        for (dmg_type, dmg_layer, act_layer, subdir) in _walk_selectivity_dirs(mv_root):
+            level = float(subdir.name.split("_")[-1])       # damaged_0.1 -> 0.1
+            for pkl in sorted(subdir.glob("*.pkl")):
+                replicate = int(pkl.stem)                   # 0.pkl → 0
+                data = pd.read_pickle(pkl)                  # dict of cats
+                for cat, metrics in data.items():
+                    rows.append(dict(
+                        value        = metrics[dep_cfg["metric"]],
+                        model_variant= mv_name,
+                        include_bias = bias_flag,
+                        damage_type  = dmg_type,
+                        damage_layer = dmg_layer,
+                        damage_level = level,
+                        category     = cat,
+                        replicate    = replicate
+                    ))
+        return rows
+
+    def _walk_selectivity_dirs(mv_root: Path):
+        # yield (damage_type, damage_layer, act_layer, damaged_xxx folder Path)
+        for dmg_type in (mv_root / "units", mv_root / "noise", mv_root / "connections"):
+            if not dmg_type.exists():
                 continue
-            rec = {
-                "damage_type": damage_type,
-                "damage_layer": damage_layer,
-                "damage_level": dmg_level,
-                "category": cat,
-                "observed_difference": content[cat]["observed_difference"],
-                "avg_within": content[cat]["avg_within"],
-                "avg_between": content[cat]["avg_between"],
-                "replicate": os.path.splitext(os.path.basename(pkl_path))[0],
-            }
-            if include_activation_layer:
-                rec["activation_layer"] = activation_layer
-            rows.append(rec)
-    return pd.DataFrame.from_records(rows)
+            for dmg_layer in dmg_type.iterdir():
+                sel_dir = dmg_layer / "selectivity"
+                if not sel_dir.exists():
+                    continue
+                for act_layer in sel_dir.iterdir():
+                    for damaged in act_layer.iterdir():
+                        if damaged.name.startswith("damaged_"):
+                            yield (dmg_type.name, dmg_layer.name,
+                                   act_layer.name, damaged)
+
+    # ---------------- collect rows -----------------------------------
+    all_rows = []
+    for mv in model_variants:
+        mv_root = Path(root_dir) / mv
+        mv_name = _base_name(mv)
+        bias_flag = int(mv.endswith("+b"))
+        if kind == "selectivity":
+            all_rows.extend(_gather_selectivity(mv_root, mv_name, bias_flag))
+        elif kind == "svm":
+            all_rows.extend(_gather_svm(mv_root, mv_name, bias_flag,
+                                        dep_cfg["metric"],
+                                        dep_cfg.get("svm_train_samples", 15)))
+        else:  # imagenet
+            all_rows.extend(_gather_imagenet(mv_root, mv_name, bias_flag,
+                                             dep_cfg["metric"]))
+
+    df = pd.DataFrame(all_rows)
+
+    # ----- optional clean-ups ----------------------------------------
+    if not use_bias_factor:
+        df = df.drop(columns="include_bias")
+
+    # z-score the dep-var per model variant  (helps interpretability)
+    df["value_z"] = df.groupby("model_variant")["value"].transform(
+        lambda v: (v - v.mean()) / v.std(ddof=0)
+    )
+    # z-score damage level within (variant × damage_type)
+    df["damage_scaled"] = df.groupby(
+        ["model_variant", "damage_type"]
+    )["damage_level"].transform(
+        lambda v: (v - v.mean()) / v.std(ddof=0)
+    )
+
+    return df
 
 
 def aggregate_selectivity(

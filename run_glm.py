@@ -64,13 +64,12 @@ def main(cfg_file):
     # 2. build long DataFrame
     # ------------------------------------------------------------------
     print("Building long‑format selectivity table …")
-    df_long = utils.build_selectivity_dataframe(
-        str(full_root), include_activation_layer=include_activation_layer
-    )
-    df_long['damage_scaled'] = (
-    df_long.groupby('damage_type')['damage_level']
-      .transform(lambda v: (v - v.mean()) / v.std())
-)
+    df_long = utils.build_long_df(cfg["root_dir"],
+                   cfg["model_variants"],
+                   cfg["dependent"],
+                   merge_bias_into_base = cfg.get("merge_bias_into_base", True),
+                   use_bias_factor      = cfg.get("use_bias_factor", True))
+    
 
     long_path = data_dir / f"selectivity_long.parquet"
     df_long.to_parquet(long_path)

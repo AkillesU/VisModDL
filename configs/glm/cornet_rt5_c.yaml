@@ -1,15 +1,32 @@
-﻿# Folder produced by run_damage; every model variant sits in a sub-folder
+﻿# --------------------------------------------------------------------
+# GLM analysis: cornet_rt5_c   (noise + connection)   **and**
+#                            cornet_rt5_c+b (unit+bias damage)
+# --------------------------------------------------------------------
+
 root_dir: data/haupt_stim_activ/damaged
 
-# Sub-folder containing the results you want to analyse
-model_variant: cornet_rt5_c            #
+# Two folders on disk – but regarded as **one model** in the analysis.
+model_variants:
+  - cornet_rt5_c
+  - cornet_rt5_c+b
 
-# statsmodels formula (full factorial of the four fixed factors)
-formula: |
-  observed_difference ~ damage_level * damage_type * damage_layer * category
+# How to blend the “+b” rows into the base model name
+merge_bias_into_base: true     # ← rewrites cornet_rt5_c+b → cornet_rt5_c
 
-# Whether to add activation_layer as an extra fixed factor
-include_activation_layer: false
+# Keep a dummy column so you can test a ± bias effect (set false to drop it)
+use_bias_factor: false
 
-# Prefix used when naming the summary and model files in glm_results/
-outfile_prefix: cornet_rt5_c
+# ----------------------- dependent variable -------------------------
+dependent:
+  kind: selectivity            # selectivity | svm | imagenet
+  metric: observed_difference  # score | top1 | top5  (ignored for selectivity)
+  svm_train_samples: 15        # only read if kind == svm
+
+# ------------------------ GLM specification -------------------------
+glm:
+  formula: |
+    value_z ~ damage_scaled * damage_type * damage_layer * category
+              + include_bias
+  cov_type: HC3                # robust SEs
+
+outfile_prefix: rt5_c       # goes into filenames in glm_results/
