@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None):
         str(full_root), include_activation_layer=include_activation_layer
     )
 
-    long_path = data_dir / f"{stamp}_selectivity_long.parquet"
+    long_path = data_dir / f"selectivity_long.parquet"
     df_long.to_parquet(long_path)
     print(f"Saved long table → {long_path.relative_to(repo_root)}  ({len(df_long)} rows)")
 
