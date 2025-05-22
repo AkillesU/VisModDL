@@ -33,27 +33,13 @@ import pandas as pd
 import yaml
 import utils
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run GLM on selectivity data from CORnet damage experiments")
-    p.add_argument(
-        "--config",
-        default="configs/glm/default.yaml",
-        help="Path to YAML configuration file (default: configs/glm/default.yaml)",
-    )
-    return p.parse_args()
 
-def main(argv: list[str] | None = None):
-    args = parse_args() if argv is None else parse_args(argv)
+def main(cfg_file):
 
     # ------------------------------------------------------------------
     # 1. read YAML config
     # ------------------------------------------------------------------
-    cfg_path = Path(args.config)
-    if not cfg_path.exists():
-        sys.exit(f"Config file '{cfg_path}' not found.")
-
-    with open(cfg_path, "r") as fh:
-        cfg = yaml.safe_load(fh)
+    cfg = yaml.safe_load(open(cfg_file))
 
     root_dir: Path = Path(cfg.get("root_dir", "data/haupt_stim_activ/damaged"))
     model_variant: str = cfg.get("model_variant", "cornet_rt")
@@ -109,4 +95,4 @@ def main(argv: list[str] | None = None):
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1])
