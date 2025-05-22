@@ -13,6 +13,8 @@ use_bias_factor: false         # <- so no include_bias column is produced
 dependent:
   kind: svm
   metric: score
+  svm_train_samples: 15
+
 
 glm:
   formula: |
