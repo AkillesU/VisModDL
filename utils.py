@@ -25,9 +25,9 @@ import torchvision
 from torchvision.datasets.utils import download_url
 import os, tarfile, hashlib
 import copy
-from typing import Sequence
 import statsmodels.formula.api as smf
-
+from pathlib import Path
+from typing import Sequence, Mapping
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -3193,40 +3193,63 @@ def balanced_subset(dataset, pct, seed):
     return torch.utils.data.Subset(dataset, subset_idx)
 
 
+DEP_OPTIONS = {"selectivity", "svm", "imagenet"}
+
+# --------------------------------------------------------------------
 def build_long_df(root_dir: str,
-                  model_variants: list[str],
+                  model_variants: list[str] | list[Mapping],
                   dep_cfg: dict,
                   merge_bias_into_base: bool = True,
                   use_bias_factor: bool = True) -> pd.DataFrame:
     """
-    Gather all replicate *.pkl files for the requested `kind`
-    and return **one long (tidy) DataFrame**.
+    Return one tidy DataFrame that pools results from several model folders.
 
-    Common columns in the returned frame
-    ------------------------------------
-    value            – the chosen dependent metric
-    model_variant    – 'cornet_rt5_c'   ( +b rows renamed if merge_bias_into_base )
-    include_bias     – 0 / 1            (dropped if use_bias_factor=False)
-    damage_type      – 'connections' | 'units' | 'noise'
-    damage_layer     – 'V1' | 'V2' | 'IT' …
-    damage_level     – numeric parameter (raw, unscaled)
-    category         – face / place / … (NaN for ImageNet overall)
-    replicate        – integer file index (0,1,2,…)  ← optional but handy
+    NEW Each entry in *model_variants* may be either
+        • a plain string  →  all three damage folders are accepted, OR
+        • a dict {name: str, take: list[str]}  → only listed damage_types read.
+
+    Example
+    -------
+    model_variants:
+      - name: cornet_rt5_c
+        take: [connections, noise]
+      - name: cornet_rt5_c+b
+        take: [units]
     """
     kind = dep_cfg["kind"]
     if kind not in DEP_OPTIONS:
         raise ValueError(f"dependent.kind must be one of {DEP_OPTIONS}")
 
+    # -------------- helpers -----------------------------------------
     def _base_name(mv: str) -> str:
         return mv[:-2] if (merge_bias_into_base and mv.endswith("+b")) else mv
 
-    def _gather_selectivity(mv_root: Path, mv_name: str, bias_flag: int):
+    def _walk_selectivity_dirs(mv_root: Path, allowed: set[str]):
+        """Yield (dmg_type, dmg_layer, act_layer, damaged_folder Path)."""
+        for dmg_type in ("units", "noise", "connections"):
+            if allowed and dmg_type not in allowed:
+                continue
+            type_dir = mv_root / dmg_type
+            if not type_dir.exists():
+                continue
+            for dmg_layer in type_dir.iterdir():
+                sel_dir = dmg_layer / "selectivity"
+                if not sel_dir.exists():
+                    continue
+                for act_layer in sel_dir.iterdir():
+                    for damaged in act_layer.iterdir():
+                        if damaged.name.startswith("damaged_"):
+                            yield (dmg_type, dmg_layer.name,
+                                   act_layer.name, damaged)
+
+    def _gather_selectivity(mv_root: Path, mv_name: str,
+                            bias_flag: int, allowed: set[str]):
         rows = []
-        for (dmg_type, dmg_layer, act_layer, subdir) in _walk_selectivity_dirs(mv_root):
-            level = float(subdir.name.split("_")[-1])       # damaged_0.1 -> 0.1
+        for dmg_type, dmg_layer, _, subdir in _walk_selectivity_dirs(mv_root, allowed):
+            lvl = float(subdir.name.split("_")[-1])          # damaged_0.1 → 0.1
             for pkl in sorted(subdir.glob("*.pkl")):
-                replicate = int(pkl.stem)                   # 0.pkl → 0
-                data = pd.read_pickle(pkl)                  # dict of cats
+                repl = int(pkl.stem)                         # 0.pkl → 0
+                data = pd.read_pickle(pkl)                  # dict of categories
                 for cat, metrics in data.items():
                     rows.append(dict(
                         value        = metrics[dep_cfg["metric"]],
@@ -3234,60 +3257,55 @@ def build_long_df(root_dir: str,
                         include_bias = bias_flag,
                         damage_type  = dmg_type,
                         damage_layer = dmg_layer,
-                        damage_level = level,
+                        damage_level = lvl,
                         category     = cat,
-                        replicate    = replicate
+                        replicate    = repl,
                     ))
         return rows
 
-    def _walk_selectivity_dirs(mv_root: Path):
-        # yield (damage_type, damage_layer, act_layer, damaged_xxx folder Path)
-        for dmg_type in (mv_root / "units", mv_root / "noise", mv_root / "connections"):
-            if not dmg_type.exists():
-                continue
-            for dmg_layer in dmg_type.iterdir():
-                sel_dir = dmg_layer / "selectivity"
-                if not sel_dir.exists():
-                    continue
-                for act_layer in sel_dir.iterdir():
-                    for damaged in act_layer.iterdir():
-                        if damaged.name.startswith("damaged_"):
-                            yield (dmg_type.name, dmg_layer.name,
-                                   act_layer.name, damaged)
+    # -------------- root loop ---------------------------------------
+    long_rows = []
+    for entry in model_variants:
+        if isinstance(entry, str):
+            mv_name_on_disk = entry
+            allowed_types   = set()          # empty → accept all
+        else:                                # dict with filtering
+            mv_name_on_disk = entry["name"]
+            allowed_types   = set(entry["take"])
+        mv_root   = Path(root_dir) / mv_name_on_disk
+        mv_logical= _base_name(mv_name_on_disk)
+        bias_flag = int(mv_name_on_disk.endswith("+b"))
 
-    # ---------------- collect rows -----------------------------------
-    all_rows = []
-    for mv in model_variants:
-        mv_root = Path(root_dir) / mv
-        mv_name = _base_name(mv)
-        bias_flag = int(mv.endswith("+b"))
         if kind == "selectivity":
-            all_rows.extend(_gather_selectivity(mv_root, mv_name, bias_flag))
+            long_rows += _gather_selectivity(
+                mv_root, mv_logical, bias_flag, allowed_types
+            )
         elif kind == "svm":
-            all_rows.extend(_gather_svm(mv_root, mv_name, bias_flag,
-                                        dep_cfg["metric"],
-                                        dep_cfg.get("svm_train_samples", 15)))
-        else:  # imagenet
-            all_rows.extend(_gather_imagenet(mv_root, mv_name, bias_flag,
-                                             dep_cfg["metric"]))
+            long_rows += _gather_svm(      # ← your old helper
+                mv_root, mv_logical, bias_flag,
+                dep_cfg["metric"], dep_cfg.get("svm_train_samples", 15),
+                allowed_types
+            )
+        else:                              # imagenet
+            long_rows += _gather_imagenet( # ← your old helper
+                mv_root, mv_logical, bias_flag,
+                dep_cfg["metric"], allowed_types
+            )
 
-    df = pd.DataFrame(all_rows)
+    df = pd.DataFrame(long_rows)
 
-    # ----- optional clean-ups ----------------------------------------
-    if not use_bias_factor:
+    if not use_bias_factor and "include_bias" in df.columns:
         df = df.drop(columns="include_bias")
 
-    # z-score the dep-var per model variant  (helps interpretability)
+    # z-scores (unchanged)
     df["value_z"] = df.groupby("model_variant")["value"].transform(
         lambda v: (v - v.mean()) / v.std(ddof=0)
     )
-    # z-score damage level within (variant × damage_type)
     df["damage_scaled"] = df.groupby(
         ["model_variant", "damage_type"]
     )["damage_level"].transform(
         lambda v: (v - v.mean()) / v.std(ddof=0)
     )
-
     return df
 
 
@@ -3349,3 +3367,97 @@ def _iter_selectivity_pkls(root_dir: str):
                                 dmg_level,
                                 os.path.join(subdir, fname),
                             )
+
+
+def _gather_svm(mv_root: Path,
+                mv_name: str,
+                bias_flag: int,
+                metric: str,
+                train_samples: int,
+                allowed: set[str]):
+    """
+    Walk   …/<damage_type>/<damage_layer>/svm_<train_samples>/<act_layer>/
+           damaged_xxx/*.pkl
+
+    Each Pickle is a DataFrame of pair-wise accuracies.
+    We collapse it to the *mean* across all columns (overall accuracy).
+    """
+    rows = []
+    folder_name = f"svm_{train_samples}"
+    for dmg_type in ("units", "noise", "connections"):
+        if allowed and dmg_type not in allowed:
+            continue
+        type_dir = mv_root / dmg_type
+        if not type_dir.exists():
+            continue
+        for dmg_layer in type_dir.iterdir():
+            svm_dir = dmg_layer / folder_name
+            if not svm_dir.exists():
+                continue
+            for act_layer in svm_dir.iterdir():
+                for damaged in act_layer.iterdir():
+                    if not damaged.name.startswith("damaged_"):
+                        continue
+                    lvl = float(damaged.name.split("_")[-1])
+                    for pkl in sorted(damaged.glob("*.pkl")):
+                        repl = int(pkl.stem)
+                        df = pd.read_pickle(pkl)
+                        if metric not in ("score",):
+                            raise ValueError("For SVM set dependent.metric to 'score'")
+                        val = float(df.mean().mean())   # grand mean over pairs
+                        rows.append(dict(
+                            value        = val,
+                            model_variant= mv_name,
+                            include_bias = bias_flag,
+                            damage_type  = dmg_type,
+                            damage_layer = dmg_layer.name,
+                            damage_level = lvl,
+                            category     = "overall",
+                            replicate    = repl,
+                        ))
+    return rows
+
+
+def _gather_imagenet(mv_root: Path,
+                     mv_name: str,
+                     bias_flag: int,
+                     metric: str,
+                     allowed: set[str]):
+    """
+    Walk   …/<damage_type>/<damage_layer>/imagenet/damaged_xxx/*.pkl
+
+    Each Pickle is a dict  {"overall":{"top1":…,"top5":…}, … }
+    """
+    if metric not in ("top1", "top5"):
+        raise ValueError("dependent.metric for ImageNet must be 'top1' or 'top5'")
+
+    rows = []
+    for dmg_type in ("units", "noise", "connections"):
+        if allowed and dmg_type not in allowed:
+            continue
+        type_dir = mv_root / dmg_type
+        if not type_dir.exists():
+            continue
+        for dmg_layer in type_dir.iterdir():
+            imagenet_dir = dmg_layer / "imagenet"
+            if not imagenet_dir.exists():
+                continue
+            for damaged in imagenet_dir.iterdir():
+                if not damaged.name.startswith("damaged_"):
+                    continue
+                lvl = float(damaged.name.split("_")[-1])
+                for pkl in sorted(damaged.glob("*.pkl")):
+                    repl = int(pkl.stem)
+                    d = pd.read_pickle(pkl)
+                    val = float(d["overall"][metric])
+                    rows.append(dict(
+                        value        = val,
+                        model_variant= mv_name,
+                        include_bias = bias_flag,
+                        damage_type  = dmg_type,
+                        damage_layer = dmg_layer.name,
+                        damage_level = lvl,
+                        category     = "overall",
+                        replicate    = repl,
+                    ))
+    return rows

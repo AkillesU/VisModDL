@@ -43,10 +43,14 @@ def main(cfg_file):
 
     root_dir: Path = Path(cfg.get("root_dir", "data/haupt_stim_activ/damaged"))
     model_variant: str = cfg.get("model_variant", "cornet_rt")
-    formula: str = cfg.get(
-        "formula",
-        "observed_difference ~ damage_level * damage_type * damage_layer * category",
-    )
+    use_bias_factor = bool(cfg.get("use_bias_factor", True))
+
+    # Auto-drop include_bias from formula if the column is absent
+    formula = cfg["glm"]["formula"]
+    if not use_bias_factor and "include_bias" in formula:
+        print("use_bias_factor=False → removing 'include_bias' from formula.")
+        formula = formula.replace("+ include_bias", "").replace("include_bias +", "") \
+                         .replace(":include_bias", "")  # removes obvious patterns
     include_activation_layer: bool = bool(cfg.get("include_activation_layer", False))
     outfile_prefix: str = cfg.get("outfile_prefix", "glm_run")
 

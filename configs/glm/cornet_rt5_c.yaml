@@ -1,32 +1,22 @@
-﻿# --------------------------------------------------------------------
-# GLM analysis: cornet_rt5_c   (noise + connection)   **and**
-#                            cornet_rt5_c+b (unit+bias damage)
-# --------------------------------------------------------------------
-
+﻿# configs/glm/cornet_rt5_full.yaml
 root_dir: data/haupt_stim_activ/damaged
 
-# Two folders on disk – but regarded as **one model** in the analysis.
 model_variants:
-  - cornet_rt5_c
-  - cornet_rt5_c+b
+  - name: cornet_rt5_c         # take connections & noise only
+    take: [connections, noise]
+  - name: cornet_rt5_c+b       # take units only
+    take: [units]
 
-# How to blend the “+b” rows into the base model name
-merge_bias_into_base: true     # ← rewrites cornet_rt5_c+b → cornet_rt5_c
+merge_bias_into_base: true
+use_bias_factor: false         # <- so no include_bias column is produced
 
-# Keep a dummy column so you can test a ± bias effect (set false to drop it)
-use_bias_factor: false
-
-# ----------------------- dependent variable -------------------------
 dependent:
-  kind: selectivity            # selectivity | svm | imagenet
-  metric: observed_difference  # score | top1 | top5  (ignored for selectivity)
-  svm_train_samples: 15        # only read if kind == svm
+  kind: selectivity
+  metric: observed_difference
 
-# ------------------------ GLM specification -------------------------
 glm:
   formula: |
     value_z ~ damage_scaled * damage_type * damage_layer * category
-              + include_bias
-  cov_type: HC3                # robust SEs
+  cov_type: HC3
 
-outfile_prefix: rt5_c       # goes into filenames in glm_results/
+outfile_prefix: rt5_c
