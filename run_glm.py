@@ -1,105 +1,102 @@
-﻿"""run_glm.py
+﻿"""
+run_glm.py
 
-End‑to‑end driver that reads parameters from a YAML configuration file,
-builds the long‑format within‑between selectivity table, fits a GLM, and
-writes all artefacts to disk.
+End-to-end driver that
 
-Default configuration file: ``configs/glm/default.yaml``
+  1. reads a YAML config (see example in configs/glm/)
+  2. builds a long/tidy table via utils.build_long_df
+  3. fits the requested GLM
+  4. saves the table + summary + pickled model
 
-YAML keys
----------
-root_dir                 : path produced by ``run_damage`` (string)
-model_variant            : sub‑folder with the model results (string)
-formula                  : statsmodels‑compatible formula (string)
-include_activation_layer : whether to treat recording layer as a fixed factor (bool)
-outfile_prefix           : prefix for files under ``glm_results`` (string)
+Compatible with the *new* config keys:
 
-The script writes
-  data/derived/selectivity_long.parquet
-  glm_results/<prefix>_summary.txt
-  glm_results/<prefix>_model.pkl
+root_dir
+model_variants:               # list of str OR list of {name, take}
+merge_bias_into_base: bool
+use_bias_factor      : bool
+dependent: {kind, metric, …}
+glm: {formula, cov_type}
+outfile_prefix
 """
 
 from __future__ import annotations
-
-import argparse
-import datetime as dt
-import os
-import pickle
-import sys
+import sys, pickle, re
 from pathlib import Path
-
-import pandas as pd
-import yaml
+import yaml, pandas as pd, statsmodels.formula.api as smf
 import utils
 
 
-def main(cfg_file):
+# ---------------------------------------------------------------------
+def clean_formula(formula: str, drop_bias: bool) -> str:
+    """Remove include_bias terms if the column is not present."""
+    if drop_bias:
+        # crude but safe: remove any token that contains 'include_bias'
+        # and tidy multiple '+' or '~' that may result.
+        formula = re.sub(r"\binclude_bias\b", "", formula)
+        formula = re.sub(r"\+\s*\+", "+", formula)
+        formula = formula.replace("~ +", "~").replace("+ ~", "~")
+        formula = re.sub(r"\s+", " ", formula).strip()
+    return formula
 
-    # ------------------------------------------------------------------
-    # 1. read YAML config
-    # ------------------------------------------------------------------
+
+# ---------------------------------------------------------------------
+def main(cfg_file: str):
     cfg = yaml.safe_load(open(cfg_file))
 
-    root_dir: Path = Path(cfg.get("root_dir", "data/haupt_stim_activ/damaged"))
-    model_variant: str = cfg.get("model_variant", "cornet_rt")
-    use_bias_factor = bool(cfg.get("use_bias_factor", True))
+    root_dir   = cfg.get("root_dir", "data/haupt_stim_activ/damaged")
+    variants   = cfg["model_variants"]               # required
+    use_bias   = bool(cfg.get("use_bias_factor", True))
+    merge_bias = bool(cfg.get("merge_bias_into_base", True))
+    dep_cfg    = cfg["dependent"]
+    glm_cfg    = cfg["glm"]
+    prefix     = cfg.get("outfile_prefix", "glm_run")
 
-    # Auto-drop include_bias from formula if the column is absent
-    formula = cfg["glm"]["formula"]
-    if not use_bias_factor and "include_bias" in formula:
-        print("use_bias_factor=False → removing 'include_bias' from formula.")
-        formula = formula.replace("+ include_bias", "").replace("include_bias +", "") \
-                         .replace(":include_bias", "")  # removes obvious patterns
-    include_activation_layer: bool = bool(cfg.get("include_activation_layer", False))
-    outfile_prefix: str = cfg.get("outfile_prefix", "glm_run")
+    # 1) sanity-check that every requested folder exists
+    for entry in variants:
+        name_on_disk = entry if isinstance(entry, str) else entry["name"]
+        full = Path(root_dir) / name_on_disk
+        if not full.exists():
+            sys.exit(f"❌  Data folder '{full}' does not exist.")
 
-    full_root = root_dir / model_variant
-    if not full_root.exists():
-        sys.exit(f"Data directory '{full_root}' does not exist.")
+    # 2) build long DataFrame
+    print("→ Building long/tidy table …")
+    df = utils.build_long_df(
+        root_dir, variants, dep_cfg,
+        merge_bias_into_base = merge_bias,
+        use_bias_factor      = use_bias
+    )
 
-    repo_root = Path(__file__).resolve().parent
-    glm_dir = repo_root / "glm_results"
-    data_dir = repo_root / "data" / "derived"
-    glm_dir.mkdir(parents=True, exist_ok=True)
+    repo = Path(__file__).resolve().parent
+    data_dir = repo / "data" / "derived"
     data_dir.mkdir(parents=True, exist_ok=True)
+    kind_tag = dep_cfg["kind"]
+    long_path = data_dir / f"{prefix}_{kind_tag}_long.parquet"
+    df.to_parquet(long_path)
+    print(f"   saved {len(df):,} rows → {long_path.relative_to(repo)}")
 
-    # ------------------------------------------------------------------
-    # 2. build long DataFrame
-    # ------------------------------------------------------------------
-    print("Building long‑format selectivity table …")
-    df_long = utils.build_long_df(cfg["root_dir"],
-                   cfg["model_variants"],
-                   cfg["dependent"],
-                   merge_bias_into_base = cfg.get("merge_bias_into_base", True),
-                   use_bias_factor      = cfg.get("use_bias_factor", True))
-    
+    # 3) fit GLM
+    formula = clean_formula(glm_cfg["formula"], drop_bias = not use_bias)
+    cov     = glm_cfg.get("cov_type", "HC3")
+    print(f"→ Fitting OLS   [{cov}]")
+    model = smf.ols(formula, data=df).fit(cov_type=cov)
 
-    long_path = data_dir / f"selectivity_long.parquet"
-    df_long.to_parquet(long_path)
-    print(f"Saved long table → {long_path.relative_to(repo_root)}  ({len(df_long)} rows)")
+    # 4) save artefacts
+    glm_dir = repo / "glm_results"; glm_dir.mkdir(exist_ok=True)
+    summary_path = glm_dir / f"{prefix}_summary.txt"
+    model_path   = glm_dir / f"{prefix}_model.pkl"
 
-    # ------------------------------------------------------------------
-    # 3. fit GLM
-    # ------------------------------------------------------------------
-    print("Fitting GLM …")
-    glm_res = utils.fit_selectivity_glm(df_long, formula=formula)
-
-    # ------------------------------------------------------------------
-    # 4. save outputs
-    # ------------------------------------------------------------------
-    summary_path = glm_dir / f"{outfile_prefix}_summary.txt"
     with open(summary_path, "w") as fh:
-        fh.write(glm_res.summary().as_text())
-
-    model_path = glm_dir / f"{outfile_prefix}_model.pkl"
+        fh.write(model.summary().as_text())
     with open(model_path, "wb") as fh:
-        pickle.dump(glm_res, fh)
+        pickle.dump(model, fh)
 
-    print("GLM results written:")
-    print(f"  {summary_path.relative_to(repo_root)}")
-    print(f"  {model_path.relative_to(repo_root)}")
+    print("✓ Done:")
+    print("  ▶", summary_path.relative_to(repo))
+    print("  ▶", model_path.relative_to(repo))
 
 
+# ---------------------------------------------------------------------
 if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit("Usage: python run_glm.py <config.yaml>")
     main(sys.argv[1])
