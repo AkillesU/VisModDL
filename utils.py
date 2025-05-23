@@ -3376,27 +3376,33 @@ def _gather_svm(mv_root: Path,
                 train_samples: int,
                 allowed: set[str]):
     """
-    Turn each SVM pickle into **replicate- × category** long rows.
+    Collect SVM accuracy pickles and return a list[dict] of long rows.
 
-    Parameters
-    ----------
-    metric
-        "overall"      → one value = mean of *all* pairwise columns
-        "by_category"  → one value per focal category (animal / face / …)
+    metric:
+        "overall"  – mean across *all* pairwise columns (alias "score")
+        "by_category" – mean of columns that involve each focal category
     """
+    if metric == "score":          # backward-compat
+        metric = "overall"
+    if metric not in ("overall", "by_category"):
+        raise ValueError("dependent.metric for SVM must be "
+                         "'overall', 'score', or 'by_category'")
+
+    rows, n_files = [], 0
     folder_name = f"svm_{train_samples}"
-    rows = []
 
     for dmg_type in ("units", "noise", "connections"):
         if allowed and dmg_type not in allowed:
             continue
         type_dir = mv_root / dmg_type
         if not type_dir.exists():
+            print(f"[skip] {type_dir} (missing)")
             continue
 
         for dmg_layer in type_dir.iterdir():
             svm_dir = dmg_layer / folder_name
             if not svm_dir.exists():
+                print(f"[skip] {svm_dir} (missing)")
                 continue
 
             for act_layer in svm_dir.iterdir():
@@ -3405,13 +3411,23 @@ def _gather_svm(mv_root: Path,
                         continue
                     lvl = float(damaged.name.split("_")[-1])
 
-                    for pkl in sorted(damaged.glob("*.pkl")):
+                    for pkl in damaged.glob("*.pkl"):
+                        n_files += 1
                         repl = int(pkl.stem)
-                        df   = pd.read_pickle(pkl)           # wide DataFrame
-                        df   = df.select_dtypes("number")    # numeric only
+                        try:
+                            df = pd.read_pickle(pkl)
+                        except Exception as exc:
+                            print(f"[warn] could not read {pkl}: {exc}")
+                            continue
+                        if not isinstance(df, pd.DataFrame):
+                            print(f"[warn] {pkl} is not a DataFrame; skipped")
+                            continue
+                        df = df.select_dtypes("number")
+                        if df.empty:
+                            print(f"[warn] {pkl} has no numeric columns; skipped")
+                            continue
 
                         if metric == "overall":
-                            # ─── single overall score per replicate ───
                             val = float(df.mean(axis=1).mean())
                             rows.append(dict(
                                 value        = val,
@@ -3423,15 +3439,11 @@ def _gather_svm(mv_root: Path,
                                 category     = "overall",
                                 replicate    = repl,
                             ))
-
-                        elif metric == "by_category":
-                            # ─── one row per focal category ───────────
-                            all_cols = df.columns.str.lower()
-                            # categories present in the column names
-                            cats = sorted({part for col in all_cols
-                                                  for part in col.split("_vs_")})
+                        else:  # by_category
+                            cats = sorted({p for c in df.columns.str.lower()
+                                             for p in c.split("_vs_")})
                             for cat in cats:
-                                mask = all_cols.str.contains(fr"\b{cat}\b")
+                                mask = df.columns.str.contains(fr"\b{cat}\b", case=False)
                                 if mask.any():
                                     val = float(df.loc[:, mask].mean(axis=1).mean())
                                     rows.append(dict(
@@ -3444,10 +3456,14 @@ def _gather_svm(mv_root: Path,
                                         category     = cat,
                                         replicate    = repl,
                                     ))
-                        else:
-                            raise ValueError("dependent.metric for SVM must be "
-                                             "'overall' or 'by_category'")
+
+    if n_files == 0:
+        raise RuntimeError(f"No SVM pickle files found under {mv_root}")
+    if not rows:
+        raise RuntimeError("SVM pickles were found but produced no usable rows. "
+                           "Check 'metric' or file contents.")
     return rows
+
 
 
 def _gather_imagenet(mv_root: Path,
