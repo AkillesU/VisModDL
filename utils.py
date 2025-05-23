@@ -3440,10 +3440,10 @@ def _gather_svm(mv_root: Path,
                                 replicate    = repl,
                             ))
                         else:  # by_category
-                            cats = sorted({p for c in df.columns.str.lower()
-                                             for p in c.split("_vs_")})
+                            cats = sorted({p for col in df.columns.str.lower()
+                                             for p in col.split("_vs_")})
                             for cat in cats:
-                                mask = df.columns.str.contains(fr"\b{cat}\b", case=False)
+                                mask = df.columns.str.contains(cat, case=False, regex=False)
                                 if mask.any():
                                     val = float(df.loc[:, mask].mean(axis=1).mean())
                                     rows.append(dict(
