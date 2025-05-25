@@ -1,0 +1,14 @@
+# config.yaml
+
+model:
+  source: cornet        # one of: cornet | torchvision | timm | pytorch_hub
+  name: cornet_rt       # CORnet-RT architecture
+  weights: pretrained   # use the pretrained ImageNet weights
+  time_steps: 5         # only needed for CORnet-RT
+
+data_root: categ_images # folder containing four subfolders (animals, faces, objects, places), 20 images each
+
+batch_size: 8           # how many images to process at once
+device: auto            # "cuda", "cpu", or "auto" to auto-detect
+
+out_dir: unit_selectivity

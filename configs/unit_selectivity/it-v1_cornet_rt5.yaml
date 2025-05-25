@@ -1,0 +1,14 @@
+# analyse_it2v1.yaml
+selectivity_csv_dir: unit_selectivity          # where the 4 CSVs live
+category: faces                                # one of: animal, face, object, place
+top_frac: 0.01                                      # “most selective” IT filters
+category_images: categ_images/faces             # 20 images of that category
+pixels_per_degree: None                          # set to None if you don’t care
+output_dir: it2v1_analysis
+
+model:
+  source: cornet
+  name: cornet_rt
+  weights: pretrained
+  time_steps: 5
+  device: auto
