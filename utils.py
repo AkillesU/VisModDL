@@ -1300,7 +1300,7 @@ def categ_corr_lineplot(
     name = "_".join([main_dir.rstrip("/").split("/")[-1],data_type,damage_type,metric]
                     +damage_layers+activations_layers+[str(top_frac or 0)])
     if top_frac:
-        name += f"_{top_frac)}-selectivity"
+        name += f"_{top_frac}-selectivity"
     plt.savefig(os.path.join(plot_dir,name+".png"),dpi=400)
     if verbose: plt.show()
     else: plt.close()
