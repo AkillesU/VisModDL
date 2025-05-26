@@ -1761,18 +1761,17 @@ def plot_categ_differences(
             return os.path.join(main_dir,damage_type,d,data_type,act)
         return os.path.join(main_dir,damage_type,d,"RDM",act)
 
-    if data_type == "selectivity" \
-       and top_frac is not None \
-       and "IT" in act_layer \
-       and selectivity_csv_dir:
-        # you will re-compute per‐category below
-        do_unit_filtering = True
-    else:
-        do_unit_filtering = False
-
     for d in damage_layers:
       for act_layer in activations_layers:
-        base = get_base(d, act_layer)
+        if data_type == "selectivity" \
+           and top_frac is not None \
+           and "IT" in act_layer \
+           and selectivity_csv_dir:
+            # you will re-compute per‐category below
+            do_unit_filtering = True
+        else:
+            do_unit_filtering = False
+            base = get_base(d, act_layer)
         if not os.path.isdir(base): 
             continue
 
