@@ -27,7 +27,7 @@ import os, tarfile, hashlib
 import copy
 import statsmodels.formula.api as smf
 from pathlib import Path
-from typing import Sequence, Mapping
+from typing import Sequence, Mapping, Tuple, List
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -1761,36 +1761,59 @@ def plot_categ_differences(
             return os.path.join(main_dir,damage_type,d,data_type,act)
         return os.path.join(main_dir,damage_type,d,"RDM",act)
 
+    if data_type == "selectivity" \
+       and top_frac is not None \
+       and "IT" in act_layer \
+       and selectivity_csv_dir:
+        # you will re-compute per‐category below
+        do_unit_filtering = True
+    else:
+        do_unit_filtering = False
+
     for d in damage_layers:
-        for act in activations_layers:
-            base = get_base(d,act)
-            if not os.path.isdir(base): continue
-            # set up filtering?
-            if (data_type=="selectivity"
-                and top_frac
-                and "IT" in act
-                and selectivity_csv_dir):
-                csvf = os.path.join(selectivity_csv_dir,
-                                    f"{act.split('.')[-1]}_unit_selectivity_all_units.csv")
-                idxs = get_top_unit_indices(csvf,act,top_frac,fmap_shapes)
+      for act_layer in activations_layers:
+        base = get_base(d, act_layer)
+        if not os.path.isdir(base): 
+            continue
+
+        for lv in damage_levels:
+          subdir = os.path.join(base, f"{file_prefix}{lv}")
+          if not os.path.isdir(subdir):
+            continue
+
+          # load **all** original RDMs once
+          raw_mats = []
+          for fn in sorted(os.listdir(subdir)):
+            if not fn.endswith(".pkl"):
+              continue
+            raw_mats.append(safe_load_pickle(os.path.join(subdir, fn)))
+
+          # now for each target category, filter & compute diffs
+          for cat in categories_list:
+            if do_unit_filtering:
+              cat_pl = cat + "s"
+              idxs = get_top_unit_indices(
+                selectivity_csv_dir,
+                cat_pl,
+                act_layer,
+                top_frac,
+                fmap_shapes[act_layer]
+              )
             else:
-                idxs = None
+              idxs = None
 
-            for lv in damage_levels:
-                sub = f"{file_prefix}{lv}"
-                path= os.path.join(base,sub)
-                if not os.path.isdir(path): continue
+            # apply the same filtering to every RDM
+            mats = []
+            for mat in raw_mats:
+              if idxs is not None:
+                subm = np.array(mat)[np.ix_(idxs, idxs)]
+                mats.append(subm.tolist())
+              else:
+                mats.append(mat)
 
-                mats=[]
-                for fn in sorted(os.listdir(path)):
-                    if not fn.endswith(".pkl"): continue
-                    mat = safe_load_pickle(os.path.join(path,fn))
-                    if idxs is not None:
-                        # filter the matrix to those rows/cols
-                        mat = np.array(mat)[np.ix_(idxs,idxs)].tolist()
-                    mats.append(mat)
-                diffs = compute_differences_selectivity(mats,fnames,order)
-                all_results.append((d,act,lv,diffs))
+            # now compute within-between for this category
+            diffs = compute_differences_selectivity(mats, fnames, order)
+            all_results.append((d, act_layer, lv, cat, diffs[cat]))
 
     # percentage scaling
     if percentage:
@@ -3412,42 +3435,55 @@ def _gather_imagenet(mv_root: Path,
     return rows
 
 
-def get_top_unit_indices(selectivity_csv: str,
-                         layer_name: str,
-                         top_frac: float,
-                         fmap_shape: tuple[int,int,int]) -> list[int]:
+def get_top_unit_indices(
+    selectivity_dir: str,
+    category: str,
+    layer_name: str,
+    top_frac: float,
+    fmap_shape: Tuple[int, int, int]
+) -> List[int]:
     """
-    Read your per-unit selectivity file (pickle or CSV),
-    pick the top `top_frac` fraction in `layer_name`,
-    and return their flattened feature-map indices.
-    fmap_shape = (C, H, W).
+    1. Look up the per-unit selectivity file for `category` (try .pkl first, then .csv).
+    2. Load it into a DataFrame.
+    3. Filter to rows where df.layer_name == layer_name.
+    4. Take the top `top_frac` fraction by 'scaled_activation'.
+    5. Given fmap_shape = (C, H, W), convert each (c,y,x) into a flat index.
     """
-    # try pickle first
-    base, ext = os.path.splitext(selectivity_csv)
+    base = os.path.join(selectivity_dir, f"{category}_unit_selectivity_all_units")
+    df = None
+
+    # 1) Try pickle, then CSV
     pkl_path = base + ".pkl"
-    if os.path.exists(pkl_path):
-        with open(pkl_path, "rb") as f:
-            data = pickle.load(f)
-        # if the pickle already *is* a DataFrame:
-        if isinstance(data, pd.DataFrame):
-            df = data
-        else:
-            df = pd.DataFrame(data)
+    csv_path = base + ".csv"
+    if os.path.isfile(pkl_path):
+        df = pd.read_pickle(pkl_path)
+    elif os.path.isfile(csv_path):
+        df = pd.read_csv(csv_path)
     else:
-        # fallback to CSV
-        df = pd.read_csv(selectivity_csv)
+        raise FileNotFoundError(
+            f"No selectivity file found for category '{category}'.\n"
+            f"Expected one of:\n  {pkl_path}\n  {csv_path}"
+        )
 
-    # filter to just this layer
-    rows = df[df.layer_name == layer_name]
-    k = max(1, int(len(rows) * top_frac))
-    top = rows.nlargest(k, "scaled_activation")
+    # 2) Filter to the correct layer
+    layer_rows = df[df["layer_name"] == layer_name]
+    if layer_rows.empty:
+        raise ValueError(
+            f"No units found for layer '{layer_name}' in selectivity file for '{category}'."
+        )
 
+    # 3) Pick top k units
+    k = max(1, int(len(layer_rows) * top_frac))
+    top = layer_rows.nlargest(k, "scaled_activation")
+
+    # 4) Convert (channel, y, x) → flat index
     C, H, W = fmap_shape
-    idxs = []
+    indices: List[int] = []
     for _, r in top.iterrows():
-        # unit_id = "layer:channel:y:x"
-        _, c, y, x = r.unit_id.split(":")
-        c, y, x = map(int, (c, y, x))
-        idxs.append(c * (H * W) + y * W + x)
+        # unit_id looks like "layer:channel:y:x"
+        _, c_str, y_str, x_str = r["unit_id"].split(":")
+        c, y, x = int(c_str), int(y_str), int(x_str)
+        flat_idx = c * (H * W) + y * W + x
+        indices.append(flat_idx)
 
-    return idxs
+    return indices
