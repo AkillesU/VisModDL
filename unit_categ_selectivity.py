@@ -140,6 +140,7 @@ def main(cfg_path):
             "layer_name", "unit_id", "mean_activation", "scaled_activation"
         ])
         df.to_csv(out_dir / f"{cat}_unit_selectivity_all_units.csv", index=False)
+        df.to_pickle(out_dir / f"{cat}_unit_selectivity_all_units.pkl")
         print(f"Wrote {cat}_unit_selectivity_all_units.csv ({len(df)} rows)")
 
 
