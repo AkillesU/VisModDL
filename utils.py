@@ -1243,8 +1243,7 @@ def categ_corr_lineplot(
                             mats.append(pickle.load(open(fn,"rb")))
                         # one correlation matrix per damage level:
                         corr, _ = compute_correlations(
-                            np.array(mats).reshape(len(mats), -1),  # your loaded RDMs
-                            None  # not used here
+                            np.array(mats).reshape(len(mats), -1)
                         )
                         # within‐between for that category
                         # reuse your existing code to compute selectivity from a single RDM:
