@@ -1272,7 +1272,6 @@ def categ_corr_lineplot(
 
     # plotting
     plt.figure(figsize=(8,6))
-    from your_utils import get_color_for_triple
     for (L,act,cat),fd in data.items():
         xs = sorted(fd)
         ys = [fd[x][0] for x in xs]
@@ -1300,6 +1299,8 @@ def categ_corr_lineplot(
     os.makedirs(plot_dir,exist_ok=True)
     name = "_".join([main_dir.rstrip("/").split("/")[-1],data_type,damage_type,metric]
                     +damage_layers+activations_layers+[str(top_frac or 0)])
+    if top_frac:
+        name += f"_{top_frac)}-selectivity"
     plt.savefig(os.path.join(plot_dir,name+".png"),dpi=400)
     if verbose: plt.show()
     else: plt.close()
@@ -1977,6 +1978,8 @@ def plot_categ_differences(
         if percentage:
             plot_name += "_percent"
         plot_path = os.path.join(plot_dir, plot_name)
+        if top_frac:
+            name += f"_{top_frac)}-selectivity"
 
         if verbose == 1:
             save_plot = input(f"Save plot under {plot_path}? Y/N: ")
