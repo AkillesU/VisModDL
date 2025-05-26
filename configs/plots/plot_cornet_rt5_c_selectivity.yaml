@@ -14,4 +14,4 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selectivity_file_dir: unit_selectivity
-      fmap_shape: (512,7,7)
+      fmap_shape: [512,7,7]
