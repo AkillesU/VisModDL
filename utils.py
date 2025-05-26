@@ -3412,21 +3412,37 @@ def get_top_unit_indices(selectivity_csv: str,
                          top_frac: float,
                          fmap_shape: tuple[int,int,int]) -> list[int]:
     """
-    Read your per-unit selectivity CSV,
+    Read your per-unit selectivity file (pickle or CSV),
     pick the top `top_frac` fraction in `layer_name`,
     and return their flattened feature-map indices.
     fmap_shape = (C, H, W).
     """
-    df = pd.read_csv(selectivity_csv)
-    # only keep rows for this layer
+    # try pickle first
+    base, ext = os.path.splitext(selectivity_csv)
+    pkl_path = base + ".pkl"
+    if os.path.exists(pkl_path):
+        with open(pkl_path, "rb") as f:
+            data = pickle.load(f)
+        # if the pickle already *is* a DataFrame:
+        if isinstance(data, pd.DataFrame):
+            df = data
+        else:
+            df = pd.DataFrame(data)
+    else:
+        # fallback to CSV
+        df = pd.read_csv(selectivity_csv)
+
+    # filter to just this layer
     rows = df[df.layer_name == layer_name]
     k = max(1, int(len(rows) * top_frac))
     top = rows.nlargest(k, "scaled_activation")
+
     C, H, W = fmap_shape
     idxs = []
     for _, r in top.iterrows():
         # unit_id = "layer:channel:y:x"
         _, c, y, x = r.unit_id.split(":")
-        c,y,x = map(int, (c,y,x))
-        idxs.append(c*(H*W) + y*W + x)
+        c, y, x = map(int, (c, y, x))
+        idxs.append(c * (H * W) + y * W + x)
+
     return idxs
