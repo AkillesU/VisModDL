@@ -1749,7 +1749,8 @@ def plot_categ_differences(
         base,_ = os.path.splitext(f)
         name,_ = re.match(r"([^\d]+)([\d\.]*)",base).groups()
         cats_map[unify(name)].append(f)
-    order = [c for c in ["face","place","object","animal"] if c in cats_map]
+    categories_list = ["face","place","object","animal"]
+    order = [c for c in categories_list if c in cats_map]
     n_cats = len(order)
 
     all_results = []
@@ -1808,8 +1809,8 @@ def plot_categ_differences(
         # columns = categories
         num_rows = len(all_results)
         fig, axes = plt.subplots(
-            num_rows, n_categories,
-            figsize=(3*n_categories, 3*num_rows),
+            num_rows, n_cats,
+            figsize=(3*n_cats, 3*num_rows),
             sharey=True
         )
         axes = np.array(axes, ndmin=2)  # ensure 2D
@@ -1887,8 +1888,8 @@ def plot_categ_differences(
     else:
         # comparison=True => group all combos in fewer subplots
         # (1 subplot per category, grouped bars for each combo).
-        fig, axes = plt.subplots(1, n_categories, figsize=(4*n_categories, 4), sharey=True)
-        if n_categories == 1:
+        fig, axes = plt.subplots(1, n_cats, figsize=(4*n_cats, 4), sharey=True)
+        if n_cats == 1:
             axes = [axes]
 
         # group results by category
@@ -1921,7 +1922,7 @@ def plot_categ_differences(
 
                 # reorder oc_list to match custom_category_order minus cat
                 index_map = {c: k for k, c in enumerate(oc_list)}
-                new_oc_list = [c for c in custom_category_order if c != cat and c in index_map]
+                new_oc_list = [c for c in ["face","place","object","animal"] if c != cat and c in index_map]
 
                 new_mean_vals = [mean_vals[index_map[c]] for c in new_oc_list]
                 new_std_vals = [std_vals[index_map[c]] for c in new_oc_list]
