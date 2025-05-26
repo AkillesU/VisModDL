@@ -1,0 +1,17 @@
+subdir: "cornet_rt5_c/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "noise"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      ylim: [-15,105]
+      data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selectivity_file_dir: unit_selectivity
+      fmap_shape: (512,7,7)
