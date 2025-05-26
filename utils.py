@@ -1224,12 +1224,12 @@ def categ_corr_lineplot(
                     generate_category_selective_RDMs(
                         activations_root=activ_root,
                         selectivity_file_dir=selectivity_file_dir,
-                        output_root=main_dir,          # it will append RDM_{..}
+                        output_root=Path(main_dir) / damage_type / layer,  # <-- ensure this matches!
                         layer_name=layer,
                         fmap_shape=fmap_shape,
                         top_frac=selectivity_fraction,
                         categories=categories,
-                        damage_levels=None             # infer
+                        damage_levels=None
                     )
 
                 # now load each category’s RDMs
@@ -3625,35 +3625,12 @@ def generate_category_selective_RDMs(
 ):
     """
     Build category-selective RDMs from per-image activation pickles.
-
-    Parameters
-    ----------
-    activations_root : str
-        Path containing one subfolder per damage level, each with M pickles
-        named `0.pkl, 1.pkl, …` of shape [n_images, C*H*W].
-
-    selectivity_file_dir : str
-        Directory containing selectivity files named
-        `{category}_unit_selectivity_all_units.pkl` or `.csv`.
-
-    output_root : str
-        Base directory under which "RDM_{top_frac:.2f}" will be created.
-
-    layer_name : str
-        The module path to filter on, e.g. "module.IT.conv1".
-
-    fmap_shape : (C,H,W)
-        The feature-map dimensions of that layer.
-
-    top_frac : float
-        Fraction of most selective units to keep (0 < top_frac ≤ 1).
-
-    categories : sequence of str
-        The category prefixes in your selectivity filenames (plural).
-
-    damage_levels : sequence of str or None
-        If None, inferred from subdirectories under `activations_root`.
     """
+    from pathlib import Path
+
+    # Ensure output_root is a Path object
+    output_root = Path(output_root)
+
     print(fmap_shape)
     C, H, W = fmap_shape
 
@@ -3696,7 +3673,7 @@ def generate_category_selective_RDMs(
         )
 
     # 3) process each category × damage level
-    root_out = Path(output_root) / f"RDM_{top_frac:.2f}"
+    root_out = output_root / f"RDM_{top_frac:.2f}"
     for cat, idxs in idxs_by_cat.items():
         for dmg in damage_levels:
             in_dir  = Path(activations_root) / dmg
