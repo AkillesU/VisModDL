@@ -3660,7 +3660,7 @@ def generate_category_selective_RDMs(
     # 1) For each category, load selectivity table and pick top-unit indices
     idxs_by_cat = {}
     for cat in categories:
-        base = Path(selectivity_file_dir) / f"{cat}_unit_selectivity_all_units"
+        base = Path(selectivity_file_dir) / f"{cat}s_unit_selectivity_all_units"
         df = None
         # try .pkl then .csv
         for ext in (".pkl", ".csv"):
