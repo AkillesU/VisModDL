@@ -1165,7 +1165,7 @@ def categ_corr_lineplot(
     percentage=False,
     top_frac: float|None = None,
     selectivity_csv_dir: str|None = None,
-    fmap_shapes: dict[str,tuple[int,int,int]] = {}
+    fmap_shapes=(512,7,7)
 ):
     """
     If data_type=='selectivity' and top_frac is set and
@@ -1477,9 +1477,10 @@ def plot_categ_differences(
     ylim=None,
     data_type="selectivity",   # "selectivity" or e.g. "svm_15"
     percentage=False,
+    fmap_shapes=(512,7,7),
     top_frac: float|None=None,
     selectivity_csv_dir: str=None,
-    fmap_shapes: dict[str,tuple[int,int,int]]={},
+    
 ):
     """
     Plot either:
@@ -1771,7 +1772,7 @@ def plot_categ_differences(
                 and selectivity_csv_dir):
                 csvf = os.path.join(selectivity_csv_dir,
                                     f"{act.split('.')[-1]}_unit_selectivity_all_units.csv")
-                idxs = get_top_unit_indices(csvf,act,top_frac,fmap_shapes.get(act))
+                idxs = get_top_unit_indices(csvf,act,top_frac,fmap_shapes)
             else:
                 idxs = None
 
@@ -1979,7 +1980,7 @@ def plot_categ_differences(
             plot_name += "_percent"
         plot_path = os.path.join(plot_dir, plot_name)
         if top_frac:
-            name += f"_{top_frac)}-selectivity"
+            name += f"_{top_frac}-selectivity"
 
         if verbose == 1:
             save_plot = input(f"Save plot under {plot_path}? Y/N: ")

@@ -1,0 +1,17 @@
+subdir: "cornet_rt5_c/"
+tasks:
+  - function: plot_categ_differences
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      damage_type: "noise"
+      verbose: 0
+      damage_levels: ["0.0","1.8"]
+      ylim: [-10,110]
+      comparison: True
+      scatter: True
+      percentage: True
+      top_frac: 0.01
+      selectivity_csv_dir: unit_selectivity
+      fmap_shapes: (512,7,7)
