@@ -3618,7 +3618,7 @@ def generate_category_selective_RDMs(
     selectivity_file_dir: str,
     output_root: str,
     layer_name: str,
-    fmap_shape: Tuple[int,int,int],
+    fmap_shape: tuple,
     top_frac: float,
     categories: Sequence[str] = ("faces","places","objects","animals"),
     damage_levels: Sequence[str] = None,
@@ -3654,6 +3654,7 @@ def generate_category_selective_RDMs(
     damage_levels : sequence of str or None
         If None, inferred from subdirectories under `activations_root`.
     """
+    print(fmap_shape)
     C, H, W = fmap_shape
 
     # 1) For each category, load selectivity table and pick top-unit indices
