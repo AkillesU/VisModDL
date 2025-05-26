@@ -1217,7 +1217,7 @@ def categ_corr_lineplot(
             if data_type=="selectivity" and selectivity_fraction is not None:
                 # ─────── selective‐RDM branch ───────
                 # where per‐category RDMs live:
-                root_rdm = Path(main_dir).parents[0] / f"RDM_{selectivity_fraction:.2f}"
+                root_rdm = main_dir / damage_type / layer / f"RDM_{selectivity_fraction:.2f}"
                 # if missing, build them:
                 if not root_rdm.exists():
                     activ_root = os.path.join(main_dir, damage_type, layer, "activations", act)
