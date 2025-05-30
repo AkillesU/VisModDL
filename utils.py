@@ -1425,6 +1425,8 @@ def categ_corr_lineplot(
                   data_type, damage_type, metric]
     name_parts.extend(damage_layers)
     name_parts.extend(activations_layers)
+    if selectivity_fraction is not None:
+        name_parts.append(f"top{selectivity_fraction:.2f}-{selection_mode}")
     plot_path = os.path.join(plot_dir, "_".join(name_parts) + ".png")
     plt.savefig(plot_path, dpi=500)
     if verbose: plt.show()
