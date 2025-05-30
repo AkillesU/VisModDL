@@ -1164,17 +1164,16 @@ def categ_corr_lineplot(
     ylim=None,
     percentage=False,
     selectivity_fraction: float|None = None,
-    selectivity_file_dir: str|None   = "unit_selectivity",
-    fmap_shape: tuple[int,int,int]|None = (512,7,7),
-):
+    selection_mode: str = "percentage",
+    selectivity_file: str|None   = "unit_selectivity/all_layers_units_mannwhitneyu.pkl"):
     """
     Aggregate replicate files into mean±std curves.
 
     data_type == "selectivity"  -> original within-between correlation
     data_type.startswith("svm") -> original SVM accuracy
     data_type == "imagenet"     -> this NEW branch, needs .pkl of form
-           { "overall": {"top1": .., "top5": ..},
-             "classes": { cls_idx: {"top1": .., "top5": ..}, ... } }
+            { "overall": {"top1": .., "top5": ..},
+                "classes": { cls_idx: {"top1": .., "top5": ..}, ... } }
 
     categories
     ----------
@@ -1209,49 +1208,70 @@ def categ_corr_lineplot(
     for layer in damage_layers:
         for act in activations_layers:
             act_key = act
-            # init slots for every category
-            for cat in categories:
-                data[(layer,act_key,cat)] = {}
-                raw_points[(layer,act_key,cat)] = {}
+            if data_type == "selectivity" and selectivity_fraction is not None:
+                if "overall" in categories:
+                    categories_rdm = ("face", "object", "animal", "place") # FIX THIS 
 
-            if data_type=="selectivity" and selectivity_fraction is not None:
-                # ─────── selective‐RDM branch ───────
-                # where per‐category RDMs live:
-                root_rdm = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}"
-                # if missing, build them:
-                if not root_rdm.exists():
-                    activ_root = os.path.join(main_dir, damage_type, layer, "activations", act)
+                # 1. Build RDM directory path
+                rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
+                if not rdm_dir.exists():
+                    # 2. Generate RDMs if missing
+                    print("MISSING")
+                    activ_root = os.path.join(main_dir, damage_type)
                     generate_category_selective_RDMs(
                         activations_root=activ_root,
-                        selectivity_file_dir=selectivity_file_dir,
-                        output_root=Path(main_dir) / damage_type / layer,  # <-- ensure this matches!
-                        layer_name=layer,
-                        fmap_shape=fmap_shape,
+                        layer_name=act,
                         top_frac=selectivity_fraction,
-                        categories=categories,
-                        damage_levels=None
+                        categories=categories_rdm,
+                        selection_mode=selection_mode,
+                        damage_layer=layer,
+                        activation_layer=act,
+                        selectivity_file=selectivity_file
                     )
 
-                # now load each category’s RDMs
-                for cat in categories:
-                    cat_dir = root_rdm / cat
-                    for dmg in sorted(os.listdir(cat_dir)):
-                        if not (cat_dir/dmg).is_dir(): continue
-                        frac = float(dmg.split("_")[-1])
-                        mats = []
-                        for fn in sorted((cat_dir/dmg).glob("*.pkl")):
-                            mats.append(pickle.load(open(fn,"rb")))
-                        # one correlation matrix per damage level:
-                        corr, _ = compute_correlations(
-                            np.array(mats).reshape(len(mats), -1)
-                        )
-                        # within‐between for that category
-                        # reuse your existing code to compute selectivity from a single RDM:
-                        diffs = calc_within_between(mats, categories)
-                        other_cats, mean_vals, std_vals, raw_arrays = diffs[cat]
-                        # store only the difference for cat itself:
-                        data[(layer,act_key,cat)][frac]        = (mean_vals[0], std_vals[0], len(raw_arrays[0]))
-                        raw_points[(layer,act_key,cat)][frac] = raw_arrays[0]
+                # 3. Prepare output directory for averages
+                avg_dir = Path(main_dir) / damage_type / layer / f"avg_selectivity_top{selectivity_fraction:.2f}_{selection_mode}" / act
+                avg_dir.mkdir(parents=True, exist_ok=True)
+
+                # 4. For each category
+                for cat in categories_rdm:
+                    print(layer, act_key, cat)
+                    data[(layer,act_key,cat)] = {}
+                    raw_points[(layer,act_key,cat)] = {}
+                    cat_dir = rdm_dir / f"{cat}_selective"
+                    if not cat_dir.exists(): # Skip if dir doesn't exist
+                        continue
+                    for dmg in sorted(cat_dir.iterdir()):
+                        if not dmg.is_dir():
+                            continue
+                        dmg_level = dmg.name.split("_")[-1]
+                        avg_file = avg_dir / f"avg_selectivity_{cat}_{dmg_level}.pkl"
+                        if avg_file.exists():
+                            # Load if already computed
+                            with open(avg_file, "rb") as f:
+                                stats = pickle.load(f)
+                        else:
+                            # Compute within-between selectivity for all RDMs in this damage level
+                            selectivities = []
+                            for rdm_pkl in sorted(dmg.glob("*.pkl")):
+                                with open(rdm_pkl, "rb") as f:
+                                    content = pickle.load(f)
+                                    R = content['RDM']
+                                    image_names = assign_categories(content['image_names']) # Creates array from image names
+                                # Compute within-between for this category
+                                # (Assume you have a helper function for this)
+                                sel_dict = calc_within_between(R, image_names)
+                                sel = sel_dict[cat]["observed_difference"]
+                                selectivities.append(sel)
+                            # Aggregate
+                            mean_sel = float(np.mean(selectivities))
+                            std_sel = float(np.std(selectivities))
+                            stats = {"mean": mean_sel, "std": std_sel, "n": len(selectivities)}
+                            with open(avg_file, "wb") as f:
+                                pickle.dump(stats, f)
+                        # Store for plotting
+                        data[(layer, act, cat)][float(dmg_level)] = (stats["mean"], stats["std"], stats["n"])
+
             else:
                 # pick path & “act_key” (imagenet has no per-activation dir)
                 if data_type == "imagenet":
@@ -3613,83 +3633,76 @@ def get_top_unit_indices(
 
 
 def generate_category_selective_RDMs(
-    activations_root: str,
-    selectivity_file_dir: str,
-    output_root: str,
+    activations_root: str, # root of damage type directory e.g., .../connections
     layer_name: str,
-    fmap_shape: tuple,
     top_frac: float,
     categories: Sequence[str] = ("faces","places","objects","animals"),
     damage_levels: Sequence[str] = None,
+    selection_mode: str = "percentage",  # "percentage" or "percentile"
+    selectivity_file: str = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
+    damage_layer: str = "V1",
+    activation_layer: str = "IT"
 ):
     """
-    Build category-selective RDMs from per-image activation pickles.
+    Build category-selective RDMs from per-image activation pickles, using flat unit indices.
+    selectivity_file: path to the selectivity .pkl or .csv file with columns: layer,unit,mw_animals,...
     """
     from pathlib import Path
 
-    # Ensure output_root is a Path object
-    output_root = Path(output_root)
+    selectivity_path = Path(selectivity_file)
+    # Load selectivity table
+    if selectivity_path.suffix == ".pkl":
+        sel_df = pd.read_pickle(selectivity_path)
+    elif selectivity_path.suffix == ".csv":
+        sel_df = pd.read_csv(selectivity_path)
+    else:
+        raise ValueError("Selectivity file must be .pkl or .csv")
 
-    print(fmap_shape)
-    C, H, W = fmap_shape
-
-    # 1) For each category, load selectivity table and pick top-unit indices
+    # 1) For each category, select top unit indices for the given layer
     idxs_by_cat = {}
     for cat in categories:
-        base = Path(selectivity_file_dir) / f"{cat}s_unit_selectivity_all_units"
-        df = None
-        # try .pkl then .csv
-        for ext in (".pkl", ".csv"):
-            path = base.with_suffix(ext)
-            if path.exists():
-                if ext == ".pkl":
-                    with open(path, "rb") as f:
-                        df = pd.DataFrame(pickle.load(f))
-                else:
-                    df = pd.read_csv(path)
-                break
-        if df is None:
-            raise FileNotFoundError(f"No selectivity file for '{cat}' at {base}.(pkl|csv)")
-
-        # filter for this IT layer
-        sel = df[df["layer_name"].str.contains(layer_name, regex=False)]
-        k   = max(1, int(len(sel) * top_frac))
-        top = sel.nlargest(k, "scaled_activation")
-
-        # flatten indices
-        idxs = []
-        for _, r in top.iterrows():
-            _, c, y, x = r["unit_id"].split(":")
-            c,y,x = map(int, (c,y,x))
-            idxs.append(c*(H*W) + y*W + x)
+        cat_key = cat if f"mw_{cat}" in sel_df.columns else f"{cat}s"  # handle plural/singular
+        mw_col = f"mw_{cat_key}"
+        layer_rows = sel_df[sel_df["layer"] == "module." + layer_name]
+        if mw_col not in layer_rows.columns:
+            raise ValueError(f"Column {mw_col} not found in selectivity file.")
+        if selection_mode == "percentage":
+            k = max(1, int(len(layer_rows) * top_frac))
+            top = layer_rows.nlargest(k, mw_col)
+        elif selection_mode == "percentile":
+            cutoff = np.percentile(layer_rows[mw_col], top_frac)
+            top = layer_rows[layer_rows[mw_col] >= cutoff]
+        else:
+            raise ValueError("selection_mode must be 'percentage' or 'percentile'")
+        idxs = top["unit"].astype(int).values
         idxs_by_cat[cat] = np.array(idxs, dtype=int)
 
     # 2) determine damage levels if not provided
+    activ_root = Path(activations_root) / damage_layer / "activations" / activation_layer
     if damage_levels is None:
         damage_levels = sorted(
-            d for d in os.listdir(activations_root)
-            if (Path(activations_root)/d).is_dir()
+            d for d in os.listdir(activ_root)
+            if (activ_root/d).is_dir()
         )
 
     # 3) process each category × damage level
-    root_out = output_root / f"RDM_{top_frac:.2f}"
+    root_out = Path(activations_root) / damage_layer / f"RDM_{top_frac:.2f}_{selection_mode}" / activation_layer
     for cat, idxs in idxs_by_cat.items():
         for dmg in damage_levels:
-            in_dir  = Path(activations_root) / dmg
-            out_dir = root_out / cat / dmg
+            in_dir  = activ_root / dmg
+            out_dir = root_out / (cat.strip("s")+"_selective") / dmg
             out_dir.mkdir(parents=True, exist_ok=True)
 
             for pkl_fname in sorted(in_dir.glob("*.pkl")):
-                # load activations [n_images, C*H*W]
+                # load activations [n_images, n_units]
                 with open(pkl_fname, "rb") as f:
-                    A = np.asarray(pickle.load(f))
-
-                # restrict to top-selective units
-                A_sub = A[:, idxs]                   # [n_images, n_units]
-
+                    A = pickle.load(f)
+                    image_names = list(A.index)
+                    A= np.asarray(A)
+                # restrict to top-selective units (flat indices)
+                A_sub = A[:, idxs]                   # [n_images, n_top_units]
                 # build RDM: Pearson corr across the rows
                 R = np.corrcoef(A_sub)               # [n_images, n_images]
-
                 # save
                 with open(out_dir / pkl_fname.name, "wb") as f:
-                    pickle.dump(R, f)
+                    pickle.dump({'RDM': R, 'image_names': image_names}, f)
