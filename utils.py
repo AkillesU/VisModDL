@@ -1210,7 +1210,9 @@ def categ_corr_lineplot(
             act_key = act
             if data_type == "selectivity" and selectivity_fraction is not None:
                 if "total" in categories:
-                    categories_rdm = ("face", "object", "animal", "place") # FIX THIS 
+                    categories_rdm = ("face", "object", "animal", "place") # FIX THIS
+                else:
+                    categories_rdm = categories
 
                 # 1. Build RDM directory path
                 rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
