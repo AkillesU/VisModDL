@@ -1177,7 +1177,7 @@ def categ_corr_lineplot(
 
     categories
     ----------
-    selectivity / svm : list[str]   ("animal","face",...)
+    selectivity / svm : list[str]   ("animal","face",...) total
     imagenet          : iterable of
        "overall"                → use content["overall"][metric]
        int 0-999 (or str digit) → use per-class entry
@@ -1209,7 +1209,7 @@ def categ_corr_lineplot(
         for act in activations_layers:
             act_key = act
             if data_type == "selectivity" and selectivity_fraction is not None:
-                if "overall" in categories:
+                if "total" in categories:
                     categories_rdm = ("face", "object", "animal", "place") # FIX THIS 
 
                 # 1. Build RDM directory path
@@ -1265,12 +1265,50 @@ def categ_corr_lineplot(
                                 selectivities.append(sel)
                             # Aggregate
                             mean_sel = float(np.mean(selectivities))
-                            std_sel = float(np.std(selectivities))
+                            std_sel = float(np.std(selectivities,ddof=1))
                             stats = {"mean": mean_sel, "std": std_sel, "n": len(selectivities)}
                             with open(avg_file, "wb") as f:
                                 pickle.dump(stats, f)
                         # Store for plotting
                         data[(layer, act, cat)][float(dmg_level)] = (stats["mean"], stats["std"], stats["n"])
+                if "total" in categories:
+                    data[(layer, act_key, "total")] = {}
+                    raw_points[(layer, act_key, "total")] = {}
+                    # For each damage level, aggregate across all categories
+                    # First, collect all damage levels present in any category
+                    all_dmg_levels = set()
+                    for cat in categories_rdm:
+                        cat_dir = rdm_dir / f"{cat}_selective"
+                        if not cat_dir.exists():
+                            continue
+                        for dmg in sorted(cat_dir.iterdir()):
+                            if not dmg.is_dir():
+                                continue
+                            dmg_level = dmg.name.split("_")[-1]
+                            all_dmg_levels.add(dmg_level)
+                    for dmg_level in sorted(all_dmg_levels, key=float):
+                        all_selectivities = []
+                        for cat in categories_rdm:
+                            cat_dir = rdm_dir / f"{cat}_selective"
+                            dmg = cat_dir / f"damaged_{dmg_level}"
+                            if not dmg.is_dir():
+                                continue
+                            for rdm_pkl in sorted(dmg.glob("*.pkl")):
+                                with open(rdm_pkl, "rb") as f:
+                                    content = pickle.load(f)
+                                    R = content['RDM']
+                                    image_names = assign_categories(content['image_names'])
+                                sel_dict = calc_within_between(R, image_names)
+                                # Use the category-specific value
+                                sel = sel_dict[cat]["observed_difference"]
+                                all_selectivities.append(sel)
+                        if all_selectivities:
+                            mean_sel = float(np.mean(all_selectivities))
+                            std_sel = float(np.std(all_selectivities, ddof=1))
+                            stats = {"mean": mean_sel, "std": std_sel, "n": len(all_selectivities)}
+                            data[(layer, act_key, "total")][float(dmg_level)] = (mean_sel, std_sel, len(all_selectivities))
+                            raw_points[(layer, act_key, "total")][float(dmg_level)] = all_selectivities
+
 
             else:
                 # pick path & “act_key” (imagenet has no per-activation dir)
@@ -1291,6 +1329,7 @@ def categ_corr_lineplot(
                 for cat in categories:
                     data[(layer, act_key, cat)] = {}
                     raw_points[(layer, act_key, cat)] = {}
+                print(data)
 
                 # scan damaged_* subdirs
                 for subdir in os.listdir(layer_path):
@@ -1391,7 +1430,7 @@ def categ_corr_lineplot(
     # ------------ 6. PLOT --------------------------------------
     plt.figure(figsize=(8, 6))
     for (layer, act_key, cat), frac_dict in data.items():
-        if not frac_dict:
+        if not frac_dict or cat not in categories:
             continue
         xs = sorted(frac_dict.keys())
         ys = [frac_dict[x][0] for x in xs]
