@@ -31,11 +31,12 @@ from scipy.ndimage import gaussian_filter
 def load_model(mcfg, device):
     import cornet
     ctor = {
-        "cornet_rt": cornet.cornet_rt,
-        "cornet_s": cornet.cornet_s,
+        "cornet_rt": cornet.cornet_rt
+        "cornet_s": cornet.cornet_s
         "cornet_z": cornet.cornet_z
     }[mcfg["name"].lower()]
     kwargs = {"pretrained": True}
+    kwargs["map_location": (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))}]
     if mcfg["name"].lower() == "cornet_rt":
         kwargs["times"] = mcfg.get("time_steps", 5)
     return ctor(**kwargs).to(device).eval()
