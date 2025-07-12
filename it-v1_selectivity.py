@@ -348,7 +348,6 @@ def main(cfg_path):
         plt.colorbar(label="Mean(|grad|) diff")
         # Modified figure name
         plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_grad_diff_perm.png", dpi=300)
-        plt.show()
 
         plt.figure(figsize=(6,5))
         plt.imshow(p_map_bonf, cmap="viridis", interpolation='nearest', vmin=0, vmax=1)
@@ -357,7 +356,6 @@ def main(cfg_path):
         plt.colorbar(label="Permutation p-value")
         # Modified figure name
         plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_perm_pval_grad.png", dpi=300)
-        plt.show()
 
 
 if __name__=="__main__":
