@@ -193,22 +193,14 @@ def main(cfg_path):
         def v1_hook(m, inp, out):
             out.register_hook(save_grad("module.V1.nonlin_input"))
         v1.register_forward_hook(v1_hook)
-
-        def target_fn(units):
-            val = torch.tensor(0., device=device, requires_grad=True)
-            for name, c, y, x in units:
-                act = layer_out[name]
-                if isinstance(act, tuple):
-                    act = act[0]
-                val = val + act[:, c, y, x].sum() / act.size(0)
-            return val
-
+        
         tfm  = build_transform()
         imgs = list(iter_imgs(pathlib.Path(cfg["category_images"])))[:cfg.get("max_images",20)]
 
         outdir = cfg.get("output_dir", "it2v1_analysis")
         pathlib.Path(outdir).mkdir(exist_ok=True)
-        diff_csv_path = f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_selective_vs_random.csv"
+        # Modified file name to reflect the new metric (grad instead of actgrad)
+        diff_csv_path = f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_selective_vs_random_grad.csv"
 
         # --- get all IT units for random selection ---
         all_it_units = []
@@ -233,55 +225,81 @@ def main(cfg_path):
                 raise ValueError("Existing results file does not contain permutation test results. Please delete the file and rerun.")
 
         else:
-            print("Computing |activation * gradient| for selective IT units...")
-            all_v1_actgrads_sel = []
+            
+            print("Computing mean |gradient| for selective IT units...")
+            all_v1_grads_sel = []
             for img in tqdm(imgs, desc="Images (selective)"):
                 x = tfm(img).unsqueeze(0).to(device)
-                layer_out.clear(); layer_grad.clear()
-                model.zero_grad(); _ = model(x)
-                loss = target_fn(top_units); loss.backward()
-                v1_act = layer_out["module.V1.nonlin_input"].detach().cpu().numpy()[0]  # [C, H, W]
-                v1_gr  = layer_grad["module.V1.nonlin_input"][0].cpu().numpy()         # [C, H, W]
-                v1_actgrad = np.abs(v1_act * v1_gr)                                    # [C, H, W]
-                all_v1_actgrads_sel.append(v1_actgrad)
-            all_v1_actgrads_sel = np.stack(all_v1_actgrads_sel)  # [N, C, H, W]
+                
+                # For each image, get gradients from each selective IT unit
+                single_img_v1_grads = []
+                for (name, c, y, x_coord) in top_units:
+                    layer_out.clear(); layer_grad.clear()
+                    model.zero_grad()
+                    _ = model(x)
+                    
+                    # Define loss as the activation of a SINGLE IT unit
+                    act = layer_out[name]
+                    if isinstance(act, tuple):
+                        act = act[0]
+                    loss = act[:, c, y, x_coord].sum()
+                    loss.backward()
+                    
+                    v1_gr = layer_grad["module.V1.nonlin_input"][0].cpu().numpy()
+                    single_img_v1_grads.append(np.abs(v1_gr))
+                
+                # Aggregate gradients for this image by taking the mean across all IT units
+                mean_grad_map = np.mean(np.stack(single_img_v1_grads), axis=0)
+                all_v1_grads_sel.append(mean_grad_map)
+                
+            all_v1_grads_sel = np.stack(all_v1_grads_sel)  # [N, C, H, W]
 
-            print(f"Computing |activation * gradient| for {n_random_repeats} random IT unit sets...")
-            all_v1_actgrads_rand = []
+            print(f"Computing mean |gradient| for {n_random_repeats} random IT unit sets...")
+            all_v1_grads_rand = []
             n_sel = len(top_units)
             for rep in tqdm(range(n_random_repeats), desc="Random repeats"):
                 rand_units = random.sample(all_it_units, n_sel)
-                rep_v1_actgrads = []
+                rep_v1_grads = []
                 for img in imgs:
-                    x = tfm(img).unsqueeze(0).to(device)
-                    layer_out.clear(); layer_grad.clear()
-                    model.zero_grad(); _ = model(x)
-                    loss = target_fn(rand_units); loss.backward()
-                    v1_act = layer_out["module.V1.nonlin_input"].detach().cpu().numpy()[0]
-                    v1_gr  = layer_grad["module.V1.nonlin_input"][0].cpu().numpy()
-                    v1_actgrad = np.abs(v1_act * v1_gr)
-                    rep_v1_actgrads.append(v1_actgrad)
-                rep_v1_actgrads = np.stack(rep_v1_actgrads)  # [N, C, H, W]
-                all_v1_actgrads_rand.append(rep_v1_actgrads)
-            all_v1_actgrads_rand = np.stack(all_v1_actgrads_rand)  # [R, N, C, H, W]
+                    img_tensor = tfm(img).unsqueeze(0).to(device)
 
-            print("Mean selective activation gradients:", np.mean(all_v1_actgrads_sel))
-            print("Mean random activation gradients:", np.mean(all_v1_actgrads_rand))
+                    # For each image, get gradients from each random IT unit
+                    single_img_v1_grads_rand = []
+                    for (name, c, y, x_coord) in rand_units:
+                        layer_out.clear(); layer_grad.clear()
+                        model.zero_grad()
+                        _ = model(img_tensor)
 
-            # Build the activations directory name
-            activ_dir = f"activations_{cat}_{top_frac}_{mode}"
+                        act = layer_out[name]
+                        if isinstance(act, tuple):
+                            act = act[0]
+                        loss = act[:, c, y, x_coord].sum()
+                        loss.backward()
+                        
+                        v1_gr = layer_grad["module.V1.nonlin_input"][0].cpu().numpy()
+                        single_img_v1_grads_rand.append(np.abs(v1_gr))
+                    
+                    # Aggregate gradients for this image by taking the mean
+                    mean_grad_map_rand = np.mean(np.stack(single_img_v1_grads_rand), axis=0)
+                    rep_v1_grads.append(mean_grad_map_rand)
+
+                rep_v1_grads = np.stack(rep_v1_grads) # [N, C, H, W]
+                all_v1_grads_rand.append(rep_v1_grads)
+            all_v1_grads_rand = np.stack(all_v1_grads_rand)  # [R, N, C, H, W]
+
+
+            print("Mean selective gradient magnitude:", np.mean(all_v1_grads_sel))
+            print("Mean random gradient magnitude:", np.mean(all_v1_grads_rand))
+            
+            activ_dir = f"activations_{cat}_{top_frac}_{mode}_grad"
             activ_dir_path = pathlib.Path(outdir) / activ_dir
             activ_dir_path.mkdir(parents=True, exist_ok=True)
 
-            # Save selective activ*grad
-            np.save(str(activ_dir_path / "activgrads_selective.npy"), all_v1_actgrads_sel)
+            np.save(str(activ_dir_path / "grads_selective.npy"), all_v1_grads_sel)
+            for rep in range(len(all_v1_grads_rand)):
+                np.save(str(activ_dir_path / f"grads_random_{rep}.npy"), all_v1_grads_rand[rep])
 
-            # Save each random permutation activ*grad
-            for rep in range(len(all_v1_actgrads_rand)):
-                np.save(str(activ_dir_path / f"activgrads_random_{rep}.npy"), all_v1_actgrads_rand[rep])
-
-
-            N, C, Hf, Wf = all_v1_actgrads_sel.shape
+            N, C, Hf, Wf = all_v1_grads_sel.shape
             R = n_random_repeats
 
             n_permutations = 1000  # or as needed
@@ -290,8 +308,8 @@ def main(cfg_path):
 
             def perm_test_at_loc(args):
                 y, x = args
-                sel_vals = all_v1_actgrads_sel[:, :, y, x].flatten()
-                rand_vals = all_v1_actgrads_rand[:, :, :, y, x].flatten()
+                sel_vals = all_v1_grads_sel[:, :, y, x].flatten()
+                rand_vals = all_v1_grads_rand[:, :, :, y, x].flatten()
                 obs, p = permutation_test(sel_vals, rand_vals, n_permutations=n_permutations, alternative='two-sided')
                 return y, x, obs, p
 
@@ -321,18 +339,15 @@ def main(cfg_path):
             })
             df.to_csv(diff_csv_path, index=False)
             print("Saved permutation test feature-map and CSV to", diff_csv_path)
-
-
-
-        
-
+            
         # Visualization
         plt.figure(figsize=(6,5))
         plt.imshow(obs_map, cmap="bwr", interpolation='nearest')
-        plt.title(f"V1 |act*grad| mean diff (selective - random, top_frac={top_frac})")
+        plt.title(f"V1 |grad| mean diff (selective - random, top_frac={top_frac})")
         plt.axis('off')
-        plt.colorbar(label="Mean(|act*grad|) diff")
-        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_actgrad_diff_perm.png", dpi=300)
+        plt.colorbar(label="Mean(|grad|) diff")
+        # Modified figure name
+        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_grad_diff_perm.png", dpi=300)
         plt.show()
 
         plt.figure(figsize=(6,5))
@@ -340,7 +355,8 @@ def main(cfg_path):
         plt.title(f"V1 permutation p-value map (selective vs random, top_frac={top_frac})")
         plt.axis('off')
         plt.colorbar(label="Permutation p-value")
-        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_perm_pval.png", dpi=300)
+        # Modified figure name
+        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_perm_pval_grad.png", dpi=300)
         plt.show()
 
 
