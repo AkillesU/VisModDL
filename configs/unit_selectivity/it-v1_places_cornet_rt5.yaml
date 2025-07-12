@@ -2,7 +2,7 @@
 selectivity_csv_dir: unit_selectivity
 category: places
 top_unit_selection: percentage
-top_frac: [0.01, 0.05, 0.1, 0.2, 0.5]
+top_frac: [ 0.1, 0.2, 0.5]
 category_images: categ_images_testset/places
 pixels_per_degree: None
 output_dir: it2v1_analysis
