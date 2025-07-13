@@ -104,6 +104,14 @@ def main(cfg_path):
     cfg = yaml.safe_load(open(cfg_path,'r'))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_random_repeats = cfg.get("n_random_repeats", 100)
+    try:
+        num_threads = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count()))
+    except TypeError:
+        # os.cpu_count() can return None, handle this case
+        num_threads = 1
+    
+    torch.set_num_threads(num_threads)
+    print(f"✅ PyTorch intra-op parallelism set to {torch.get_num_threads()} threads.")
 
     top_frac_cfg = cfg.get("top_frac", 0.1)
     if isinstance(top_frac_cfg, (float, int)):
