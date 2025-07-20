@@ -993,7 +993,7 @@ def run_damage(
                         only_conv=only_conv,
                         include_bias=include_bias
                     )
-                elif manipulation_method == "groupnorm_scaling": # <-- new call
+                elif manipulation_method == "groupnorm_scaling":
                     apply_groupnorm_scaling(
                         model,
                         scaling_factor=damage_level,
