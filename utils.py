@@ -1386,23 +1386,58 @@ def categ_corr_lineplot(
                             data[(layer, act_key, cat)][frac] = (mean, std, n)
                             raw_points[(layer, act_key, cat)][frac] = vals
 
-    # ------------ 5. optional percentage scaling --------------
+       # ------------ 5. optional percentage scaling --------------
     if percentage:
+        # --- helper: pick which damage fraction corresponds to the *intact* network
+        def _baseline_fraction(frac_keys, dmg_type):
+            """
+            Choose the damage level that will serve as the 100 % reference.
+
+            • For 'groupnorm_scaling' the network is intact at damage == 1.0.
+              If 1.0 is absent, pick the *largest* available fraction.
+
+            • For all other damage types the intact network is at damage == 0.0,
+              or more generally the *smallest* available fraction.
+            """
+            fracs = sorted(frac_keys)
+            if dmg_type == "groupnorm_scaling":
+                return 1.0 if 1.0 in fracs else fracs[-1]
+            return fracs[0]        # default: 0.0 or smallest
+
         for key in data:
             frac_dict = data[key]
             raw_dict  = raw_points[key]
             if not frac_dict:
                 continue
-            base_frac = sorted(frac_dict.keys())[0]
-            base_vals = np.array(raw_dict[base_frac], dtype=float)
+
+            # Pick the baseline and make sure we have raw values for it
+            base_frac = _baseline_fraction(frac_dict.keys(), damage_type)
+            if base_frac not in raw_dict or len(raw_dict[base_frac]) == 0:
+                # Nothing to scale against – skip this curve
+                continue
+
+            base_vals = np.asarray(raw_dict[base_frac], dtype=float)
+
+            # Convert every fraction to “% of baseline”
             for frac in frac_dict:
-                cur_vals = np.array(raw_dict[frac], dtype=float)
+                cur_vals = np.asarray(raw_dict[frac], dtype=float)
                 min_len  = min(len(base_vals), len(cur_vals))
-                ratio    = 100.0 * cur_vals[:min_len] / np.where(base_vals[:min_len]==0, np.nan, base_vals[:min_len])
-                frac_dict[frac] = (float(np.nanmean(ratio)),
-                                   float(np.nanstd(ratio)),
-                                   len(ratio))
-                raw_dict[frac]  = ratio.tolist()
+                if min_len == 0:
+                    continue
+
+                ratio = 100.0 * cur_vals[:min_len] / np.where(
+                            base_vals[:min_len] == 0,
+                            np.nan,
+                            base_vals[:min_len])
+
+                # Store percentage‑scaled stats
+                frac_dict[frac] = (
+                    float(np.nanmean(ratio)),
+                    float(np.nanstd(ratio)),
+                    len(ratio)
+                )
+                raw_dict[frac] = ratio.tolist()
+
 
     # ------------ 6. PLOT --------------------------------------
     plt.figure(figsize=(8, 6))
