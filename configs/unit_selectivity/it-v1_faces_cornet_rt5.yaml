@@ -2,7 +2,8 @@
 selectivity_csv_dir: unit_selectivity
 category: faces
 top_unit_selection: percentage
-top_frac: [0.9]
+top_frac: [0.5, 0.9]
+n_random_repeats: 10
 category_images: categ_images_testset/faces
 pixels_per_degree: None
 output_dir: it2v1_analysis
