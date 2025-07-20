@@ -880,29 +880,23 @@ def run_damage(
     pretrained,
     fraction_to_mask_params,
     noise_levels_params,
+    groupnorm_scaling_params,
     layer_paths_to_damage,
     apply_to_all_layers,
-    manipulation_method,          # "connections" or "noise"
+    manipulation_method,
     mc_permutations,
     layer_name,
     activation_layers_to_save,
     image_dir,
     only_conv,
     include_bias,
-    masking_level="connections",  #  ← NEW (keeps old behaviour by default)
+    masking_level="connections",
     run_suffix=""
 ):
     """
-    A merged run_damage that:
-      - Keeps  time_steps/run_suffix logic + per-image forward pass.
-      - Incorporates earliest-damaged-block logic so only hook layers that come at or after that block.
-      - Still uses an 'activations' dictionary, updated each time run a forward pass on a single image.
-      - Allows hooking multiple layers (activation_layers_to_save).
+    A merged run_damage that handles multiple manipulation methods.
     """
-
-    # -------------------------------------------------------------------------
     # SECTION 2: (Unchanged) Time steps & run_suffix from original code
-    # -------------------------------------------------------------------------
     if "time_steps" in model_info:
         time_steps = str(model_info['time_steps'])
     elif model_info['name'] == "cornet_rt":
@@ -913,24 +907,22 @@ def run_damage(
     # Keep original run_suffix logic
     run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
 
-    # -------------------------------------------------------------------------
-    # A) Determine the list of damage levels (same as before + optional temp load for noise_dict)
-    # -------------------------------------------------------------------------
+    # A) Determine the list of damage levels
     if manipulation_method == "connections":
         damage_levels_list = generate_params_list(fraction_to_mask_params)
-        noise_dict = None
+        noise_dict = None # Ensure noise_dict is not used for other methods
     elif manipulation_method == "noise":
         damage_levels_list = generate_params_list(noise_levels_params)
         # For noise, we do the original approach of loading a model once
         model, _ = load_model(model_info, pretrained=pretrained, layer_name="temp", layer_path="module._modules.V1._modules.output")
         noise_dict = get_params_sd(model)
-        
+    elif manipulation_method == "groupnorm_scaling": # <-- new branch
+        damage_levels_list = generate_params_list(groupnorm_scaling_params)
+        noise_dict = None # Ensure noise_dict is not used
     else:
-        raise ValueError("manipulation_method must be 'connections' or 'noise'.")
+        raise ValueError(f"manipulation_method '{manipulation_method}' is not recognized.")
 
-    # -------------------------------------------------------------------------
     # B) Identify earliest damaged block (new logic), filter activation layers
-    # -------------------------------------------------------------------------
     top_level_blocks_in_order = ["V1", "V2", "V4", "IT"]
     block_order_map = {b: i for i, b in enumerate(top_level_blocks_in_order)}
 
@@ -954,34 +946,28 @@ def run_damage(
     final_layers_to_hook = get_final_layers_to_hook(model,activation_layers_to_save,layer_paths_to_damage)
     
     print("Activations to be saved for ",layer_paths_to_damage, ": ", final_layers_to_hook)
-    # If final_layers_to_hook is empty, we won't really collect multi-layer activations,
-    # but we keep 'layer_name' for the old directory naming logic.
 
     total_iterations = len(damage_levels_list) * mc_permutations
 
-    # ------------------------------------------------------------------
-    # C)  Folder tag: 'noise', 'connections', or 'units'
-    # ------------------------------------------------------------------
+    # C)  Folder tag: 'noise', 'connections', 'units', or 'groupnorm_scaling'
     if manipulation_method == "noise":
         dir_tag = "noise"
     elif manipulation_method == "connections":
         dir_tag = "units" if masking_level == "units" else "connections"
+    elif manipulation_method == "groupnorm_scaling": # <-- new tag
+        dir_tag = "groupnorm_scaling"
     else:
         dir_tag = manipulation_method          # fallback, should not occur
 
-    # -------------------------------------------------------------------------
     # SECTION 4: (Kept) The original style: one forward pass per image.
-    #            We'll do it slightly adapted so we can handle multi-layer hooking
-    # -------------------------------------------------------------------------
-    with tqdm(total=total_iterations, desc="Running alteration") as pbar:
+    with tqdm(total=total_iterations, desc=f"Running {manipulation_method} alteration") as pbar:
         for damage_level in damage_levels_list:
             for permutation_index in range(mc_permutations):
                 # 1) Load fresh model & attach multi-hook
-                #    We'll store outputs in the original 'activations' dict but for multiple layers
                 model, activations = load_model(
                     model_info=model_info,
                     pretrained=pretrained,
-                    layer_name=layer_name,       # used for naming, but see note below
+                    layer_name=layer_name,
                     layer_path=final_layers_to_hook  # multi-layer hooking
                 )
                 model.eval()
@@ -997,7 +983,7 @@ def run_damage(
                         only_conv=only_conv,
                         include_bias=include_bias
                     )
-                else:  # "noise"
+                elif manipulation_method == "noise":
                     apply_noise(
                         model,
                         noise_level=damage_level,
@@ -1007,12 +993,16 @@ def run_damage(
                         only_conv=only_conv,
                         include_bias=include_bias
                     )
+                elif manipulation_method == "groupnorm_scaling": # <-- new call
+                    apply_groupnorm_scaling(
+                        model,
+                        scaling_factor=damage_level,
+                        layer_paths=layer_paths_to_damage,
+                        apply_to_all_layers=apply_to_all_layers,
+                        include_bias=include_bias
+                    )
 
                 # 3) Now we do the old "extract_activations" approach (one image at a time)
-                #    but we need multi-layer outputs. We'll do a custom loop similar to original code.
-
-                # We'll store each image's flattened activation in a dictionary-of-lists, e.g.:
-                #   per_layer_data = {layer_path: []}
                 per_layer_data = {lp: [] for lp in final_layers_to_hook}
 
                 image_files = [
@@ -1030,16 +1020,14 @@ def run_damage(
                         model(input_tensor)
 
                     # 'activations[lp]' is now the last image's output for that layer
-                    # We'll flatten & store in per_layer_data
                     for lp in final_layers_to_hook:
-                        out_flat = activations[lp].flatten()  # assume hooking updated this
+                        out_flat = activations[lp].flatten()
                         per_layer_data[lp].append(out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat)
 
                 # 4) For each layer, build a DataFrame, compute correlation, selectivity, and save
-                #    We'll keep the original directory structure: same as old, but insert 'lp' after RDM/selectivity etc.
                 for lp in final_layers_to_hook:
                     # build a 2D array [N_images, features]
-                    arr_2d = np.stack(per_layer_data[lp], axis=0)  # shape [N, F]
+                    arr_2d = np.stack(per_layer_data[lp], axis=0)
                     activations_df = pd.DataFrame(arr_2d, index=image_files)
 
                     # sort indices
@@ -1089,7 +1077,6 @@ def run_damage(
                 pbar.update(1)
 
     print("All damage permutations completed!")
-
 
 
 def get_sorted_filenames(image_dir):
@@ -3749,3 +3736,67 @@ def generate_category_selective_RDMs(
                 # save
                 with open(out_dir / pkl_fname.name, "wb") as f:
                     pickle.dump({'RDM': R, 'image_names': image_names}, f)
+
+
+def get_all_groupnorm_layers(model, base_path=""):
+    """
+    Recursively find all submodules under `model` that are nn.GroupNorm,
+    returning a list of layer paths.
+
+    Parameters:
+        model (nn.Module): The model or module to search.
+        base_path (str): The starting path.
+
+    Returns:
+        List[str]: A list of dot-separated paths to each GroupNorm module.
+    """
+    gn_layers = []
+
+    # If the current module itself is a GroupNorm, record its path
+    if isinstance(model, nn.GroupNorm):
+        gn_layers.append(base_path)
+        # We don't need to recurse further into a GroupNorm layer
+        return gn_layers
+
+    # Otherwise, recurse into children
+    for name, submodule in model._modules.items():
+        if submodule is None:
+            continue
+        if base_path == "":
+            new_path = name
+        else:
+            # Note: Preserving the original pathing style from your code
+            new_path = base_path + "._modules." + name
+
+        gn_layers.extend(get_all_groupnorm_layers(submodule, new_path))
+
+    return gn_layers
+
+
+def apply_groupnorm_scaling(model, scaling_factor, layer_paths=None, apply_to_all_layers=False, include_bias=False):
+    """
+    Scale the weights and biases of GroupNorm layers by a given factor.
+    """
+    with torch.no_grad():
+        if apply_to_all_layers:
+            # Get all GroupNorm layers in the entire model
+            all_gn_paths = get_all_groupnorm_layers(model)
+            for path in all_gn_paths:
+                target_layer = get_layer_from_path(model, path)
+                if hasattr(target_layer, 'weight') and target_layer.weight is not None:
+                    target_layer.weight.data.mul_(scaling_factor)
+                if include_bias and hasattr(target_layer, 'bias') and target_layer.bias is not None:
+                    target_layer.bias.data.mul_(scaling_factor)
+        else:
+            # Apply only to specified layer paths
+            for path in layer_paths:
+                # Find all GroupNorm layers within the provided path (e.g., within a block like V1)
+                module_to_search = get_layer_from_path(model, path)
+                gn_layer_paths_within_module = get_all_groupnorm_layers(module_to_search, path)
+
+                for gn_path in gn_layer_paths_within_module:
+                    gn_layer = get_layer_from_path(model, gn_path)
+                    if hasattr(gn_layer, 'weight') and gn_layer.weight is not None:
+                        gn_layer.weight.data.mul_(scaling_factor)
+                    if include_bias and hasattr(gn_layer, 'bias') and gn_layer.bias is not None:
+                        gn_layer.bias.data.mul_(scaling_factor)
