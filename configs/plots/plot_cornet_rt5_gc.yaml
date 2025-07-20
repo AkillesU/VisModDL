@@ -51,7 +51,8 @@ tasks:
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
-      layers: ["V1","V2","V4","IT"]
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
       damage_type: "groupnorm_scaling"
       categories: ["total"]
       metric: "observed_difference"
@@ -60,7 +61,8 @@ tasks:
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
-      layers: ["V1","V2","V4","IT"]
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
       damage_type: "groupnorm_scaling"
       categories: ["total"]
       metric: "observed_difference"
