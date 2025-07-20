@@ -12,6 +12,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      flip_x_axis: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
@@ -24,6 +25,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      flip_x_axis: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
@@ -36,6 +38,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      flip_x_axis: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
@@ -48,6 +51,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      flip_x_axis: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
@@ -58,6 +62,8 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       ylim: [0,0.25]
+      flip_x_axis: True
+      data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
@@ -69,6 +75,8 @@ tasks:
       verbose: 0
       percentage: True
       ylim: [-15,105]
+      data_type: "selectivity"
+      flip_x_axis: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
@@ -81,6 +89,7 @@ tasks:
       percentage: False
       ylim: [-0.1,0.5]
       data_type: "selectivity"
+      flip_x_axis: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
@@ -93,6 +102,7 @@ tasks:
       percentage: False
       ylim: [-0.1,0.5]
       data_type: "selectivity"
+      flip_x_axis: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
@@ -105,6 +115,7 @@ tasks:
       percentage: False
       ylim: [-0.1,0.5]
       data_type: "selectivity"
+      flip_x_axis: True
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
@@ -117,3 +128,4 @@ tasks:
       percentage: False
       ylim: [-0.1,0.5]
       data_type: "selectivity"
+      flip_x_axis: True
