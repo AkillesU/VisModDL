@@ -1,0 +1,117 @@
+subdir: "cornet_rt5_c/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      ylim: [-15,105]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V2"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      ylim: [-15,105]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V4"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      ylim: [-15,105]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      ylim: [-15,105]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "groupnorm_scaling"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      ylim: [0,0.25]
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      layers: ["V1","V2","V4","IT"]
+      damage_type: "groupnorm_scaling"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      ylim: [-15,105]
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V2"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V4"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
