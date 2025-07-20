@@ -1141,35 +1141,23 @@ def categ_corr_lineplot(
     activations_layers,
     damage_type,
     main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
-    categories=("overall",),              # default for imagenet
-    metric="observed_difference",          # or "top1"/"top5" for imagenet
+    categories=("overall",),
+    metric="observed_difference",
     subdir_regex=r"damaged_([\d\.]+)$",
     plot_dir="plots/",
-    data_type="selectivity",               # "selectivity" | "svm_15" | "imagenet"
+    data_type="selectivity",
     scatter=False,
     verbose=0,
     ylim=None,
     percentage=False,
     selectivity_fraction: float|None = None,
     selection_mode: str = "percentage",
-    selectivity_file: str|None   = "unit_selectivity/all_layers_units_mannwhitneyu.pkl"):
+    selectivity_file: str|None   = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
+    flip_x_axis=False  # <-- New argument
+):
     """
     Aggregate replicate files into mean±std curves.
-
-    data_type == "selectivity"  -> original within-between correlation
-    data_type.startswith("svm") -> original SVM accuracy
-    data_type == "imagenet"     -> this NEW branch, needs .pkl of form
-            { "overall": {"top1": .., "top5": ..},
-                "classes": { cls_idx: {"top1": .., "top5": ..}, ... } }
-
-    categories
-    ----------
-    selectivity / svm : list[str]   ("animal","face",...) total
-    imagenet          : iterable of
-       "overall"                → use content["overall"][metric]
-       int 0-999 (or str digit) → use per-class entry
     """
-
     # ------------ 1. choose data sub-folder --------------------
     if data_type in ("selectivity",) or data_type.startswith("svm"):
         data_subfolder = data_type
@@ -1446,6 +1434,12 @@ def categ_corr_lineplot(
     plt.title(f"{data_type} vs damage — {damage_type}")
     if ylim: plt.ylim(ylim)
     plt.legend()
+
+    # <-- New feature
+    if flip_x_axis:
+        plt.gca().invert_xaxis()
+    # <-- End new feature
+
     plt.tight_layout()
 
     os.makedirs(plot_dir, exist_ok=True)
