@@ -104,14 +104,20 @@ def main(cfg_path):
     cfg = yaml.safe_load(open(cfg_path,'r'))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_random_repeats = cfg.get("n_random_repeats", 100)
-    try:
-        num_threads = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count()))
-    except TypeError:
-        # os.cpu_count() can return None, handle this case
-        num_threads = 1
+
+    if torch.cuda.is_available() is False:
+        try:
+            num_threads = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count()))
+        except TypeError:
+            # os.cpu_count() can return None, handle this case
+            num_threads = 1
+
+        torch.set_num_threads(num_threads)
+        print(f"✅ PyTorch intra-op parallelism set to {torch.get_num_threads()} threads.")
+    else:
+        print("Using: ", torch.DeviceObjType)
     
-    torch.set_num_threads(num_threads)
-    print(f"✅ PyTorch intra-op parallelism set to {torch.get_num_threads()} threads.")
+
 
     top_frac_cfg = cfg.get("top_frac", 0.1)
     if isinstance(top_frac_cfg, (float, int)):
@@ -231,35 +237,130 @@ def main(cfg_path):
                 p_map_bonf = df['bonferroni_p_value'].values.reshape(Hf, Wf)
             else:
                 raise ValueError("Existing results file does not contain permutation test results. Please delete the file and rerun.")
+        elif os.path.exists(f"{outdir}/activations_{cat}_{top_frac}_{mode}_grad/"):
+            print(f"Found existing activation gradients at {outdir}/activations_{cat}_{top_frac}_{mode}_grad/, loading...")
+            all_v1_grads_sel = np.load(f"{outdir}/activations_{cat}_{top_frac}_{mode}_grad/grads_selective.npy")
+            all_v1_grads_rand = [np.load(f"{outdir}/activations_{cat}_{top_frac}_{mode}_grad/grads_random_{rep}.npy") for rep in range(n_random_repeats)]
+            print(f"Loaded {len(all_v1_grads_rand)} random repeats.")
+            all_v1_grads_rand = np.stack(all_v1_grads_rand)
+            N, C, Hf, Wf = all_v1_grads_sel.shape
+            R = n_random_repeats
+
+            n_permutations = 10000  # or as needed
+            obs_map = np.zeros((Hf, Wf), dtype=np.float32)
+            p_map = np.zeros((Hf, Wf), dtype=np.float32)
+
+            def perm_test_at_loc(args):
+                y, x = args
+                sel_vals = all_v1_grads_sel[:, :, y, x].flatten()
+                rand_vals = all_v1_grads_rand[:, :, :, y, x].flatten()
+                obs, p = permutation_test(sel_vals, rand_vals, n_permutations=n_permutations, alternative='two-sided')
+                return y, x, obs, p
+
+            coords = [(y, x) for y in range(Hf) for x in range(Wf)]
+
+            print("Running permutation test for each V1 unit (multi-threaded)...")
+            with ThreadPoolExecutor() as executor:
+                futures = [executor.submit(perm_test_at_loc, coord) for coord in coords]
+                for fut in tqdm(as_completed(futures), total=len(futures), desc="Permutation test"):
+                    y, x, obs, p = fut.result()
+                    obs_map[y, x] = obs
+                    p_map[y, x] = p
+
+            # Bonferroni correction
+            n_tests = 1 # TODO: See if there's a better way to do this
+            p_map_bonf = np.minimum(p_map * n_tests, 1.0) # Check out
+            rej_map_bonf = p_map_bonf < 0.05  # or your chosen alpha
+
+            # Save results
+            df = pd.DataFrame({
+                'fy': np.repeat(np.arange(Hf), Wf),
+                'fx': np.tile(np.arange(Wf), Hf),
+                'mean_diff': obs_map.flatten(),
+                'permutation_p_value': p_map.flatten(),
+                'bonferroni_p_value': p_map_bonf.flatten(),
+                'bonferroni_significant': rej_map_bonf.flatten()
+            })
+            df.to_csv(diff_csv_path, index=False)
+            print("Saved permutation test feature-map and CSV to", diff_csv_path)
 
         else:
             
-            print("Computing mean |gradient| for selective IT units...")
+            print("Computing mean |gradient| for selective IT units (parallelized)...")
             all_v1_grads_sel = []
-            for img in tqdm(imgs, desc="Images (selective)"):
+
+            def compute_v1_grad_for_unit(args):
+                img, x, model, layer_out, layer_grad, unit = args
+                name, c, y, x_coord = unit
+                layer_out.clear(); layer_grad.clear()
+                model.zero_grad()
+                _ = model(x)
+                act = layer_out[name]
+                if isinstance(act, tuple):
+                    act = act[0]
+                loss = act[:, c, y, x_coord].sum()
+                loss.backward()
+                v1_gr = layer_grad["module.V1.nonlin_input"][0].cpu().numpy()
+                return np.abs(v1_gr)
+
+            # 1. Prepare model instances and hooks for each thread
+            max_workers = torch.get_num_threads()
+            model_pool = [load_model(cfg["model"], device) for _ in range(max_workers)]
+
+            def setup_hooks(model):
+                v1 = dict(model.named_modules())["module.V1.nonlin_input"]
+                it_v1_names = ["module.IT", "module.V1.nonlin_input"]
+                layer_out = {}
+                layer_grad = {}
+
+                def save_out(name):
+                    def hook(_mod, _in, out):
+                        layer_out[name] = out
+                    return hook
+                def save_grad(name):
+                    def hook(grad): layer_grad[name]=grad
+                    return hook
+
+                for name, mod in model.named_modules():
+                    if name in it_v1_names:
+                        mod.register_forward_hook(save_out(name))
+                def v1_hook(m, inp, out):
+                    out.register_hook(save_grad("module.V1.nonlin_input"))
+                v1.register_forward_hook(v1_hook)
+                return layer_out, layer_grad
+
+            hook_pool = [setup_hooks(model) for model in model_pool]
+
+            # 2. Define the image processing function
+            def process_image(args):
+                img, model, layer_out, layer_grad = args
                 x = tfm(img).unsqueeze(0).to(device)
-                
-                # For each image, get gradients from each selective IT unit
                 single_img_v1_grads = []
                 for (name, c, y, x_coord) in top_units:
                     layer_out.clear(); layer_grad.clear()
                     model.zero_grad()
                     _ = model(x)
-                    
-                    # Define loss as the activation of a SINGLE IT unit
                     act = layer_out[name]
                     if isinstance(act, tuple):
                         act = act[0]
                     loss = act[:, c, y, x_coord].sum()
                     loss.backward()
-                    
                     v1_gr = layer_grad["module.V1.nonlin_input"][0].cpu().numpy()
                     single_img_v1_grads.append(np.abs(v1_gr))
-                
-                # Aggregate gradients for this image by taking the mean across all IT units
                 mean_grad_map = np.mean(np.stack(single_img_v1_grads), axis=0)
-                all_v1_grads_sel.append(mean_grad_map)
-                
+                return mean_grad_map
+
+            # 3. Assign each image to a thread/model
+            img_args = []
+            for i, img in enumerate(imgs):
+                model_idx = i % max_workers
+                layer_out, layer_grad = hook_pool[model_idx]
+                img_args.append((img, model_pool[model_idx], layer_out, layer_grad))
+
+            # 4. Parallel execution
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                all_v1_grads_sel = list(tqdm(executor.map(process_image, img_args), total=len(imgs), desc="Images (selective)"))
+
             all_v1_grads_sel = np.stack(all_v1_grads_sel)  # [N, C, H, W]
 
             print(f"Computing mean |gradient| for {n_random_repeats} random IT unit sets...")
@@ -310,7 +411,7 @@ def main(cfg_path):
             N, C, Hf, Wf = all_v1_grads_sel.shape
             R = n_random_repeats
 
-            n_permutations = 1000  # or as needed
+            n_permutations = 10000  # or as needed
             obs_map = np.zeros((Hf, Wf), dtype=np.float32)
             p_map = np.zeros((Hf, Wf), dtype=np.float32)
 
@@ -332,8 +433,8 @@ def main(cfg_path):
                     p_map[y, x] = p
 
             # Bonferroni correction
-            n_tests = Hf * Wf
-            p_map_bonf = np.minimum(p_map * n_tests, 1.0)
+            n_tests = 1 # TODO: See if there's a better way to do this
+            p_map_bonf = np.minimum(p_map * n_tests, 1.0) # Check out
             rej_map_bonf = p_map_bonf < 0.05  # or your chosen alpha
 
             # Save results
