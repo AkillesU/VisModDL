@@ -45,7 +45,11 @@ def main():
     include_bias = config.get("include_bias", False)
     only_conv = config.get("only_conv", True)
     # Add the new parameter for GroupNorm scaling
-    groupnorm_scaling_params = config.get("groupnorm_scaling", [1.0, 1, 0.0]) # <-- new
+    groupnorm_scaling_params = config.get("groupnorm_scaling", [1.0, 1, 0.0])
+    groupnorm_scaling_targets = config.get(
+    "groupnorm_scaling_targets",
+    ["groupnorm"]                   
+)
     # -----------------------------------------------------------------------
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -104,7 +108,8 @@ def main():
         image_dir=image_dir,
         only_conv=only_conv,
         include_bias=include_bias,
-        masking_level=masking_level
+        masking_level=masking_level,
+        groupnorm_scaling_targets = groupnorm_scaling_targets
     )
     
 if __name__ == "__main__":

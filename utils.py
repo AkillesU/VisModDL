@@ -890,6 +890,7 @@ def run_damage(
     image_dir,
     only_conv,
     include_bias,
+    groupnorm_scaling_targets,
     masking_level="connections",
     run_suffix=""
 ):
@@ -955,7 +956,11 @@ def run_damage(
     elif manipulation_method == "connections":
         dir_tag = "units" if masking_level == "units" else "connections"
     elif manipulation_method == "groupnorm_scaling": # <-- new tag
-        dir_tag = "groupnorm_scaling"
+        # ---- build a concise tag “g”, “c”, or “g+c” -----------------
+        _map = {"groupnorm": "g", "conv": "c"}
+        sel  = [_map[t] for t in sorted(set(groupnorm_scaling_targets))]
+        targ_tag = "+".join(sel)
+        dir_tag  = f"groupnorm_scaling_{targ_tag}"
     else:
         dir_tag = manipulation_method          # fallback, should not occur
 
@@ -999,7 +1004,8 @@ def run_damage(
                         scaling_factor=damage_level,
                         layer_paths=layer_paths_to_damage,
                         apply_to_all_layers=apply_to_all_layers,
-                        include_bias=include_bias
+                        include_bias=include_bias,
+                        targets = groupnorm_scaling_targets
                     )
 
                 # 3) Now we do the old "extract_activations" approach (one image at a time)
@@ -3805,30 +3811,69 @@ def get_all_groupnorm_layers(model, base_path=""):
     return gn_layers
 
 
-def apply_groupnorm_scaling(model, scaling_factor, layer_paths=None, apply_to_all_layers=False, include_bias=False):
+# REPLACE the whole former apply_groupnorm_scaling definition with:
+def apply_groupnorm_scaling(
+    model: nn.Module,
+    scaling_factor: float,
+    *,
+    layer_paths: Sequence[str] | None = None,
+    apply_to_all_layers: bool = False,
+    include_bias: bool = False,
+    # NEW ------------------------------------------------------------------
+    targets: Sequence[str] = ("groupnorm",),
+    # Accept any combination of {"groupnorm", "conv"}
+) -> None:
     """
-    Scale the weights and biases of GroupNorm layers by a given factor.
+    Multiply weights (and optional biases) by *scaling_factor*.
+
+    Parameters
+    ----------
+    targets
+        Which layer classes to scale inside the chosen block(s):
+        ``"groupnorm"`` → nn.GroupNorm only,
+        ``"conv"``      → nn.Conv2d only,
+        ``("groupnorm","conv")`` → both.
+    All other arguments keep their former meaning.
     """
+    do_gn  = "groupnorm" in targets
+    do_conv= "conv"      in targets
+    if not (do_gn or do_conv):
+        return                                             # nothing to do
+
+    # Helper that returns local paths for the selected types ----------------
+    def _collect_targets(root_mod: nn.Module, root_path: str):
+        paths = []
+        if do_gn:
+            paths += get_all_groupnorm_layers(root_mod, root_path)
+        if do_conv:
+            paths += get_all_conv_layers(root_mod, root_path, include_bias)
+        return paths
+
+    # ------------------------- main logic ---------------------------------
     with torch.no_grad():
         if apply_to_all_layers:
-            # Get all GroupNorm layers in the entire model
-            all_gn_paths = get_all_groupnorm_layers(model)
-            for path in all_gn_paths:
-                target_layer = get_layer_from_path(model, path)
-                if hasattr(target_layer, 'weight') and target_layer.weight is not None:
-                    target_layer.weight.data.mul_(scaling_factor)
-                if include_bias and hasattr(target_layer, 'bias') and target_layer.bias is not None:
-                    target_layer.bias.data.mul_(scaling_factor)
+            # walk the whole model
+            for p in _collect_targets(model, ""):
+                _scale_module_(get_layer_from_path(model, p),
+                               scaling_factor, include_bias)
         else:
-            # Apply only to specified layer paths
-            for path in layer_paths:
-                # Find all GroupNorm layers within the provided path (e.g., within a block like V1)
-                module_to_search = get_layer_from_path(model, path)
-                gn_layer_paths_within_module = get_all_groupnorm_layers(module_to_search, path)
+            # only inside the user‑specified block(s)
+            for block in (layer_paths or []):
+                submod = get_layer_from_path(model, block)
+                for p in _collect_targets(submod, block):
+                    _scale_module_(get_layer_from_path(model, p),
+                                   scaling_factor, include_bias)
 
-                for gn_path in gn_layer_paths_within_module:
-                    gn_layer = get_layer_from_path(model, gn_path)
-                    if hasattr(gn_layer, 'weight') and gn_layer.weight is not None:
-                        gn_layer.weight.data.mul_(scaling_factor)
-                    if include_bias and hasattr(gn_layer, 'bias') and gn_layer.bias is not None:
-                        gn_layer.bias.data.mul_(scaling_factor)
+
+
+def _scale_module_(module: nn.Module,
+                   factor: float,
+                   include_bias: bool = False) -> None:
+    """
+    In‑place multiply the weight (and optionally bias) tensor of *module*.
+    Does nothing if the tensor is missing or `None`.
+    """
+    if hasattr(module, "weight") and module.weight is not None:
+        module.weight.data.mul_(factor)
+    if include_bias and hasattr(module, "bias") and module.bias is not None:
+        module.bias.data.mul_(factor)
