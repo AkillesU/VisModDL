@@ -227,16 +227,36 @@ def main(cfg_path):
 
         # === Check for existing results ===
         if os.path.exists(diff_csv_path):
-            print(f"Found existing results at {diff_csv_path}, loading...")
+            print(f"Found existing results at {diff_csv_path}, loading…")
             df = pd.read_csv(diff_csv_path)
-            Hf = df['fy'].max() + 1
-            Wf = df['fx'].max() + 1
-            if 'mean_diff' in df.columns and 'permutation_p_value' in df.columns:
-                obs_map = df['mean_diff'].values.reshape(Hf, Wf)
-                p_map = df['permutation_p_value'].values.reshape(Hf, Wf)
-                p_map_bonf = df['bonferroni_p_value'].values.reshape(Hf, Wf)
+            Hf = df["fy"].max() + 1
+            Wf = df["fx"].max() + 1
+            activ_dir_path = pathlib.Path(outdir) / f"activations_{cat}_{top_frac}_{mode}_grad"
+            have_grad_files = activ_dir_path.exists()
+
+            # ---- mandatory column ----
+            obs_map = df["mean_diff"].values.reshape(Hf, Wf)
+            mean_diff_vec  = obs_map.ravel()  
+
+            # ---- effect‑size map -----------------------------------------
+            if "cliffs_delta" in df.columns:
+                delta_map = df["cliffs_delta"].values.reshape(Hf, Wf)
+            else:                       # legacy files had no Cliff’s δ
+                delta_map = None
+
+            # ---- significance / p‑value handling -------------------------
+            if "fdr_q_value" in df.columns:             # new schema
+                q_map    = df["fdr_q_value"].values.reshape(Hf, Wf)
+                sig_mask = df["significant_fdr"].astype(bool).values.reshape(Hf, Wf)
+            elif "bonferroni_p_value" in df.columns:    # very old schema
+                q_map    = df["bonferroni_p_value"].values.reshape(Hf, Wf)
+                sig_mask = (q_map < 0.05)
             else:
-                raise ValueError("Existing results file does not contain permutation test results. Please delete the file and rerun.")
+                raise ValueError(
+                    "CSV exists but does not contain recognised significance columns "
+                    "(expected 'fdr_q_value' or 'bonferroni_p_value'). "
+                    "Delete the file and rerun to regenerate."
+                )
         elif os.path.exists(f"{outdir}/activations_{cat}_{top_frac}_{mode}_grad/"):
             print(f"Found existing activation gradients at {outdir}/activations_{cat}_{top_frac}_{mode}_grad/, loading...")
             all_v1_grads_sel = np.load(f"{outdir}/activations_{cat}_{top_frac}_{mode}_grad/grads_selective.npy")
@@ -246,43 +266,56 @@ def main(cfg_path):
             N, C, Hf, Wf = all_v1_grads_sel.shape
             R = n_random_repeats
 
-            n_permutations = 10000  # or as needed
-            obs_map = np.zeros((Hf, Wf), dtype=np.float32)
-            p_map = np.zeros((Hf, Wf), dtype=np.float32)
+            def cliffs_delta(a: np.ndarray, b: np.ndarray) -> float:
+                """
+                Cliff’s δ for two 1‑D vectors (uses pairwise compare, still fast for <10⁴ items).
+                Range −1‥+1.  Positive ⇒ selective > random.
+                """
+                a = a.ravel();  b = b.ravel()
+                gt = (a[:, None] > b).sum()
+                lt = (a[:, None] < b).sum()
+                return (gt - lt) / (len(a) * len(b) + 1e-12)
 
-            def perm_test_at_loc(args):
-                y, x = args
-                sel_vals = all_v1_grads_sel[:, :, y, x].flatten()
-                rand_vals = all_v1_grads_rand[:, :, :, y, x].flatten()
-                obs, p = permutation_test(sel_vals, rand_vals, n_permutations=n_permutations, alternative='two-sided')
-                return y, x, obs, p
+            # ----- flatten sample axes so every voxel is a column -------------
+            sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)      # [M_sel , H*W]
+            rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)      # [M_rand, H*W]
 
-            coords = [(y, x) for y in range(Hf) for x in range(Wf)]
+            mean_diff_vec  = np.empty(Hf * Wf, dtype=np.float32)
+            cliff_vec      = np.empty(Hf * Wf, dtype=np.float32)
+            p_vec          = np.empty(Hf * Wf, dtype=np.float64)
 
-            print("Running permutation test for each V1 unit (multi-threaded)...")
-            with ThreadPoolExecutor() as executor:
-                futures = [executor.submit(perm_test_at_loc, coord) for coord in coords]
-                for fut in tqdm(as_completed(futures), total=len(futures), desc="Permutation test"):
-                    y, x, obs, p = fut.result()
-                    obs_map[y, x] = obs
-                    p_map[y, x] = p
+            for i in tqdm(range(Hf * Wf), desc="voxel stats"):
+                a = sel_flat[:, i]
+                b = rand_flat[:, i]
 
-            # Bonferroni correction
-            n_tests = 1 # TODO: See if there's a better way to do this
-            p_map_bonf = np.minimum(p_map * n_tests, 1.0) # Check out
-            rej_map_bonf = p_map_bonf < 0.05  # or your chosen alpha
+                mean_diff_vec[i] = a.mean() - b.mean()
+                cliff_vec[i]     = cliffs_delta(a, b)
+                p_vec[i]         = mannwhitneyu(a, b, alternative='two-sided').pvalue
 
-            # Save results
+            # FDR (Benjamini‑Hochberg) correction ------------------------------
+            rej, q_vec, _, _ = multipletests(p_vec, alpha=0.05, method='fdr_bh')
+
+            # reshape back to (H, W) ------------------------------------------
+            obs_map   = mean_diff_vec.reshape(Hf, Wf)
+            delta_map = cliff_vec.reshape(Hf, Wf)
+            q_map     = q_vec.reshape(Hf, Wf)
+            sig_mask  = rej.reshape(Hf, Wf)
+
+            # ─────────── save CSV (so future runs can reuse) ────────────────
             df = pd.DataFrame({
-                'fy': np.repeat(np.arange(Hf), Wf),
-                'fx': np.tile(np.arange(Wf), Hf),
-                'mean_diff': obs_map.flatten(),
-                'permutation_p_value': p_map.flatten(),
-                'bonferroni_p_value': p_map_bonf.flatten(),
-                'bonferroni_significant': rej_map_bonf.flatten()
+                'fy'               : np.repeat(np.arange(Hf), Wf),
+                'fx'               : np.tile  (np.arange(Wf), Hf),
+                'mean_diff'        : mean_diff_vec,
+                'cliffs_delta'     : cliff_vec,
+                'mw_p_value'       : p_vec,
+                'fdr_q_value'      : q_vec,
+                'significant_fdr'  : rej.astype(int)
             })
             df.to_csv(diff_csv_path, index=False)
-            print("Saved permutation test feature-map and CSV to", diff_csv_path)
+            print("Saved Cliff’s δ & FDR stats →", diff_csv_path)
+
+            
+
 
         else:
             
@@ -408,63 +441,136 @@ def main(cfg_path):
             for rep in range(len(all_v1_grads_rand)):
                 np.save(str(activ_dir_path / f"grads_random_{rep}.npy"), all_v1_grads_rand[rep])
 
-            N, C, Hf, Wf = all_v1_grads_sel.shape
-            R = n_random_repeats
+            # ──────────────────────────────────────────────────────────────────
+            # NEW voxel‑wise statistics: mean‑difference, Cliff’s δ, M‑W + FDR
+            # ──────────────────────────────────────────────────────────────────
+            
 
-            n_permutations = 10000  # or as needed
-            obs_map = np.zeros((Hf, Wf), dtype=np.float32)
-            p_map = np.zeros((Hf, Wf), dtype=np.float32)
+            def cliffs_delta(a: np.ndarray, b: np.ndarray) -> float:
+                """
+                Cliff’s δ for two 1‑D vectors (uses pairwise compare, still fast for <10⁴ items).
+                Range −1‥+1.  Positive ⇒ selective > random.
+                """
+                a = a.ravel();  b = b.ravel()
+                gt = (a[:, None] > b).sum()
+                lt = (a[:, None] < b).sum()
+                return (gt - lt) / (len(a) * len(b) + 1e-12)
 
-            def perm_test_at_loc(args):
-                y, x = args
-                sel_vals = all_v1_grads_sel[:, :, y, x].flatten()
-                rand_vals = all_v1_grads_rand[:, :, :, y, x].flatten()
-                obs, p = permutation_test(sel_vals, rand_vals, n_permutations=n_permutations, alternative='two-sided')
-                return y, x, obs, p
+            # ----- flatten sample axes so every voxel is a column -------------
+            sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)      # [M_sel , H*W]
+            rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)      # [M_rand, H*W]
 
-            coords = [(y, x) for y in range(Hf) for x in range(Wf)]
+            mean_diff_vec  = np.empty(Hf * Wf, dtype=np.float32)
+            cliff_vec      = np.empty(Hf * Wf, dtype=np.float32)
+            p_vec          = np.empty(Hf * Wf, dtype=np.float64)
 
-            print("Running permutation test for each V1 unit (multi-threaded)...")
-            with ThreadPoolExecutor() as executor:
-                futures = [executor.submit(perm_test_at_loc, coord) for coord in coords]
-                for fut in tqdm(as_completed(futures), total=len(futures), desc="Permutation test"):
-                    y, x, obs, p = fut.result()
-                    obs_map[y, x] = obs
-                    p_map[y, x] = p
+            for i in tqdm(range(Hf * Wf), desc="voxel stats"):
+                a = sel_flat[:, i]
+                b = rand_flat[:, i]
 
-            # Bonferroni correction
-            n_tests = 1 # TODO: See if there's a better way to do this
-            p_map_bonf = np.minimum(p_map * n_tests, 1.0) # Check out
-            rej_map_bonf = p_map_bonf < 0.05  # or your chosen alpha
+                mean_diff_vec[i] = a.mean() - b.mean()
+                cliff_vec[i]     = cliffs_delta(a, b)
+                p_vec[i]         = mannwhitneyu(a, b, alternative='two-sided').pvalue
 
-            # Save results
+            # FDR (Benjamini‑Hochberg) correction ------------------------------
+            rej, q_vec, _, _ = multipletests(p_vec, alpha=0.05, method='fdr_bh')
+
+            # reshape back to (H, W) ------------------------------------------
+            obs_map   = mean_diff_vec.reshape(Hf, Wf)
+            delta_map = cliff_vec.reshape(Hf, Wf)
+            q_map     = q_vec.reshape(Hf, Wf)
+            sig_mask  = rej.reshape(Hf, Wf)
+
+            # ─────────── save CSV (so future runs can reuse) ────────────────
             df = pd.DataFrame({
-                'fy': np.repeat(np.arange(Hf), Wf),
-                'fx': np.tile(np.arange(Wf), Hf),
-                'mean_diff': obs_map.flatten(),
-                'permutation_p_value': p_map.flatten(),
-                'bonferroni_p_value': p_map_bonf.flatten(),
-                'bonferroni_significant': rej_map_bonf.flatten()
+                'fy'               : np.repeat(np.arange(Hf), Wf),
+                'fx'               : np.tile  (np.arange(Wf), Hf),
+                'mean_diff'        : mean_diff_vec,
+                'cliffs_delta'     : cliff_vec,
+                'mw_p_value'       : p_vec,
+                'fdr_q_value'      : q_vec,
+                'significant_fdr'  : rej.astype(int)
             })
             df.to_csv(diff_csv_path, index=False)
-            print("Saved permutation test feature-map and CSV to", diff_csv_path)
-            
-        # Visualization
+            print("Saved Cliff’s δ & FDR stats →", diff_csv_path)
+
+           
+
+            print(f"Saved {num_voxels_to_plot} voxel histograms ➜ {outdir}")
+
+        # ──────────────── PLOTS ─────────────────────────────────────────
         plt.figure(figsize=(6,5))
         plt.imshow(obs_map, cmap="bwr", interpolation='nearest')
-        plt.title(f"V1 |grad| mean diff (selective - random, top_frac={top_frac})")
+        plt.title(f"Mean |grad| diff  (sel−rand, top_frac={top_frac})")
         plt.axis('off')
-        plt.colorbar(label="Mean(|grad|) diff")
-        # Modified figure name
-        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_grad_diff_perm.png", dpi=300)
+        plt.colorbar(label="Δ |grad|")
+        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_A_mean_diff.png", dpi=300)
 
+        # Cliff’s δ – show only significant voxels (others as NaN/white)
+        delta_plot = np.where(sig_mask, delta_map, np.nan)
         plt.figure(figsize=(6,5))
-        plt.imshow(p_map_bonf, cmap="viridis", interpolation='nearest', vmin=0, vmax=1)
-        plt.title(f"V1 permutation p-value map (selective vs random, top_frac={top_frac})")
+        plt.imshow(delta_plot, cmap="bwr", vmin=-1, vmax=1, interpolation='nearest')
+        plt.title("Cliff’s δ (FDR < 0.05)")
         plt.axis('off')
-        plt.colorbar(label="Permutation p-value")
-        # Modified figure name
-        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_perm_pval_grad.png", dpi=300)
+        plt.colorbar(label="Cliff’s δ")
+        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_B_cliffs_delta.png", dpi=300)
+
+        # –log10(q) significance map, same mask
+        q = q_map
+        q[~sig_mask] = np.nan
+        plt.figure(figsize=(6,5))
+        plt.imshow(q, cmap="viridis", interpolation='nearest')
+        plt.title("FDR q")
+        plt.axis('off')
+        plt.colorbar(label="q")
+        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_C_q.png", dpi=300)
+
+        # ───────── DIAGNOSTIC HISTOGRAMS ───────────────────────
+        # How many voxels to visualise
+
+        if ("all_v1_grads_sel" not in locals() or all_v1_grads_sel is None) and have_grad_files:
+                print("Loading raw gradient arrays for histogram plotting …")
+                all_v1_grads_sel = np.load(activ_dir_path / "grads_selective.npy")
+                all_v1_grads_rand = np.stack([
+                    np.load(activ_dir_path / f"grads_random_{rep}.npy")
+                    for rep in range(n_random_repeats)
+                ])
+        if "all_v1_grads_sel" in locals() and all_v1_grads_sel is not None:
+            num_voxels_to_plot = 10
+            flat_idx = np.argsort(-np.abs(mean_diff_vec))[:num_voxels_to_plot]
+            coords_to_plot = [(idx // Wf, idx % Wf) for idx in flat_idx]
+
+            for (y, x) in coords_to_plot:
+                sel_vals  = all_v1_grads_sel[:, :, y, x].ravel()
+                rand_vals = all_v1_grads_rand[:, :, :, y, x].ravel()
+
+                eps = 1e-8  # avoid zeros on log‑scale
+                sel_vals += eps
+                rand_vals += eps
+
+                plt.figure(figsize=(4,3))
+                bins = np.logspace(
+                    np.log10(min(sel_vals.min(), rand_vals.min())),
+                    np.log10(max(sel_vals.max(), rand_vals.max())),
+                    50
+                )
+                plt.hist(rand_vals, bins=bins, alpha=0.5, label="random",   density=True)
+                plt.hist(sel_vals,  bins=bins, alpha=0.5, label="selective", density=True)
+                plt.xscale("log")
+                plt.xlabel("|grad|")
+                plt.ylabel("density")
+                plt.legend()
+                plt.title(f"Voxel (y={y}, x={x})  top_frac={top_frac}")
+                plt.tight_layout()
+
+                fname = f"{outdir}/{cat}_{mode}_{top_frac}_v1_hist_voxel_{y}_{x}.png"
+                plt.savefig(fname, dpi=300)
+                plt.close()
+
+            print(f"Saved {num_voxels_to_plot} voxel histograms ➜ {outdir}")
+
+
+       
 
 
 if __name__=="__main__":
