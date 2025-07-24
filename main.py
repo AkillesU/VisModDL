@@ -70,7 +70,8 @@ def main():
         image_dir=image_dir,
         only_conv=only_conv,
         include_bias=include_bias,
-        masking_level=masking_level
+        masking_level=masking_level,
+        groupnorm_scaling_targets = groupnorm_scaling_targets
     )
 
     # Call for connection/unit masking
@@ -89,7 +90,8 @@ def main():
         image_dir=image_dir,
         only_conv=only_conv,
         include_bias=include_bias,
-        masking_level=masking_level
+        masking_level=masking_level,
+        groupnorm_scaling_targets = groupnorm_scaling_targets
     )
 
     # New call for GroupNorm scaling damage
