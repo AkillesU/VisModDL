@@ -1,5 +1,5 @@
 image_dir: "stimuli"
-layer_name: "V2"
+layer_name: "V1"
 layer_path:
  - "module._modules.V1._modules.output"
  - "module._modules.V2._modules.output"
@@ -16,7 +16,7 @@ mc_permutations: 1 # How many monte carlo permutations on damage to perform. Use
 model_time_steps: 5 # recurrent
 
 layer_paths_to_damage: 
-  - "module._modules.V2"
+  - "module._modules.V1"
 apply_to_all_layers: False
 include_bias: False
 only_conv: False
@@ -26,7 +26,8 @@ groupnorm_scaling:
   - 1
   - 101
   - -0.01
-  
+groupnorm_scaling_targets: ["conv"]
+ 
 # Masking damage parameters
 manipulation_method: "masking"
 masking_level: "connections"  # "connections" or "units"
