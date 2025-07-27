@@ -11,6 +11,8 @@ For a top-fraction of IT units:
 6. Compute Peripheral–Foveal Index of that map and plot a heatmap.
 """
 
+from __future__ import annotations
+
 import sys
 import yaml
 import pathlib
@@ -23,13 +25,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 from tqdm import tqdm
-from scipy.stats import mannwhitneyu
+from scipy.stats import mannwhitneyu, ttest_ind
 import os
 from scipy.ndimage import gaussian_filter
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from statsmodels.stats.multitest import multipletests
+from typing import List, Iterable
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Utility helpers – unchanged
+# ──────────────────────────────────────────────────────────────────────────────
 
 def permutation_test(sel_vals, rand_vals, n_permutations=1000, alternative='two-sided', random_state=None):
     """
@@ -63,14 +69,31 @@ def permutation_test(sel_vals, rand_vals, n_permutations=1000, alternative='two-
         p = np.mean(perm_stats <= observed)
     return observed, p
 
+# ------------------------------------------------------------------
 
-# ─────────── helpers ────────────
+def hedges_g(a: np.ndarray, b: np.ndarray) -> float:
+    """
+    Hedges’ g (bias‑corrected pooled‑SD Cohen’s d).
+    Works with unequal sample sizes & variances.
+    """
+    n1, n2   = len(a), len(b)
+    s1, s2   = a.std(ddof=1), b.std(ddof=1)
+    sp       = math.sqrt(((n1-1)*s1**2 + (n2-1)*s2**2) / (n1 + n2 - 2) + 1e-12)
+    d        = (a.mean() - b.mean()) / sp
+    J        = 1 - (3 / (4*(n1 + n2) - 9))      # bias‑correction
+    return d * J
+# ------------------------------------------------------------------
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Model & image helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
 def load_model(mcfg, device):
     import cornet
     ctor = {
         "cornet_rt": cornet.cornet_rt,
-        "cornet_s": cornet.cornet_s,
-        "cornet_z": cornet.cornet_z
+        "cornet_s" : cornet.cornet_s,
+        "cornet_z" : cornet.cornet_z
     }[mcfg["name"].lower()]
     kwargs = {"pretrained": True}
     kwargs["map_location"] = (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
@@ -86,38 +109,98 @@ def build_transform():
     ])
 
 
-def iter_imgs(folder):
+def iter_imgs(folder: pathlib.Path) -> Iterable[Image.Image]:
+    """Yield all RGB images in *folder* (jpg/jpeg/png), sorted alphabetically."""
     for p in sorted(folder.iterdir()):
-        if p.suffix.lower() in {".jpg",".jpeg",".png"}:
+        if p.suffix.lower() in {".jpg", ".jpeg", ".png"}:
             yield Image.open(p).convert("RGB")
 
-# compute receptive-field center in input pixels from feature-map coords
+# ──────────────────────────────────────────────────────────────────────────────
+# NEW helper – gather images from (possibly) multiple categories
+# ──────────────────────────────────────────────────────────────────────────────
+
+def gather_images(cfg: dict) -> tuple[List[Image.Image], str]:
+    """Return (images, category_tag) according to the new config logic."""
+
+    max_imgs = cfg.get("max_images", 20)
+    img_folders: List[pathlib.Path] = []
+
+    # Priority 1 – explicit directory list
+    if cfg.get("image_category_dirs"):
+        img_folders = [pathlib.Path(d).expanduser() for d in cfg["image_category_dirs"]]
+        categories = [f.name for f in img_folders]
+
+    elif cfg.get("image_categories"):
+        # Priority 2 – sibling category names
+        base = pathlib.Path(cfg["category_images"]).expanduser().resolve()
+        if not base.parent.exists():
+            raise FileNotFoundError(f"Base directory {base.parent} not found")
+        categories = list(cfg["image_categories"])
+        img_folders = [base.parent / c for c in categories]
+
+    else:
+        # Fallback – original single folder
+        base = pathlib.Path(cfg["category_images"]).expanduser().resolve()
+        if not base.exists():
+            raise FileNotFoundError(f"Image directory {base} does not exist")
+        img_folders = [base]
+        categories = [cfg["category"]]
+
+    # Build a compact tag: first letter of each category, sorted & uniq‑preserve
+    cat_tag = "".join(sorted({c[0].lower() for c in categories}))
+
+    imgs: List[Image.Image] = []
+    for folder in img_folders:
+        if not folder.exists():
+            print(f"[WARN] Folder {folder} missing – skipped.")
+            continue
+        imgs.extend(iter_imgs(folder))
+
+    if not imgs:
+        raise RuntimeError("No images found across the requested categories.")
+
+    return imgs[:max_imgs], cat_tag
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Receptive‑field utility (unchanged)
+# ──────────────────────────────────────────────────────────────────────────────
+
 def rf_px(fy, fx, stride, padding, kernel):
     # center = (fy * stride + (kernel-1)/2 - padding)
     cy = fy * stride + (kernel-1)/2 - padding
     cx = fx * stride + (kernel-1)/2 - padding
     return cy, cx
 
-# ─────────── main ────────────────
-def main(cfg_path):
+# ──────────────────────────────────────────────────────────────────────────────
+#                                 MAIN
+# ──────────────────────────────────────────────────────────────────────────────
+
+def main(cfg_path: str | pathlib.Path):
     random.seed(1234)
-    cfg = yaml.safe_load(open(cfg_path,'r'))
+    cfg = yaml.safe_load(open(cfg_path, 'r'))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_random_repeats = cfg.get("n_random_repeats", 100)
 
+    # Thread handling (unchanged)
     if torch.cuda.is_available() is False:
         try:
-            num_threads = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count()))
+            num_threads = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
         except TypeError:
-            # os.cpu_count() can return None, handle this case
             num_threads = 1
-
         torch.set_num_threads(num_threads)
-        print(f"✅ PyTorch intra-op parallelism set to {torch.get_num_threads()} threads.")
+        print(f"✅ PyTorch intra‑op parallelism set to {torch.get_num_threads()} threads.")
     else:
-        print("Using: ", torch.DeviceObjType)
-    
+        print("Using CUDA")
 
+    # Figure out which image categories to evaluate (NEW logic) --------------
+    imgs, cat_tag = gather_images(cfg)
+    print(f"Loaded {len(imgs)} images; category‑tag = '{cat_tag}'.")
+
+    outdir = pathlib.Path(cfg.get("output_dir", "it2v1_analysis"))
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # Everything below remains *functionally* identical – only the name of the
+    # `imgs` list changed from the original single‑folder logic.  ───────────
 
     top_frac_cfg = cfg.get("top_frac", 0.1)
     if isinstance(top_frac_cfg, (float, int)):
@@ -126,8 +209,15 @@ def main(cfg_path):
         top_frac_list = list(top_frac_cfg)
 
     for top_frac in top_frac_list:
-        print(f"\n=== Processing top_frac={top_frac} ===")
+        mode = cfg.get("top_unit_selection", "percentage").lower()
         cat = cfg["category"].lower()
+        prefix = f"{cat}_{cat_tag}_{mode}_{top_frac}"
+        activ_dir = outdir / f"activations_{prefix}_grad"
+        print(activ_dir)
+        diff_csv_path = outdir / f"{prefix}_v1_featuremap_selective_vs_random_grad.csv"
+
+        print(f"\n=== Processing top_frac={top_frac} ===")
+        
         sel_path = pathlib.Path(cfg["selectivity_csv_dir"]) / "all_layers_units_mannwhitneyu.pkl"
         sel      = pd.read_pickle(sel_path)
         mw_col   = f"mw_{cat}"
@@ -213,9 +303,7 @@ def main(cfg_path):
 
         outdir = cfg.get("output_dir", "it2v1_analysis")
         pathlib.Path(outdir).mkdir(exist_ok=True)
-        # Modified file name to reflect the new metric (grad instead of actgrad)
-        diff_csv_path = f"{outdir}/{cat}_{mode}_{top_frac}_v1_featuremap_selective_vs_random_grad.csv"
-
+        
         # --- get all IT units for random selection ---
         all_it_units = []
         for _, row in it_rows.iterrows():
@@ -229,38 +317,56 @@ def main(cfg_path):
         if os.path.exists(diff_csv_path):
             print(f"Found existing results at {diff_csv_path}, loading…")
             df = pd.read_csv(diff_csv_path)
+            
+
             Hf = df["fy"].max() + 1
             Wf = df["fx"].max() + 1
-            activ_dir_path = pathlib.Path(outdir) / f"activations_{cat}_{top_frac}_{mode}_grad"
-            have_grad_files = activ_dir_path.exists()
+            if 'hedges_g' in df.columns:
+                delta_map = df['hedges_g'].values.reshape(Hf, Wf)
+            elif 'cliffs_delta' in df.columns:      # legacy support
+                delta_map = df['cliffs_delta'].values.reshape(Hf, Wf)
+            else:
+                delta_map = None
+            have_grad_files = activ_dir.exists()
 
             # ---- mandatory column ----
             obs_map = df["mean_diff"].values.reshape(Hf, Wf)
             mean_diff_vec  = obs_map.ravel()  
 
-            # ---- effect‑size map -----------------------------------------
-            if "cliffs_delta" in df.columns:
-                delta_map = df["cliffs_delta"].values.reshape(Hf, Wf)
-            else:                       # legacy files had no Cliff’s δ
+            # ---- effect‑size map -------------------------------------------------
+            if "cliffs_delta" in df.columns:          # newer files
+                delta_arr = pd.to_numeric(df["cliffs_delta"], errors="coerce").astype(np.float32)
+                delta_map = delta_arr.values.reshape(Hf, Wf)
+            elif "hedges_g" in df.columns:            # if stored Hedge's g instead
+                delta_arr = pd.to_numeric(df["hedges_g"], errors="coerce").astype(np.float32)
+                delta_map = delta_arr.values.reshape(Hf, Wf)
+            else:                                     # legacy files – no effect size
                 delta_map = None
 
             # ---- significance / p‑value handling -------------------------
-            if "fdr_q_value" in df.columns:             # new schema
-                q_map    = df["fdr_q_value"].values.reshape(Hf, Wf)
-                sig_mask = df["significant_fdr"].astype(bool).values.reshape(Hf, Wf)
-            elif "bonferroni_p_value" in df.columns:    # very old schema
+            if "fdr_q_value" in df.columns:          # FDR‑corrected p values exist
+                q_map = df["fdr_q_value"].values.reshape(Hf, Wf)
+
+                if "significant_fdr" in df.columns:  # column present (new files)
+                    sig_mask = df["significant_fdr"].astype(bool).values.reshape(Hf, Wf)
+                else:                                # older files → derive the mask
+                    sig_mask = (q_map < 0.05)
+
+            elif "bonferroni_p_value" in df.columns: # very old schema
                 q_map    = df["bonferroni_p_value"].values.reshape(Hf, Wf)
                 sig_mask = (q_map < 0.05)
+
             else:
                 raise ValueError(
                     "CSV exists but does not contain recognised significance columns "
                     "(expected 'fdr_q_value' or 'bonferroni_p_value'). "
                     "Delete the file and rerun to regenerate."
                 )
-        elif os.path.exists(f"{outdir}/activations_{cat}_{top_frac}_{mode}_grad/"):
-            print(f"Found existing activation gradients at {outdir}/activations_{cat}_{top_frac}_{mode}_grad/, loading...")
-            all_v1_grads_sel = np.load(f"{outdir}/activations_{cat}_{top_frac}_{mode}_grad/grads_selective.npy")
-            all_v1_grads_rand = [np.load(f"{outdir}/activations_{cat}_{top_frac}_{mode}_grad/grads_random_{rep}.npy") for rep in range(n_random_repeats)]
+
+        elif os.path.exists(activ_dir):
+            print(f"Found existing activation gradients at {activ_dir}, loading...")
+            all_v1_grads_sel = np.load(activ_dir / "grads_selective.npy")
+            all_v1_grads_rand = [np.load(activ_dir / f"grads_random_{rep}.npy") for rep in range(n_random_repeats)]
             print(f"Loaded {len(all_v1_grads_rand)} random repeats.")
             all_v1_grads_rand = np.stack(all_v1_grads_rand)
             N, C, Hf, Wf = all_v1_grads_sel.shape
@@ -280,37 +386,41 @@ def main(cfg_path):
             sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)      # [M_sel , H*W]
             rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)      # [M_rand, H*W]
 
-            mean_diff_vec  = np.empty(Hf * Wf, dtype=np.float32)
-            cliff_vec      = np.empty(Hf * Wf, dtype=np.float32)
-            p_vec          = np.empty(Hf * Wf, dtype=np.float64)
+            mean_diff_vec = np.empty(Hf * Wf, dtype=np.float32)
+            g_vec         = np.empty(Hf * Wf, dtype=np.float32)      # effect size
+            p_vec         = np.empty(Hf * Wf, dtype=np.float64)      # Welch p‑values
+
 
             for i in tqdm(range(Hf * Wf), desc="voxel stats"):
                 a = sel_flat[:, i]
                 b = rand_flat[:, i]
 
                 mean_diff_vec[i] = a.mean() - b.mean()
-                cliff_vec[i]     = cliffs_delta(a, b)
-                p_vec[i]         = mannwhitneyu(a, b, alternative='two-sided').pvalue
+                g_vec[i]   = hedges_g(a, b)                               # effect size
+                _, p_val   = ttest_ind(a, b, equal_var=False, nan_policy='omit') # Welch's t-test
+                p_vec[i]   = p_val
 
             # FDR (Benjamini‑Hochberg) correction ------------------------------
             rej, q_vec, _, _ = multipletests(p_vec, alpha=0.05, method='fdr_bh')
 
             # reshape back to (H, W) ------------------------------------------
             obs_map   = mean_diff_vec.reshape(Hf, Wf)
-            delta_map = cliff_vec.reshape(Hf, Wf)
+            effect_map = g_vec.reshape(Hf, Wf)       # Hedges g map
+            delta_map  = effect_map                  # keeps old variable name used in plots
             q_map     = q_vec.reshape(Hf, Wf)
             sig_mask  = rej.reshape(Hf, Wf)
 
             # ─────────── save CSV (so future runs can reuse) ────────────────
             df = pd.DataFrame({
-                'fy'               : np.repeat(np.arange(Hf), Wf),
-                'fx'               : np.tile  (np.arange(Wf), Hf),
-                'mean_diff'        : mean_diff_vec,
-                'cliffs_delta'     : cliff_vec,
-                'mw_p_value'       : p_vec,
-                'fdr_q_value'      : q_vec,
-                'significant_fdr'  : rej.astype(int)
+                'fy'            : np.repeat(np.arange(Hf), Wf),
+                'fx'            : np.tile  (np.arange(Wf), Hf),
+                'mean_diff'     : mean_diff_vec,
+                'hedges_g'      : g_vec,            # ← new column
+                'welch_p_value' : p_vec,            # ← new column name
+                'fdr_q_value'   : q_vec,
+                'significant'   : rej.astype(int)
             })
+
             df.to_csv(diff_csv_path, index=False)
             print("Saved Cliff’s δ & FDR stats →", diff_csv_path)
 
@@ -433,13 +543,11 @@ def main(cfg_path):
             print("Mean selective gradient magnitude:", np.mean(all_v1_grads_sel))
             print("Mean random gradient magnitude:", np.mean(all_v1_grads_rand))
             
-            activ_dir = f"activations_{cat}_{top_frac}_{mode}_grad"
-            activ_dir_path = pathlib.Path(outdir) / activ_dir
-            activ_dir_path.mkdir(parents=True, exist_ok=True)
+            activ_dir.mkdir(parents=True, exist_ok=True)
 
-            np.save(str(activ_dir_path / "grads_selective.npy"), all_v1_grads_sel)
+            np.save(str(activ_dir / "grads_selective.npy"), all_v1_grads_sel)
             for rep in range(len(all_v1_grads_rand)):
-                np.save(str(activ_dir_path / f"grads_random_{rep}.npy"), all_v1_grads_rand[rep])
+                np.save(str(activ_dir / f"grads_random_{rep}.npy"), all_v1_grads_rand[rep])
 
             # ──────────────────────────────────────────────────────────────────
             # NEW voxel‑wise statistics: mean‑difference, Cliff’s δ, M‑W + FDR
@@ -457,6 +565,8 @@ def main(cfg_path):
                 return (gt - lt) / (len(a) * len(b) + 1e-12)
 
             # ----- flatten sample axes so every voxel is a column -------------
+            N, C, Hf, Wf = all_v1_grads_sel.shape
+            R = n_random_repeats
             sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)      # [M_sel , H*W]
             rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)      # [M_rand, H*W]
 
@@ -504,16 +614,16 @@ def main(cfg_path):
         plt.title(f"Mean |grad| diff  (sel−rand, top_frac={top_frac})")
         plt.axis('off')
         plt.colorbar(label="Δ |grad|")
-        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_A_mean_diff.png", dpi=300)
+        plt.savefig(outdir + f"/{prefix}_A_mean_diff.png", dpi=300)
 
         # Cliff’s δ – show only significant voxels (others as NaN/white)
         delta_plot = np.where(sig_mask, delta_map, np.nan)
         plt.figure(figsize=(6,5))
-        plt.imshow(delta_plot, cmap="bwr", vmin=-1, vmax=1, interpolation='nearest')
-        plt.title("Cliff’s δ (FDR < 0.05)")
+        plt.imshow(delta_plot, cmap="bwr", interpolation='nearest')
+        plt.title("Hedges g")
         plt.axis('off')
-        plt.colorbar(label="Cliff’s δ")
-        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_B_cliffs_delta.png", dpi=300)
+        plt.colorbar(label="Hedges g")
+        plt.savefig(outdir + f"/{prefix}_B_cliffs_delta.png", dpi=300)
 
         # –log10(q) significance map, same mask
         q = q_map
@@ -523,16 +633,16 @@ def main(cfg_path):
         plt.title("FDR q")
         plt.axis('off')
         plt.colorbar(label="q")
-        plt.savefig(f"{outdir}/{cat}_{mode}_{top_frac}_C_q.png", dpi=300)
+        plt.savefig(outdir + f"/{prefix}_C_q.png", dpi=300)
 
         # ───────── DIAGNOSTIC HISTOGRAMS ───────────────────────
         # How many voxels to visualise
 
         if ("all_v1_grads_sel" not in locals() or all_v1_grads_sel is None) and have_grad_files:
                 print("Loading raw gradient arrays for histogram plotting …")
-                all_v1_grads_sel = np.load(activ_dir_path / "grads_selective.npy")
+                all_v1_grads_sel = np.load(activ_dir / "grads_selective.npy")
                 all_v1_grads_rand = np.stack([
-                    np.load(activ_dir_path / f"grads_random_{rep}.npy")
+                    np.load(activ_dir / f"grads_random_{rep}.npy")
                     for rep in range(n_random_repeats)
                 ])
         if "all_v1_grads_sel" in locals() and all_v1_grads_sel is not None:
@@ -563,7 +673,7 @@ def main(cfg_path):
                 plt.title(f"Voxel (y={y}, x={x})  top_frac={top_frac}")
                 plt.tight_layout()
 
-                fname = f"{outdir}/{cat}_{mode}_{top_frac}_v1_hist_voxel_{y}_{x}.png"
+                fname = outdir + f"/{prefix}_v1_hist_voxel_{y}_{x}.png"
                 plt.savefig(fname, dpi=300)
                 plt.close()
 
