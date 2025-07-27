@@ -1,0 +1,15 @@
+﻿output_dir: it2v1_analysis
+categories: [animals,objects,places,faces]
+top_frac: [0.5]
+mode: percentage
+nbins: 10
+binning: equal_width        # or equal_area
+bootstrap_iters: 10000
+permutations: 10000
+curve_stat: area            # area, l2, or max
+area_normalize: false
+alpha_fdr: 0.05
+plot_all_together: true          # draw every (category, top_frac) on one figure
+color_seed: 13                   # stable seed to hash labels colors
+palette: tab20                   # any matplotlib ListedColormap name
+combined_plot_name: nnorm_0.5_all_curves.png
