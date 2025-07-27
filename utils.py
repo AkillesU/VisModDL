@@ -956,12 +956,13 @@ def run_damage(
         dir_tag = "noise"
     elif manipulation_method == "connections":
         dir_tag = "units" if masking_level == "units" else "connections"
-    elif manipulation_method == "groupnorm_scaling": # <-- new tag
+    elif manipulation_method == "groupnorm_scaling":
         # ---- build a concise tag “g”, “c”, or “g+c” -----------------
         _map = {"groupnorm": "g", "conv": "c"}
         sel  = [_map[t] for t in sorted(set(groupnorm_scaling_targets))]
         targ_tag = "+".join(sel)
-        dir_tag  = f"groupnorm_scaling_{targ_tag}"
+        # Add noise level to parent directory name
+        dir_tag  = f"groupnorm_scaling_{targ_tag}_noise{gain_control_noise:.3f}"
     else:
         dir_tag = manipulation_method          # fallback, should not occur
 
