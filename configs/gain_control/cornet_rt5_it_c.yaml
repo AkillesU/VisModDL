@@ -12,7 +12,7 @@ model_name: "cornet_rt"
 model_weights: "" # torch.hub weights (not necesssary for cornet models). Leave empty for untrained.
 pretrained: True
 vmax: 0.4
-mc_permutations: 1 # How many monte carlo permutations on damage to perform. Use 21 as in Haupt et al., 2024?
+mc_permutations: 200 # How many monte carlo permutations on damage to perform. Use 21 as in Haupt et al., 2024?
 model_time_steps: 5 # recurrent
 
 layer_paths_to_damage: 
@@ -24,9 +24,10 @@ only_conv: False
 # groupnorm_scaling damage parameters
 groupnorm_scaling: 
   - 1
-  - 101
-  - -0.01
+  - 21
+  - -0.05
 groupnorm_scaling_targets: ["conv"]
+gain_control_noise: 0.5
 # Masking damage parameters
 manipulation_method: "masking"
 masking_level: "connections"  # "connections" or "units"
