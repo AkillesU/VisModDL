@@ -46,6 +46,7 @@ def main():
     only_conv = config.get("only_conv", True)
     # Add the new parameter for GroupNorm scaling
     groupnorm_scaling_params = config.get("groupnorm_scaling", [1.0, 1, 0.0])
+    gain_control_noise = config.get("gain_control_noise", 0.0)
     groupnorm_scaling_targets = config.get(
     "groupnorm_scaling_targets",
     ["groupnorm"]                   
@@ -111,7 +112,8 @@ def main():
         only_conv=only_conv,
         include_bias=include_bias,
         masking_level=masking_level,
-        groupnorm_scaling_targets = groupnorm_scaling_targets
+        groupnorm_scaling_targets = groupnorm_scaling_targets,
+        gain_control_noise=gain_control_noise
     )
     
 if __name__ == "__main__":

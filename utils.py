@@ -891,6 +891,7 @@ def run_damage(
     only_conv,
     include_bias,
     groupnorm_scaling_targets,
+    gain_control_noise=0.0,
     masking_level="connections",
     run_suffix=""
 ):
@@ -1005,7 +1006,8 @@ def run_damage(
                         layer_paths=layer_paths_to_damage,
                         apply_to_all_layers=apply_to_all_layers,
                         include_bias=include_bias,
-                        targets = groupnorm_scaling_targets
+                        targets = groupnorm_scaling_targets,
+                        gain_control_noise=gain_control_noise
                     )
 
                 # 3) Now we do the old "extract_activations" approach (one image at a time)
@@ -3876,4 +3878,64 @@ def _scale_module_(module: nn.Module,
     if hasattr(module, "weight") and module.weight is not None:
         module.weight.data.mul_(factor)
     if include_bias and hasattr(module, "bias") and module.bias is not None:
+        module.bias.data.mul_(factor)
+
+
+def apply_groupnorm_scaling(
+    model: nn.Module,
+    scaling_factor: float,
+    *,
+    layer_paths: Sequence[str] | None = None,
+    apply_to_all_layers: bool = False,
+    include_bias: bool = False,
+    targets: Sequence[str] = ("groupnorm",),
+    gain_control_noise: float = 0.0,  # Noise level to be used while scaling
+) -> None:
+    """
+    Multiply weights (and optional biases) by *scaling_factor*.
+    Add Gaussian noise (before scaling) with std = gain_control_noise * weight.std().
+    """
+    do_gn  = "groupnorm" in targets
+    do_conv= "conv"      in targets
+    if not (do_gn or do_conv):
+        return
+
+    def _collect_targets(root_mod: nn.Module, root_path: str):
+        paths = []
+        if do_gn:
+            paths += get_all_groupnorm_layers(root_mod, root_path)
+        if do_conv:
+            paths += get_all_conv_layers(root_mod, root_path, include_bias)
+        return paths
+
+    with torch.no_grad():
+        if apply_to_all_layers:
+            for p in _collect_targets(model, ""):
+                _scale_module_(get_layer_from_path(model, p),
+                               scaling_factor, include_bias, gain_control_noise)
+        else:
+            for block in (layer_paths or []):
+                submod = get_layer_from_path(model, block)
+                for p in _collect_targets(submod, block):
+                    _scale_module_(get_layer_from_path(model, p),
+                                   scaling_factor, include_bias, gain_control_noise)
+
+def _scale_module_(module: nn.Module,
+                   factor: float,
+                   include_bias: bool = False,
+                   gain_control_noise: float = 0.0) -> None:
+    """
+    Add Gaussian noise to weights/biases (before scaling), then scale.
+    """
+    if hasattr(module, "weight") and module.weight is not None:
+        if gain_control_noise > 0:
+            sd = module.weight.data.std().item()
+            noise = torch.randn_like(module.weight.data) * (gain_control_noise * sd)
+            module.weight.data.add_(noise)
+        module.weight.data.mul_(factor)
+    if include_bias and hasattr(module, "bias") and module.bias is not None:
+        if gain_control_noise > 0:
+            sd = module.bias.data.std().item()
+            noise = torch.randn_like(module.bias.data) * (gain_control_noise * sd)
+            module.bias.data.add_(noise)
         module.bias.data.mul_(factor)
