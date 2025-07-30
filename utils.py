@@ -27,9 +27,10 @@ import os, tarfile, hashlib
 import copy
 import statsmodels.formula.api as smf
 from pathlib import Path
-from typing import Sequence, Mapping, Tuple, List, Iterator
+from typing import Sequence, Mapping, Tuple, List, Iterator, Any
 import zarr
 import numcodecs
+
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -3684,8 +3685,24 @@ def _scale_module_(module: nn.Module,
         module.bias.data.mul_(factor)
 
 
-_COMP = numcodecs.Blosc(cname="zstd", clevel=7,
+# ── compressor used for every Zarr store ─────────────────────────────
+_COMP = numcodecs.Blosc(cname="zstd",
+                        clevel=7,
                         shuffle=numcodecs.Blosc.BITSHUFFLE)
+
+
+def _unique_store(base: Path, tag: str, shape_tail: tuple[int, ...]) -> Path:
+    """
+    Return a collision‑free Zarr path such as
+
+        myfile__activ_25089.zarr
+        myfile__rdm_64.zarr
+
+    so that objects with different shapes never share the same store.
+    """
+    suffix = "_".join(map(str, shape_tail))
+    return base.with_suffix("").with_name(f"{base.stem}__{tag}_{suffix}.zarr")
+
 
 def _init_store(zarr_path: Path, n_imgs: int, n_feat: int,
                 chunks: tuple[int,int] | None = None):
@@ -3699,35 +3716,6 @@ def _init_store(zarr_path: Path, n_imgs: int, n_feat: int,
                compressor=_COMP, overwrite=True)
     root.attrs["image_names"]  = []
     root.attrs["perm_indices"] = []
-
-
-def append_activation_to_zarr(df: pd.DataFrame,
-                              target: str | Path,
-                              perm_idx: int):
-    """
-    Append one permutation (DataFrame images × features) into *target*.zarr
-    creating the store on first call.  Crash‑safe: writes chunk to a tmp name
-    then renames → previous data stay intact.
-    """
-    zarr_path = Path(target).with_suffix(".zarr")
-    arr  = df.astype("float16").to_numpy()
-    n_i, n_f = arr.shape
-
-    if not zarr_path.exists():
-        _init_store(zarr_path, n_i, n_f)
-
-    root = zarr.open(zarr_path, mode="a", overwrite=False)
-    z    = root["activ"]
-    if arr.shape[1:] != z.shape[1:]:
-        raise ValueError(f"feature shape changed: {arr.shape[1:]} vs {z.shape[1:]}")
-    # ---- atomic write ---------------------------------------------------
-    tmp_name = f"tmp_{os.getpid()}_{perm_idx}"
-    z.store[tmp_name] = arr[None, ...]                 # [1,n_img,n_feat]
-    z.append(z.store[tmp_name])                        # extend along axis 0
-    del z.store[tmp_name]
-    # ---------------------------------------------------------------------
-    root.attrs["image_names"]  = df.index.tolist()
-    root.attrs["perm_indices"] = root.attrs["perm_indices"] + [perm_idx]
 
 
 def load_activations_zarr(source: str | Path,
@@ -3761,10 +3749,6 @@ def load_matrix_zarr(path: str | Path, perm: int = 0) -> np.ndarray:
     df = load_activations_zarr(path, perm=perm)  # <- your existing helper
     return df.to_numpy(dtype=np.float32)
 
-# === PATCH 1 – make load_correlation_matrices zarr‑aware ===================
-
-
-
 
 def load_all_corr_mats(item: str | Path) -> list[np.ndarray]:
     """
@@ -3786,3 +3770,106 @@ def load_all_corr_mats(item: str | Path) -> list[np.ndarray]:
         return [np.asarray(mat, dtype=np.float32)]
     else:
         raise ValueError(f"Unsupported correlation file: {p}")
+
+
+def _coerce_to_2d(arr_like: Any) -> np.ndarray:
+    """
+    • DataFrame / Series → values
+    • 1‑D → (1,‑)
+    • 2‑D → unchanged
+    Raises if ndim > 2.
+    """
+    if isinstance(arr_like, pd.DataFrame):
+        arr = arr_like.values
+    elif isinstance(arr_like, pd.Series):
+        arr = arr_like.values[None, :]          # → (1, nFeat)
+    else:
+        arr = np.asarray(arr_like)
+
+    if arr.ndim == 1:
+        arr = arr[None, :]                      # promote to (1,‑)
+    if arr.ndim != 2:
+        raise ValueError(f"cannot coerce shape {arr.shape} to 2‑D")
+    return arr
+
+
+def append_matrix_to_zarr(mat: np.ndarray,
+                          target: str | Path,
+                          perm_idx: int):
+    """
+    Append one square correlation matrix into a Zarr store.
+    Each distinct matrix size lives in its own store.
+    """
+    assert mat.ndim == 2 and mat.shape[0] == mat.shape[1], "RDM must be square"
+
+    zarr_path = _unique_store(Path(target), "rdm", (mat.shape[0],))
+
+    if not zarr_path.exists():
+        root = zarr.open(zarr_path, mode="w")
+        root.zeros("activ",
+                   shape=(0, *mat.shape),
+                   chunks=(1, *mat.shape),
+                   dtype="f4",
+                   compressor=_COMP)
+        root.attrs["perm_indices"] = []
+
+    root = zarr.open(zarr_path, mode="a")
+    z = root["activ"]
+
+    tmp = f"tmp_{os.getpid()}_{perm_idx}"
+    z.store[tmp] = mat.astype("float32", copy=False)[None, ...]
+
+    try:
+        z.append(z.store[tmp])
+    except ValueError:
+        alt = _unique_store(zarr_path.with_suffix(""), "rdm_alt", (mat.shape[0],))
+        root_alt = zarr.open(alt, mode="w")
+        root_alt.zeros("activ",
+                       shape=(0, *mat.shape),
+                       chunks=(1, *mat.shape),
+                       dtype="f4",
+                       compressor=_COMP)
+        root_alt["activ"].append(mat[None, ...])
+
+    del z.store[tmp]
+    root.attrs["perm_indices"] = root.attrs["perm_indices"] + [perm_idx]
+
+
+
+
+def append_activation_to_zarr(df: pd.DataFrame,
+                              target: str | Path,
+                              perm_idx: int):
+    """
+    Append one activation permutation (images × features) into a Zarr store.
+    If the current store is incompatible, a new store with a shape‑tagged
+    name is created automatically.
+    """
+    zarr_path = _unique_store(Path(target), "activ", df.shape[1:])
+
+    arr = df.astype("float16").to_numpy()
+    n_img, n_feat = arr.shape
+
+    if not zarr_path.exists():
+        _init_store(zarr_path, n_img, n_feat)
+
+    root = zarr.open(zarr_path, mode="a")
+    z = root["activ"]
+
+    tmp = f"tmp_{os.getpid()}_{perm_idx}"
+    z.store[tmp] = arr[None, ...]
+
+    try:
+        z.append(z.store[tmp])
+    except ValueError:
+        # shape changed since this store was first created → fallback
+        alt = _unique_store(zarr_path.with_suffix(""), "activ_alt", arr.shape[1:])
+        _init_store(alt, n_img, n_feat)
+        z_alt = zarr.open(alt, mode="a")["activ"]
+        z_alt.append(arr[None, ...])
+        z_alt.store.close()
+
+    del z.store[tmp]
+    root.attrs["image_names"] = df.index.tolist()
+    root.attrs["perm_indices"] = root.attrs["perm_indices"] + [perm_idx]
+
