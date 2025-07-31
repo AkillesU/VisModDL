@@ -507,43 +507,31 @@ def main(cfg_path: str | pathlib.Path):
             all_v1_grads_sel = []
             activ_dir.mkdir(parents=True, exist_ok=True)
 
-            # 1. Prepare model instances and hooks for each thread
-            max_workers = torch.get_num_threads()
-            max_workers = 1
-            img_args = [(img, top_units) for img in imgs]
+            model, bufs = get_thread_model_and_bufs(cfg)
 
-            def thread_worker(img, units):
-                model, bufs = get_thread_model_and_bufs(cfg)
-                return grads_per_image(img, model, bufs, units)
+            all_v1_grads_sel = []
+            for img in tqdm(imgs, desc="Images (selective)"):
+                grads = grads_per_image(img, model, bufs, top_units)
+                all_v1_grads_sel.append(grads)
 
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                all_v1_grads_sel = list(
-                    tqdm(ex.map(lambda img: thread_worker(img, top_units), imgs),
-                         total=len(imgs),
-                         desc="Images (selective)")
-                )
+            all_v1_grads_sel = np.stack(all_v1_grads_sel)
+            np.save(str(activ_dir / "grads_selective.npy"), all_v1_grads_sel)
+            del all_v1_grads_sel
+            gc.collect()
 
-                all_v1_grads_sel = np.stack(all_v1_grads_sel)
-                np.save(str(activ_dir / "grads_selective.npy"), all_v1_grads_sel)
-                del all_v1_grads_sel
+            # -------- many random repeats ------------------
+            all_v1_grads_rand = []
+            for rep in tqdm(range(n_random_repeats), desc="Random repeats"):
+                rand_units = random.sample(all_it_units, len(top_units))
+
+                rep_arr = []
+                for img in imgs:
+                    rep_arr.append(grads_per_image(img, model, bufs, rand_units))
+                rep_arr = np.stack(rep_arr)                         # [N_img, S, C, H, W]
+
+                np.save(str(activ_dir / f"grads_random_{rep}.npy"), rep_arr)
+                del rep_arr
                 gc.collect()
-
-                # -------- many random repeats ------------------
-                all_v1_grads_rand = []
-                for rep in tqdm(range(n_random_repeats), desc="Random repeats"):
-                    rand_units = random.sample(all_it_units, len(top_units))
-
-                    rep_arr = list(
-                        tqdm(ex.map(lambda img: thread_worker(img, rand_units), imgs),
-                             total=len(imgs),
-                             desc=f"Rep {rep+1}/{n_random_repeats}",
-                             leave=False)
-                    )
-                    rep_arr = np.stack(rep_arr)           # shape [N_img, S, C, H, W]
-
-                    np.save(str(activ_dir / f"grads_random_{rep}.npy"), rep_arr)
-                    del rep_arr
-                    gc.collect()
 
             # Load results
             all_v1_grads_sel = np.load(activ_dir / "grads_selective.npy")
