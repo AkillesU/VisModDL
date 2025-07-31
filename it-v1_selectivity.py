@@ -32,6 +32,8 @@ import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from statsmodels.stats.multitest import multipletests
 from typing import List, Iterable
+import threading
+_thread_cache = threading.local()      # each executor thread gets its own slot
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Utility helpers – unchanged
@@ -253,6 +255,20 @@ def grads_per_image(img: Image.Image,
         model.zero_grad(set_to_none=True)    # clear grads for next unit
 
     return np.stack(per_unit_grads)          # shape [n_units, C, H, W]
+
+
+def get_thread_model_and_bufs(cfg):
+    """
+    Return (model, HookBuffers) that are **unique to the current executor
+    thread**.  They are created the first time the thread calls this function
+    and then reused for every subsequent image handled by that thread.
+    """
+    if not hasattr(_thread_cache, "model"):
+        model = load_model(cfg["model"], GLOBAL_DEVICE)
+        bufs  = setup_hooks(model)
+        _thread_cache.model = model
+        _thread_cache.bufs  = bufs
+    return _thread_cache.model, _thread_cache.bufs
 
 # ──────────────────────────────────────────────────────────────────────────────
 #                                 MAIN
@@ -489,46 +505,34 @@ def main(cfg_path: str | pathlib.Path):
 
             # 1. Prepare model instances and hooks for each thread
             max_workers = torch.get_num_threads()
-            model_pool = [probe_model] + [
-                load_model(cfg["model"], GLOBAL_DEVICE) for _ in range(max_workers - 1)
-            ]
-            buf_pool    = [setup_hooks(m)                   for m in model_pool]
+            img_args = [(img, top_units) for img in imgs]
 
-            # 3. Assign each image to a thread/model
-            img_args = [(img,
-                         model_pool[i % max_workers],
-                         buf_pool[i % max_workers],
-                         top_units)
-                        for i, img in enumerate(imgs)]
+            def thread_worker(args):
+                img, units = args
+                model, bufs = get_thread_model_and_bufs(cfg)
+                return grads_per_image(img, model, bufs, units)
 
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 all_v1_grads_sel = list(
-                    tqdm(ex.map(lambda t: grads_per_image(*t), img_args),
+                    tqdm(ex.map(thread_worker, img_args),
                          total=len(imgs),
                          desc="Images (selective)")
                 )
 
-            all_v1_grads_sel = np.stack(all_v1_grads_sel)   # [N_img, n_sel, C, H, W]
-            print(f"Computing mean |gradient| for {n_random_repeats} random IT unit sets...")
-            all_v1_grads_rand = []
-            n_sel = len(top_units)
-            for rep in tqdm(range(n_random_repeats), desc="Random repeats"):
-                rand_units = random.sample(all_it_units, n_sel)
-                img_args = [(img,
-                         model_pool[i % max_workers],
-                         buf_pool[i % max_workers],
-                         rand_units)
-                        for i, img in enumerate(imgs)]
+                all_v1_grads_sel = np.stack(all_v1_grads_sel)
 
-                with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                    rep_v1 = list(
-                        tqdm(ex.map(lambda t: grads_per_image(*t), img_args),
+                # -------- many random repeats ------------------
+                all_v1_grads_rand = []
+                for rep in tqdm(range(n_random_repeats), desc="Random repeats"):
+                    rand_units = random.sample(all_it_units, len(top_units))
+
+                    rep_arr = list(
+                        tqdm(ex.map(lambda img: thread_worker(img, rand_units), img_tuples),
                              total=len(imgs),
-                             desc=f"Random rep {rep+1}/{n_random_repeats}",
+                             desc=f"Rep {rep+1}/{n_random_repeats}",
                              leave=False)
                     )
-
-                all_v1_grads_rand.append(np.stack(rep_v1))      # [N_img, n_sel, C, H, W]
+                    all_v1_grads_rand.append(np.stack(rep_arr))      # [N_img, n_sel, C, H, W]
             all_v1_grads_rand = np.stack(all_v1_grads_rand)    # shape [R, N_img, n_sel, C, H, W]
 
 
