@@ -279,24 +279,6 @@ def main(cfg_path: str | pathlib.Path):
             print(f"Selected {len(top_units)} IT units (top {top_frac:.0%}).")
 
         model = load_model(cfg["model"], device)
-        v1 = dict(model.named_modules())["module.V1.nonlin_input"]
-        it_v1_names = ["module.IT", "module.V1.nonlin_input"]
-        layer_out = {}
-        layer_grad = {}
-        def save_out(name):
-            def hook(_mod, _in, out):
-                layer_out[name] = out
-            return hook
-        def save_grad(name):
-            def hook(grad): layer_grad[name]=grad
-            return hook
-
-        for name,mod in model.named_modules():
-            if name in it_v1_names:
-                mod.register_forward_hook(save_out(name))
-        def v1_hook(m, inp, out):
-            out.register_hook(save_grad("module.V1.nonlin_input"))
-        v1.register_forward_hook(v1_hook)
         
         tfm  = build_transform()
         imgs = list(iter_imgs(pathlib.Path(cfg["category_images"])))[:cfg.get("max_images",20)]
