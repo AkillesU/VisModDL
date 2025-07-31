@@ -36,6 +36,12 @@ from typing import List, Iterable
 # ──────────────────────────────────────────────────────────────────────────────
 # Utility helpers – unchanged
 # ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------
+# Globals initialised once in main()
+# ------------------------------------------------------------------
+GLOBAL_TFM   : T.Compose | None = None   # image pre-processing
+GLOBAL_DEVICE: torch.device | None = None
+
 
 def permutation_test(sel_vals, rand_vals, n_permutations=1000, alternative='two-sided', random_state=None):
     """
@@ -171,6 +177,79 @@ def rf_px(fy, fx, stride, padding, kernel):
     cx = fx * stride + (kernel-1)/2 - padding
     return cy, cx
 
+
+class HookBuffers:
+    """Stores forward activations and V1 gradients for one model instance."""
+    def __init__(self):
+        self.out  : dict[str, torch.Tensor] = {}
+        self.grad : dict[str, torch.Tensor] = {}
+
+def setup_hooks(model: nn.Module) -> HookBuffers:
+    """
+    Register forward-hooks on module.IT and module.V1.nonlin_input *once*.
+    Returns a HookBuffers object that will be filled every forward/backward.
+    """
+    bufs = HookBuffers()
+    mods = dict(model.named_modules())
+
+    v1 = mods["module.V1.nonlin_input"]    # will receive grad-hook later
+    target_names = {"module.IT", "module.V1.nonlin_input"}
+
+    # forward hooks – save activations
+    def make_fwd_hook(name):
+        def f(_m, _in, out): bufs.out[name] = out
+        return f
+
+    for name, mod in mods.items():
+        if name in target_names:
+            mod.register_forward_hook(make_fwd_hook(name))
+
+    # gradient hook on V1 output
+    def v1_grad_hook(grad): bufs.grad["module.V1.nonlin_input"] = grad
+    v1.register_forward_hook(lambda _m, _i, out: out.register_hook(v1_grad_hook))
+
+    return bufs       # <-- one buffers object per model
+
+
+def flat_to_cyx(idx, C, H, W):
+            c   = idx // (H * W)
+            rem = idx %  (H * W)
+            y   = rem // W
+            x   = rem %  W
+            return c, y, x
+
+
+def grads_per_image(img: Image.Image,
+                            model: nn.Module,
+                            bufs: HookBuffers,
+                            units: list[tuple[str,int,int,int]]) -> np.ndarray:
+            """
+            Returns an array of shape [len(units), C_v1, H_v1, W_v1] with the absolute
+            gradient in module.V1.nonlin_input for each requested IT voxel.
+            """
+            out, grad = bufs.out, bufs.grad
+
+            x = GLOBAL_TFM(img).unsqueeze(0).to(GLOBAL_DEVICE)
+
+
+            # single forward pass
+            model.zero_grad(set_to_none=True)
+            _ = model(x)
+
+            per_unit_grads = []
+            for i, (lname, c, y, x_) in enumerate(units):
+                act = out[lname]
+                if isinstance(act, tuple):           # CORnet-RT returns a tuple
+                    act = act[0]
+                loss = act[:, c, y, x_].sum()
+                # retain graph for all but the last unit
+                loss.backward(retain_graph=(i < len(units) - 1))
+                g = grad["module.V1.nonlin_input"][0].abs().cpu().numpy()
+                per_unit_grads.append(g)
+                model.zero_grad(set_to_none=True)    # clear grads for next unit
+
+            return np.stack(per_unit_grads)          # shape [n_units, C, H, W]
+
 # ──────────────────────────────────────────────────────────────────────────────
 #                                 MAIN
 # ──────────────────────────────────────────────────────────────────────────────
@@ -180,7 +259,8 @@ def main(cfg_path: str | pathlib.Path):
     cfg = yaml.safe_load(open(cfg_path, 'r'))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_random_repeats = cfg.get("n_random_repeats", 100)
-
+    GLOBAL_DEVICE = device
+    GLOBAL_TFM    = build_transform()        # replaces local tfm
     # Thread handling (unchanged)
     if torch.cuda.is_available() is False:
         try:
@@ -213,7 +293,6 @@ def main(cfg_path: str | pathlib.Path):
         cat = cfg["category"].lower()
         prefix = f"{cat}_{cat_tag}_{mode}_{top_frac}"
         activ_dir = outdir / f"activations_{prefix}_grad"
-        print(activ_dir)
         diff_csv_path = outdir / f"{prefix}_v1_featuremap_selective_vs_random_grad.csv"
 
         print(f"\n=== Processing top_frac={top_frac} ===")
@@ -251,19 +330,13 @@ def main(cfg_path: str | pathlib.Path):
                 t = o[0] if isinstance(o, tuple) else o
                 feature_shapes[name] = t.shape[1:]   # drop batch dim
             return fn
+        probe_model = model                 # keep a reference
 
         for lname in it_layer_names:
             hooks.append(mods[lname].register_forward_hook(shape_hook(lname)))
         with torch.no_grad():
             _ = model(torch.zeros(1, 3, 224, 224, device=device))
         for h in hooks: h.remove()
-
-        def flat_to_cyx(idx, C, H, W):
-            c   = idx // (H * W)
-            rem = idx %  (H * W)
-            y   = rem // W
-            x   = rem %  W
-            return c, y, x
 
         top_units = []
         for _, row in top_rows.iterrows():
@@ -277,10 +350,7 @@ def main(cfg_path: str | pathlib.Path):
             print(f"Selected {len(top_units)} IT units at or above the {cfg.get('top_percentile', top_frac)}th percentile.")
         else:
             print(f"Selected {len(top_units)} IT units (top {top_frac:.0%}).")
-
-        model = load_model(cfg["model"], device)
         
-        tfm  = build_transform()
         imgs = list(iter_imgs(pathlib.Path(cfg["category_images"])))[:cfg.get("max_images",20)]
         
         # --- get all IT units for random selection ---
@@ -411,116 +481,49 @@ def main(cfg_path: str | pathlib.Path):
             print("Computing mean |gradient| for selective IT units (parallelized)...")
             all_v1_grads_sel = []
 
-            def compute_v1_grad_for_unit(args):
-                img, x, model, layer_out, layer_grad, unit = args
-                name, c, y, x_coord = unit
-                layer_out, layer_grad = setup_hooks(model)     # hook the fresh model
-                model.zero_grad()
-                _ = model(x)
-                act = layer_out[name]
-                if isinstance(act, tuple):
-                    act = act[0]
-                loss = act[:, c, y, x_coord].sum()
-                loss.backward()
-                v1_gr = layer_grad["module.V1.nonlin_input"][0].cpu().numpy()
-                return np.abs(v1_gr)
-
             # 1. Prepare model instances and hooks for each thread
             max_workers = torch.get_num_threads()
-            model_pool = [load_model(cfg["model"], device) for _ in range(max_workers)]
-
-            def setup_hooks(model):
-                v1 = dict(model.named_modules())["module.V1.nonlin_input"]
-                it_v1_names = ["module.IT", "module.V1.nonlin_input"]
-                layer_out = {}
-                layer_grad = {}
-
-                def save_out(name):
-                    def hook(_mod, _in, out):
-                        layer_out[name] = out
-                    return hook
-                def save_grad(name):
-                    def hook(grad): layer_grad[name]=grad
-                    return hook
-
-                for name, mod in model.named_modules():
-                    if name in it_v1_names:
-                        mod.register_forward_hook(save_out(name))
-                def v1_hook(m, inp, out):
-                    out.register_hook(save_grad("module.V1.nonlin_input"))
-                v1.register_forward_hook(v1_hook)
-                return layer_out, layer_grad
-
-            hook_pool = [setup_hooks(model) for model in model_pool]
-
-            # 2. Define the image processing function
-            def process_image(args):
-                img, model, layer_out, layer_grad = args
-                x = tfm(img).unsqueeze(0).to(device)
-                single_img_v1_grads = []
-                for (name, c, y, x_coord) in top_units:
-                    layer_out.clear(); layer_grad.clear()
-                    model.zero_grad()
-                    _ = model(x)
-                    act = layer_out[name]
-                    if isinstance(act, tuple):
-                        act = act[0]
-                    loss = act[:, c, y, x_coord].sum()
-                    loss.backward()
-                    v1_gr = layer_grad["module.V1.nonlin_input"][0].cpu().numpy()
-                    single_img_v1_grads.append(np.abs(v1_gr))
-                mean_grad_map = np.mean(np.stack(single_img_v1_grads), axis=0)
-                return mean_grad_map
+            model_pool = [probe_model] + [
+                load_model(cfg["model"], GLOBAL_DEVICE) for _ in range(max_workers - 1)
+            ]
+            buf_pool    = [setup_hooks(m)                   for m in model_pool]
 
             # 3. Assign each image to a thread/model
-            img_args = []
-            for i, img in enumerate(imgs):
-                model_idx = i % max_workers
-                layer_out, layer_grad = hook_pool[model_idx]
-                img_args.append((img, model_pool[model_idx], layer_out, layer_grad))
+            img_args = [(img,
+                         model_pool[i % max_workers],
+                         buf_pool[i % max_workers],
+                         top_units)
+                        for i, img in enumerate(imgs)]
 
-            # 4. Parallel execution
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                all_v1_grads_sel = list(tqdm(executor.map(process_image, img_args), total=len(imgs), desc="Images (selective)"))
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                all_v1_grads_sel = list(
+                    tqdm(ex.map(lambda t: grads_per_image(*t), img_args),
+                         total=len(imgs),
+                         desc="Images (selective)")
+                )
 
-            all_v1_grads_sel = np.stack(all_v1_grads_sel)  # [N, C, H, W]
-
+            all_v1_grads_sel = np.stack(all_v1_grads_sel)   # [N_img, n_sel, C, H, W]
             print(f"Computing mean |gradient| for {n_random_repeats} random IT unit sets...")
             all_v1_grads_rand = []
             n_sel = len(top_units)
             for rep in tqdm(range(n_random_repeats), desc="Random repeats"):
                 rand_units = random.sample(all_it_units, n_sel)
-                rep_v1_grads = []
-                for img in imgs:
-                    model_idx  = i % max_workers
-                    model      = model_pool[model_idx]               
-                    layer_out, layer_grad = hook_pool[model_idx]     
+                img_args = [(img,
+                         model_pool[i % max_workers],
+                         buf_pool[i % max_workers],
+                         rand_units)
+                        for i, img in enumerate(imgs)]
 
-                    img_tensor = tfm(img).unsqueeze(0).to(device)
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    rep_v1 = list(
+                        tqdm(ex.map(lambda t: grads_per_image(*t), img_args),
+                             total=len(imgs),
+                             desc=f"Random rep {rep+1}/{n_random_repeats}",
+                             leave=False)
+                    )
 
-                    # For each image, get gradients from each random IT unit
-                    single_img_v1_grads_rand = []
-                    for (name, c, y, x_coord) in rand_units:
-                        layer_out.clear(); layer_grad.clear()
-                        model.zero_grad()
-                        _ = model(img_tensor)
-
-                        act = layer_out[name]
-                        if isinstance(act, tuple):
-                            act = act[0]
-                        loss = act[:, c, y, x_coord].sum()
-                        loss.backward()
-                        
-                        v1_gr = layer_grad["module.V1.nonlin_input"][0].cpu().numpy()
-                        single_img_v1_grads_rand.append(np.abs(v1_gr))
-                    
-                    # Aggregate gradients for this image by taking the mean
-                    mean_grad_map_rand = np.mean(np.stack(single_img_v1_grads_rand), axis=0)
-                    rep_v1_grads.append(mean_grad_map_rand)
-
-                rep_v1_grads = np.stack(rep_v1_grads) # [N, C, H, W]
-                all_v1_grads_rand.append(rep_v1_grads)
-            all_v1_grads_rand = np.stack(all_v1_grads_rand)  # [R, N, C, H, W]
+                all_v1_grads_rand.append(np.stack(rep_v1))      # [N_img, n_sel, C, H, W]
+            all_v1_grads_rand = np.stack(all_v1_grads_rand)    # shape [R, N_img, n_sel, C, H, W]
 
 
             print("Mean selective gradient magnitude:", np.mean(all_v1_grads_sel))
