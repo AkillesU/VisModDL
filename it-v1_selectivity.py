@@ -206,7 +206,11 @@ def setup_hooks(model: nn.Module) -> HookBuffers:
 
     # gradient hook on V1 output
     def v1_grad_hook(grad): bufs.grad["module.V1.nonlin_input"] = grad
-    v1.register_forward_hook(lambda _m, _i, out: out.register_hook(v1_grad_hook))
+    def v1_fwd_hook(_m, _i, out):
+        out.register_hook(v1_grad_hook)   # attach the gradient hook
+        # DO NOT return anything → return value is None
+
+    v1.register_forward_hook(v1_fwd_hook)
 
     return bufs       # <-- one buffers object per model
 
