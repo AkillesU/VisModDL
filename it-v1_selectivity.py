@@ -373,6 +373,7 @@ def main(cfg_path: str | pathlib.Path):
             print(f"Selected {len(top_units)} IT units (top {top_frac:.0%}).")
         
         imgs = list(iter_imgs(pathlib.Path(cfg["category_images"])))[:cfg.get("max_images",20)]
+        img_tuples  = [img for img in imgs]
         
         # --- get all IT units for random selection ---
         all_it_units = []
