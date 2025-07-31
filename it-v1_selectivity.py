@@ -212,43 +212,43 @@ def setup_hooks(model: nn.Module) -> HookBuffers:
 
 
 def flat_to_cyx(idx, C, H, W):
-            c   = idx // (H * W)
-            rem = idx %  (H * W)
-            y   = rem // W
-            x   = rem %  W
-            return c, y, x
+    c   = idx // (H * W)
+    rem = idx %  (H * W)
+    y   = rem // W
+    x   = rem %  W
+    return c, y, x
 
 
 def grads_per_image(img: Image.Image,
-                            model: nn.Module,
-                            bufs: HookBuffers,
-                            units: list[tuple[str,int,int,int]]) -> np.ndarray:
-            """
-            Returns an array of shape [len(units), C_v1, H_v1, W_v1] with the absolute
-            gradient in module.V1.nonlin_input for each requested IT voxel.
-            """
-            out, grad = bufs.out, bufs.grad
+                    model: nn.Module,
+                    bufs: HookBuffers,
+                    units: list[tuple[str,int,int,int]]) -> np.ndarray:
+    """
+    Returns an array of shape [len(units), C_v1, H_v1, W_v1] with the absolute
+    gradient in module.V1.nonlin_input for each requested IT voxel.
+    """
+    out, grad = bufs.out, bufs.grad
 
-            x = GLOBAL_TFM(img).unsqueeze(0).to(GLOBAL_DEVICE)
+    x = GLOBAL_TFM(img).unsqueeze(0).to(GLOBAL_DEVICE)
 
 
-            # single forward pass
-            model.zero_grad(set_to_none=True)
-            _ = model(x)
+    # single forward pass
+    model.zero_grad(set_to_none=True)
+    _ = model(x)
 
-            per_unit_grads = []
-            for i, (lname, c, y, x_) in enumerate(units):
-                act = out[lname]
-                if isinstance(act, tuple):           # CORnet-RT returns a tuple
-                    act = act[0]
-                loss = act[:, c, y, x_].sum()
-                # retain graph for all but the last unit
-                loss.backward(retain_graph=(i < len(units) - 1))
-                g = grad["module.V1.nonlin_input"][0].abs().cpu().numpy()
-                per_unit_grads.append(g)
-                model.zero_grad(set_to_none=True)    # clear grads for next unit
+    per_unit_grads = []
+    for i, (lname, c, y, x_) in enumerate(units):
+        act = out[lname]
+        if isinstance(act, tuple):           # CORnet-RT returns a tuple
+            act = act[0]
+        loss = act[:, c, y, x_].sum()
+        # retain graph for all but the last unit
+        loss.backward(retain_graph=(i < len(units) - 1))
+        g = grad["module.V1.nonlin_input"][0].abs().cpu().numpy()
+        per_unit_grads.append(g)
+        model.zero_grad(set_to_none=True)    # clear grads for next unit
 
-            return np.stack(per_unit_grads)          # shape [n_units, C, H, W]
+    return np.stack(per_unit_grads)          # shape [n_units, C, H, W]
 
 # ──────────────────────────────────────────────────────────────────────────────
 #                                 MAIN
@@ -259,6 +259,7 @@ def main(cfg_path: str | pathlib.Path):
     cfg = yaml.safe_load(open(cfg_path, 'r'))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_random_repeats = cfg.get("n_random_repeats", 100)
+    global GLOBAL_DEVICE, GLOBAL_TFM
     GLOBAL_DEVICE = device
     GLOBAL_TFM    = build_transform()        # replaces local tfm
     # Thread handling (unchanged)
@@ -321,7 +322,7 @@ def main(cfg_path: str | pathlib.Path):
             sys.exit(f"[ERROR] Unknown top_unit_selection mode: {mode}")
 
         it_layer_names = sorted(top_rows.layer.unique())
-        model          = load_model(cfg["model"], device)
+        model          = load_model(cfg["model"], GLOBAL_DEVICE)
         feature_shapes = {}
         mods = dict(model.named_modules())
         hooks = []
@@ -363,6 +364,7 @@ def main(cfg_path: str | pathlib.Path):
             all_it_units.append((lay, c, y, x))
 
         # === Check for existing results ===
+        have_grad_files = activ_dir.exists()
         if os.path.exists(diff_csv_path):
             print(f"Found existing results at {diff_csv_path}, loading…")
             df = pd.read_csv(diff_csv_path)
@@ -376,7 +378,7 @@ def main(cfg_path: str | pathlib.Path):
                 delta_map = df['cliffs_delta'].values.reshape(Hf, Wf)
             else:
                 delta_map = None
-            have_grad_files = activ_dir.exists()
+            
 
             # ---- mandatory column ----
             obs_map = df["mean_diff"].values.reshape(Hf, Wf)
