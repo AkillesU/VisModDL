@@ -1,0 +1,14 @@
+subdir: "cornet_rt5_c/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [0,0.2]
+      data_type: "selectivity"
