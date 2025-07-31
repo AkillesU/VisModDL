@@ -459,7 +459,7 @@ def main(cfg_path: str | pathlib.Path):
                 x = tfm(img).unsqueeze(0).to(device)
                 single_img_v1_grads = []
                 for (name, c, y, x_coord) in top_units:
-                    layer_out, layer_grad = setup_hooks(model)     # hook the fresh model
+                    layer_out.clear(); layer_grad.clear()
                     model.zero_grad()
                     _ = model(x)
                     act = layer_out[name]
@@ -492,12 +492,16 @@ def main(cfg_path: str | pathlib.Path):
                 rand_units = random.sample(all_it_units, n_sel)
                 rep_v1_grads = []
                 for img in imgs:
+                    model_idx  = i % max_workers
+                    model      = model_pool[model_idx]               
+                    layer_out, layer_grad = hook_pool[model_idx]     
+
                     img_tensor = tfm(img).unsqueeze(0).to(device)
 
                     # For each image, get gradients from each random IT unit
                     single_img_v1_grads_rand = []
                     for (name, c, y, x_coord) in rand_units:
-                        layer_out, layer_grad = setup_hooks(model)     # hook the fresh model
+                        layer_out.clear(); layer_grad.clear()
                         model.zero_grad()
                         _ = model(img_tensor)
 
