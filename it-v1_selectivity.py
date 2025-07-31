@@ -508,14 +508,13 @@ def main(cfg_path: str | pathlib.Path):
             max_workers = torch.get_num_threads()
             img_args = [(img, top_units) for img in imgs]
 
-            def thread_worker(args):
-                img, units = args
+            def thread_worker(img, units):
                 model, bufs = get_thread_model_and_bufs(cfg)
                 return grads_per_image(img, model, bufs, units)
 
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 all_v1_grads_sel = list(
-                    tqdm(ex.map(thread_worker, img_args),
+                    tqdm(ex.map(lambda img: thread_worker(img, top_units), imgs),
                          total=len(imgs),
                          desc="Images (selective)")
                 )
@@ -528,14 +527,14 @@ def main(cfg_path: str | pathlib.Path):
                     rand_units = random.sample(all_it_units, len(top_units))
 
                     rep_arr = list(
-                        tqdm(ex.map(lambda img: thread_worker(img, rand_units), img_tuples),
+                        tqdm(ex.map(lambda img: thread_worker(img, rand_units), imgs),
                              total=len(imgs),
                              desc=f"Rep {rep+1}/{n_random_repeats}",
                              leave=False)
                     )
-                    all_v1_grads_rand.append(np.stack(rep_arr))      # [N_img, n_sel, C, H, W]
-            all_v1_grads_rand = np.stack(all_v1_grads_rand)    # shape [R, N_img, n_sel, C, H, W]
+                    all_v1_grads_rand.append(np.stack(rep_arr))
 
+                all_v1_grads_rand = np.stack(all_v1_grads_rand)
 
             print("Mean selective gradient magnitude:", np.mean(all_v1_grads_sel))
             print("Mean random gradient magnitude:", np.mean(all_v1_grads_rand))
