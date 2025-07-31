@@ -414,7 +414,7 @@ def main(cfg_path: str | pathlib.Path):
             def compute_v1_grad_for_unit(args):
                 img, x, model, layer_out, layer_grad, unit = args
                 name, c, y, x_coord = unit
-                layer_out.clear(); layer_grad.clear()
+                layer_out, layer_grad = setup_hooks(model)     # hook the fresh model
                 model.zero_grad()
                 _ = model(x)
                 act = layer_out[name]
@@ -459,7 +459,7 @@ def main(cfg_path: str | pathlib.Path):
                 x = tfm(img).unsqueeze(0).to(device)
                 single_img_v1_grads = []
                 for (name, c, y, x_coord) in top_units:
-                    layer_out.clear(); layer_grad.clear()
+                    layer_out, layer_grad = setup_hooks(model)     # hook the fresh model
                     model.zero_grad()
                     _ = model(x)
                     act = layer_out[name]
@@ -497,7 +497,7 @@ def main(cfg_path: str | pathlib.Path):
                     # For each image, get gradients from each random IT unit
                     single_img_v1_grads_rand = []
                     for (name, c, y, x_coord) in rand_units:
-                        layer_out.clear(); layer_grad.clear()
+                        layer_out, layer_grad = setup_hooks(model)     # hook the fresh model
                         model.zero_grad()
                         _ = model(img_tensor)
 
