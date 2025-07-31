@@ -606,7 +606,7 @@ def main(cfg_path: str | pathlib.Path):
 
            
 
-            print(f"Saved {num_voxels_to_plot} voxel histograms ➜ {outdir}")
+            print(f"Saved histograms ➜ {outdir}")
 
         # ──────────────── PLOTS ─────────────────────────────────────────
         plt.figure(figsize=(6,5))
