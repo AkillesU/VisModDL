@@ -33,6 +33,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from statsmodels.stats.multitest import multipletests
 from typing import List, Iterable
 import threading
+import gc, uuid
+
 _thread_cache = threading.local()      # each executor thread gets its own slot
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -503,6 +505,7 @@ def main(cfg_path: str | pathlib.Path):
             
             print("Computing mean |gradient| for selective IT units (parallelized)...")
             all_v1_grads_sel = []
+            activ_dir.mkdir(parents=True, exist_ok=True)
 
             # 1. Prepare model instances and hooks for each thread
             max_workers = torch.get_num_threads()
@@ -520,6 +523,9 @@ def main(cfg_path: str | pathlib.Path):
                 )
 
                 all_v1_grads_sel = np.stack(all_v1_grads_sel)
+                np.save(str(activ_dir / "grads_selective.npy"), all_v1_grads_sel)
+                del all_v1_grads_sel
+                gc.collect()
 
                 # -------- many random repeats ------------------
                 all_v1_grads_rand = []
@@ -532,18 +538,20 @@ def main(cfg_path: str | pathlib.Path):
                              desc=f"Rep {rep+1}/{n_random_repeats}",
                              leave=False)
                     )
-                    all_v1_grads_rand.append(np.stack(rep_arr))
+                    rep_arr = np.stack(rep_arr)           # shape [N_img, S, C, H, W]
 
-                all_v1_grads_rand = np.stack(all_v1_grads_rand)
+                    np.save(str(activ_dir / f"grads_random_{rep}.npy"), rep_arr)
+                    del rep_arr
+                    gc.collect()
 
+            # Load results
+            all_v1_grads_sel = np.load(activ_dir / "grads_selective.npy")
+            all_v1_grads_rand = [np.load(activ_dir / f"grads_random_{rep}.npy") for rep in range(n_random_repeats)]
+            print(f"Loaded {len(all_v1_grads_rand)} random repeats.")
+            all_v1_grads_rand = np.stack(all_v1_grads_rand)
             print("Mean selective gradient magnitude:", np.mean(all_v1_grads_sel))
             print("Mean random gradient magnitude:", np.mean(all_v1_grads_rand))
             
-            activ_dir.mkdir(parents=True, exist_ok=True)
-
-            np.save(str(activ_dir / "grads_selective.npy"), all_v1_grads_sel)
-            for rep in range(len(all_v1_grads_rand)):
-                np.save(str(activ_dir / f"grads_random_{rep}.npy"), all_v1_grads_rand[rep])
 
             # ──────────────────────────────────────────────────────────────────
             # NEW voxel‑wise statistics: mean‑difference, Cliff’s δ, M‑W + FDR
