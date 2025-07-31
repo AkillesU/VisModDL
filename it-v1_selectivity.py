@@ -509,6 +509,7 @@ def main(cfg_path: str | pathlib.Path):
 
             # 1. Prepare model instances and hooks for each thread
             max_workers = torch.get_num_threads()
+            max_workers = 1
             img_args = [(img, top_units) for img in imgs]
 
             def thread_worker(img, units):
