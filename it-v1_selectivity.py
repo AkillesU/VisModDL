@@ -212,9 +212,9 @@ def main(cfg_path: str | pathlib.Path):
         mode = cfg.get("top_unit_selection", "percentage").lower()
         cat = cfg["category"].lower()
         prefix = f"{cat}_{cat_tag}_{mode}_{top_frac}"
-        activ_dir = outdir + f"/activations_{prefix}_grad"
+        activ_dir = outdir / f"activations_{prefix}_grad"
         print(activ_dir)
-        diff_csv_path = outdir + f"/{prefix}_v1_featuremap_selective_vs_random_grad.csv"
+        diff_csv_path = outdir / f"{prefix}_v1_featuremap_selective_vs_random_grad.csv"
 
         print(f"\n=== Processing top_frac={top_frac} ===")
         
@@ -300,9 +300,6 @@ def main(cfg_path: str | pathlib.Path):
         
         tfm  = build_transform()
         imgs = list(iter_imgs(pathlib.Path(cfg["category_images"])))[:cfg.get("max_images",20)]
-
-        outdir = cfg.get("output_dir", "it2v1_analysis")
-        pathlib.Path(outdir).mkdir(exist_ok=True)
         
         # --- get all IT units for random selection ---
         all_it_units = []
@@ -614,7 +611,7 @@ def main(cfg_path: str | pathlib.Path):
         plt.title(f"Mean |grad| diff  (sel−rand, top_frac={top_frac})")
         plt.axis('off')
         plt.colorbar(label="Δ |grad|")
-        plt.savefig(outdir + f"/{prefix}_A_mean_diff.png", dpi=300)
+        plt.savefig(outdir / f"{prefix}_A_mean_diff.png", dpi=300)
 
         # Cliff’s δ – show only significant voxels (others as NaN/white)
         delta_plot = np.where(sig_mask, delta_map, np.nan)
@@ -623,7 +620,7 @@ def main(cfg_path: str | pathlib.Path):
         plt.title("Hedges g")
         plt.axis('off')
         plt.colorbar(label="Hedges g")
-        plt.savefig(outdir + f"/{prefix}_B_cliffs_delta.png", dpi=300)
+        plt.savefig(outdir / f"{prefix}_B_cliffs_delta.png", dpi=300)
 
         # –log10(q) significance map, same mask
         q = q_map
@@ -633,7 +630,7 @@ def main(cfg_path: str | pathlib.Path):
         plt.title("FDR q")
         plt.axis('off')
         plt.colorbar(label="q")
-        plt.savefig(outdir + f"/{prefix}_C_q.png", dpi=300)
+        plt.savefig(outdir / f"{prefix}_C_q.png", dpi=300)
 
         # ───────── DIAGNOSTIC HISTOGRAMS ───────────────────────
         # How many voxels to visualise
@@ -673,7 +670,7 @@ def main(cfg_path: str | pathlib.Path):
                 plt.title(f"Voxel (y={y}, x={x})  top_frac={top_frac}")
                 plt.tight_layout()
 
-                fname = outdir + f"/{prefix}_v1_hist_voxel_{y}_{x}.png"
+                fname = outdir / f"{prefix}_v1_hist_voxel_{y}_{x}.png"
                 plt.savefig(fname, dpi=300)
                 plt.close()
 
