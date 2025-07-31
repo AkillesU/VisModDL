@@ -212,9 +212,9 @@ def main(cfg_path: str | pathlib.Path):
         mode = cfg.get("top_unit_selection", "percentage").lower()
         cat = cfg["category"].lower()
         prefix = f"{cat}_{cat_tag}_{mode}_{top_frac}"
-        activ_dir = outdir / f"activations_{prefix}_grad"
+        activ_dir = outdir + f"/activations_{prefix}_grad"
         print(activ_dir)
-        diff_csv_path = outdir / f"{prefix}_v1_featuremap_selective_vs_random_grad.csv"
+        diff_csv_path = outdir + f"/{prefix}_v1_featuremap_selective_vs_random_grad.csv"
 
         print(f"\n=== Processing top_frac={top_frac} ===")
         
