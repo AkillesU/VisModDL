@@ -511,7 +511,7 @@ def main(cfg_path: str | pathlib.Path):
 
             all_v1_grads_sel = []
             for img in tqdm(imgs, desc="Images (selective)"):
-                grads = grads_per_image(img, model, bufs, top_units)
+                grads = grads_per_image(img, model, bufs, top_units).mean(axis=0) # Mean V1 gradient across IT units
                 all_v1_grads_sel.append(grads)
 
             all_v1_grads_sel = np.stack(all_v1_grads_sel)
@@ -526,7 +526,7 @@ def main(cfg_path: str | pathlib.Path):
 
                 rep_arr = []
                 for img in imgs:
-                    rep_arr.append(grads_per_image(img, model, bufs, rand_units))
+                    rep_arr.append(grads_per_image(img, model, bufs, rand_units).mean(axis=0)) # Append mean IT unit gradient per V1 unit
                 rep_arr = np.stack(rep_arr)                         # [N_img, S, C, H, W]
 
                 np.save(str(activ_dir / f"grads_random_{rep}.npy"), rep_arr)
