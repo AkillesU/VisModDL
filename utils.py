@@ -1433,8 +1433,7 @@ def categ_corr_lineplot(
                                 if not scores:
                                     continue
                                 for cat_name, val in scores.items():
-                                    if cat_name in categories:
-                                        agg.setdefault(cat_name, []).append(val)
+                                    agg.setdefault(cat_name, []).append(val)
                         # save aggregated stats
                         packed = {
                             c: {
