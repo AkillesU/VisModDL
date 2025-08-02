@@ -90,8 +90,8 @@ def main():
         gain_control_noise=gain_control_noise
     )
 
-    # NEW: Eccentricity-based activation thinning ------------------
-    #     (creates sub-folders like `eccentricity_0.60-1.00/…`)
+    # Eccentricity-based activation thinning ------------------
+    #     (creates sub-folders eccentricity_0.60-1.00/)
     run_damage(
         **common_kwargs,
         manipulation_method="eccentricity",
