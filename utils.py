@@ -855,7 +855,6 @@ def run_damage(
     model_info,
     pretrained,
     fraction_to_mask_params,
-    ecc_fraction_to_mask_params,
     noise_levels_params,
     groupnorm_scaling_params,
     layer_paths_to_damage,
@@ -872,6 +871,7 @@ def run_damage(
     masking_level="connections",
     eccentricity_layer_path=None, # Specific layer path. The output will be used for damage
     eccentricity_bands: list[list[float]] | None = [[0.60, 1.00]], # Define a set of [min,max] normalised eccentricity bands
+    ecc_fraction_to_mask_params=[0,0,0],
     run_suffix=""
 ):
     """
