@@ -27,7 +27,10 @@ import os, tarfile, hashlib
 import copy
 import statsmodels.formula.api as smf
 from pathlib import Path
-from typing import Sequence, Mapping, Tuple, List
+from typing import Sequence, Mapping, Tuple, List, Iterator, Any
+import zarr
+import numcodecs
+
 
 def get_layer_from_path(model, layer_path):
     current = model
@@ -580,33 +583,6 @@ def compute_correlations(activations_df_sorted):
     return correlation_matrix, sorted_image_names
 
 
-def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):
-    """
-    Plot a heatmap of the correlation matrix.
-
-    Parameters:
-        correlation_matrix (np.ndarray): The correlation matrix.
-        sorted_image_names (list): List of image names corresponding to matrix indices.
-        layer_name (str): Name of the layer used in the title.
-        vmax (float): Upper bound for colormap.
-    """
-    plt.figure(figsize=(12, 10))
-    sns.heatmap(correlation_matrix, annot=False, cmap="viridis",
-                xticklabels=sorted_image_names, yticklabels=sorted_image_names, vmax=vmax, vmin=0)
-    plt.title(f"Correlation of Activations Between Images (Layer: {layer_name})")
-    plt.xlabel("Images")
-    plt.ylabel("Images")
-    plt.xticks(rotation=90)
-    plt.yticks(rotation=0)
-    plt.tight_layout()
-    # Save figure
-    save_path = f"data/haupt_stim_activ/{model_name}/{layer_name}.png"
-    # Create the directories if they don't already exist
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path, dpi=400)
-    plt.show()
-
-
 def assign_categories(sorted_image_names):
     """
     Assign category labels to images based on the non-numeric part of each filename.
@@ -880,29 +856,25 @@ def run_damage(
     pretrained,
     fraction_to_mask_params,
     noise_levels_params,
+    groupnorm_scaling_params,
     layer_paths_to_damage,
     apply_to_all_layers,
-    manipulation_method,          # "connections" or "noise"
+    manipulation_method,
     mc_permutations,
     layer_name,
     activation_layers_to_save,
     image_dir,
     only_conv,
     include_bias,
-    masking_level="connections",  #  ← NEW (keeps old behaviour by default)
+    groupnorm_scaling_targets,
+    gain_control_noise=0.0,
+    masking_level="connections",
     run_suffix=""
 ):
     """
-    A merged run_damage that:
-      - Keeps  time_steps/run_suffix logic + per-image forward pass.
-      - Incorporates earliest-damaged-block logic so only hook layers that come at or after that block.
-      - Still uses an 'activations' dictionary, updated each time run a forward pass on a single image.
-      - Allows hooking multiple layers (activation_layers_to_save).
+    A merged run_damage that handles multiple manipulation methods.
     """
-
-    # -------------------------------------------------------------------------
     # SECTION 2: (Unchanged) Time steps & run_suffix from original code
-    # -------------------------------------------------------------------------
     if "time_steps" in model_info:
         time_steps = str(model_info['time_steps'])
     elif model_info['name'] == "cornet_rt":
@@ -913,24 +885,22 @@ def run_damage(
     # Keep original run_suffix logic
     run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
 
-    # -------------------------------------------------------------------------
-    # A) Determine the list of damage levels (same as before + optional temp load for noise_dict)
-    # -------------------------------------------------------------------------
+    # A) Determine the list of damage levels
     if manipulation_method == "connections":
         damage_levels_list = generate_params_list(fraction_to_mask_params)
-        noise_dict = None
+        noise_dict = None # Ensure noise_dict is not used for other methods
     elif manipulation_method == "noise":
         damage_levels_list = generate_params_list(noise_levels_params)
         # For noise, we do the original approach of loading a model once
         model, _ = load_model(model_info, pretrained=pretrained, layer_name="temp", layer_path="module._modules.V1._modules.output")
         noise_dict = get_params_sd(model)
-        
+    elif manipulation_method == "groupnorm_scaling": # <-- new branch
+        damage_levels_list = generate_params_list(groupnorm_scaling_params)
+        noise_dict = None # Ensure noise_dict is not used
     else:
-        raise ValueError("manipulation_method must be 'connections' or 'noise'.")
+        raise ValueError(f"manipulation_method '{manipulation_method}' is not recognized.")
 
-    # -------------------------------------------------------------------------
     # B) Identify earliest damaged block (new logic), filter activation layers
-    # -------------------------------------------------------------------------
     top_level_blocks_in_order = ["V1", "V2", "V4", "IT"]
     block_order_map = {b: i for i, b in enumerate(top_level_blocks_in_order)}
 
@@ -954,34 +924,33 @@ def run_damage(
     final_layers_to_hook = get_final_layers_to_hook(model,activation_layers_to_save,layer_paths_to_damage)
     
     print("Activations to be saved for ",layer_paths_to_damage, ": ", final_layers_to_hook)
-    # If final_layers_to_hook is empty, we won't really collect multi-layer activations,
-    # but we keep 'layer_name' for the old directory naming logic.
 
     total_iterations = len(damage_levels_list) * mc_permutations
 
-    # ------------------------------------------------------------------
-    # C)  Folder tag: 'noise', 'connections', or 'units'
-    # ------------------------------------------------------------------
+    # C)  Folder tag: 'noise', 'connections', 'units', or 'groupnorm_scaling'
     if manipulation_method == "noise":
         dir_tag = "noise"
     elif manipulation_method == "connections":
         dir_tag = "units" if masking_level == "units" else "connections"
+    elif manipulation_method == "groupnorm_scaling":
+        # ---- build a concise tag “g”, “c”, or “g+c” -----------------
+        _map = {"groupnorm": "g", "conv": "c"}
+        sel  = [_map[t] for t in sorted(set(groupnorm_scaling_targets))]
+        targ_tag = "+".join(sel)
+        # Add noise level to parent directory name
+        dir_tag  = f"groupnorm_scaling_{targ_tag}_noise{gain_control_noise:.3f}"
     else:
         dir_tag = manipulation_method          # fallback, should not occur
 
-    # -------------------------------------------------------------------------
     # SECTION 4: (Kept) The original style: one forward pass per image.
-    #            We'll do it slightly adapted so we can handle multi-layer hooking
-    # -------------------------------------------------------------------------
-    with tqdm(total=total_iterations, desc="Running alteration") as pbar:
+    with tqdm(total=total_iterations, desc=f"Running {manipulation_method} alteration") as pbar:
         for damage_level in damage_levels_list:
             for permutation_index in range(mc_permutations):
                 # 1) Load fresh model & attach multi-hook
-                #    We'll store outputs in the original 'activations' dict but for multiple layers
                 model, activations = load_model(
                     model_info=model_info,
                     pretrained=pretrained,
-                    layer_name=layer_name,       # used for naming, but see note below
+                    layer_name=layer_name,
                     layer_path=final_layers_to_hook  # multi-layer hooking
                 )
                 model.eval()
@@ -997,7 +966,7 @@ def run_damage(
                         only_conv=only_conv,
                         include_bias=include_bias
                     )
-                else:  # "noise"
+                elif manipulation_method == "noise":
                     apply_noise(
                         model,
                         noise_level=damage_level,
@@ -1007,12 +976,18 @@ def run_damage(
                         only_conv=only_conv,
                         include_bias=include_bias
                     )
+                elif manipulation_method == "groupnorm_scaling":
+                    apply_groupnorm_scaling(
+                        model,
+                        scaling_factor=damage_level,
+                        layer_paths=layer_paths_to_damage,
+                        apply_to_all_layers=apply_to_all_layers,
+                        include_bias=include_bias,
+                        targets = groupnorm_scaling_targets,
+                        gain_control_noise=gain_control_noise
+                    )
 
                 # 3) Now we do the old "extract_activations" approach (one image at a time)
-                #    but we need multi-layer outputs. We'll do a custom loop similar to original code.
-
-                # We'll store each image's flattened activation in a dictionary-of-lists, e.g.:
-                #   per_layer_data = {layer_path: []}
                 per_layer_data = {lp: [] for lp in final_layers_to_hook}
 
                 image_files = [
@@ -1030,16 +1005,14 @@ def run_damage(
                         model(input_tensor)
 
                     # 'activations[lp]' is now the last image's output for that layer
-                    # We'll flatten & store in per_layer_data
                     for lp in final_layers_to_hook:
-                        out_flat = activations[lp].flatten()  # assume hooking updated this
+                        out_flat = activations[lp].flatten()
                         per_layer_data[lp].append(out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat)
 
                 # 4) For each layer, build a DataFrame, compute correlation, selectivity, and save
-                #    We'll keep the original directory structure: same as old, but insert 'lp' after RDM/selectivity etc.
                 for lp in final_layers_to_hook:
                     # build a 2D array [N_images, features]
-                    arr_2d = np.stack(per_layer_data[lp], axis=0)  # shape [N, F]
+                    arr_2d = np.stack(per_layer_data[lp], axis=0)
                     activations_df = pd.DataFrame(arr_2d, index=image_files)
 
                     # sort indices
@@ -1052,10 +1025,11 @@ def run_damage(
                         f"{dir_tag}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
                     )
                     os.makedirs(activation_dir, exist_ok=True)
-                    activation_dir_path = os.path.join(activation_dir, f"{permutation_index}.pkl")
+                    activation_dir_path = os.path.join(activation_dir, f"{permutation_index}")
 
                     reduced_df = activations_df_sorted.astype(np.float16)
-                    reduced_df.to_pickle(activation_dir_path)
+                    # Saving activations to zarr format
+                    append_activation_to_zarr(reduced_df, activation_dir_path, perm_idx=permutation_index)
 
                     # compute correlation matrix
                     correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
@@ -1066,9 +1040,12 @@ def run_damage(
                         f"{dir_tag}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
                     )
                     os.makedirs(corrmat_dir, exist_ok=True)
-                    corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}.pkl")
-                    with open(corrmat_path, "wb") as f:
-                        pickle.dump(correlation_matrix.tolist(), f)
+                    corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}")
+                    append_activation_to_zarr(
+                        pd.DataFrame(correlation_matrix.astype("float32")),
+                        corrmat_path,                      # keep path
+                        perm_idx=permutation_index
+                    )
 
                     # compute within-between
                     categories_array = assign_categories(sorted_image_names)
@@ -1089,7 +1066,6 @@ def run_damage(
                 pbar.update(1)
 
     print("All damage permutations completed!")
-
 
 
 def get_sorted_filenames(image_dir):
@@ -1149,40 +1125,59 @@ def safe_load_pickle(file_path):
         return None
 
 
+def _load_svm_scores(path, categories):
+    """
+    Helper that returns  {category: score_float, …}  for one SVM result file.
+    Works with either Pickle (old style dict) or Zarr (DataFrame).
+    """
+    if str(path).lower().endswith(".pkl"):
+        d = safe_load_pickle(path)
+        if d is None:                               # corrupted / empty
+            return {}
+        # old file structure:  d = {"animal":{"score":…}, …}
+        return {k.lower(): v.get("score", np.nan) for k, v in d.items()}
+
+    # ---- zarr branch -------------------------------------------------
+    try:
+        df = load_activations_zarr(path)
+    except Exception as exc:
+        print(f"[warn] could not read {path}: {exc}")
+        return {}
+
+    df = df.select_dtypes("number")                # keep only numeric cols
+    if df.empty:
+        return {}
+
+    scores = {"overall": float(df.mean().mean())}
+    for cat in categories:
+        mask = df.columns.str.contains(cat, case=False, regex=False)
+        if mask.any():
+            scores[cat] = float(df.loc[:, mask].mean().mean())
+    return scores
+
+
 def categ_corr_lineplot(
     damage_layers,
     activations_layers,
     damage_type,
     main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
-    categories=("overall",),              # default for imagenet
-    metric="observed_difference",          # or "top1"/"top5" for imagenet
+    categories=("overall",),
+    metric="observed_difference",
     subdir_regex=r"damaged_([\d\.]+)$",
     plot_dir="plots/",
-    data_type="selectivity",               # "selectivity" | "svm_15" | "imagenet"
+    data_type="selectivity",
     scatter=False,
     verbose=0,
     ylim=None,
     percentage=False,
     selectivity_fraction: float|None = None,
     selection_mode: str = "percentage",
-    selectivity_file: str|None   = "unit_selectivity/all_layers_units_mannwhitneyu.pkl"):
+    selectivity_file: str|None   = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
+    flip_x_axis=False  # Used for e.g., gain control plots
+):
     """
     Aggregate replicate files into mean±std curves.
-
-    data_type == "selectivity"  -> original within-between correlation
-    data_type.startswith("svm") -> original SVM accuracy
-    data_type == "imagenet"     -> this NEW branch, needs .pkl of form
-            { "overall": {"top1": .., "top5": ..},
-                "classes": { cls_idx: {"top1": .., "top5": ..}, ... } }
-
-    categories
-    ----------
-    selectivity / svm : list[str]   ("animal","face",...) total
-    imagenet          : iterable of
-       "overall"                → use content["overall"][metric]
-       int 0-999 (or str digit) → use per-class entry
     """
-
     # ------------ 1. choose data sub-folder --------------------
     if data_type in ("selectivity",) or data_type.startswith("svm"):
         data_subfolder = data_type
@@ -1348,11 +1343,12 @@ def categ_corr_lineplot(
                     if not os.path.exists(cache):
                         agg = {}                      # cat -> list[values]
 
-                        for fn in os.listdir(subdir_path):
-                            if not fn.lower().endswith(".pkl"):
-                                continue
-                            content = safe_load_pickle(os.path.join(subdir_path, fn))
-                            if content is None:
+                        for fname in os.listdir(subdir_path):
+                            p = os.path.join(subdir_path, fname)
+                            # accept  *.pkl   OR   *.zarr  (dir)
+                            is_pkl  = fname.lower().endswith(".pkl")
+                            is_zarr = fname.lower().endswith(".zarr") and os.path.isdir(p)
+                            if not (is_pkl or is_zarr):
                                 continue
 
                             # ---- IMAGE NET MODE ----
@@ -1378,10 +1374,12 @@ def categ_corr_lineplot(
 
                             # ---- SVM MODE ----
                             else:   # data_type starts with "svm"
-                                for cat_name in categories:
-                                    if cat_name in content:
-                                        agg.setdefault(cat_name, []).append(float(content[cat_name]["score"]))
-
+                                scores = _load_svm_scores(p, categories)
+                                if not scores:
+                                    continue
+                                for cat_name, val in scores.items():
+                                    if cat_name in categories:
+                                        agg[cat_name].append(val)
                         # save aggregated stats
                         packed = {
                             c: {
@@ -1411,23 +1409,58 @@ def categ_corr_lineplot(
                             data[(layer, act_key, cat)][frac] = (mean, std, n)
                             raw_points[(layer, act_key, cat)][frac] = vals
 
-    # ------------ 5. optional percentage scaling --------------
+       # ------------ 5. optional percentage scaling --------------
     if percentage:
+        # --- helper: pick which damage fraction corresponds to the *intact* network
+        def _baseline_fraction(frac_keys, dmg_type):
+            """
+            Choose the damage level that will serve as the 100 % reference.
+
+            • For 'groupnorm_scaling' the network is intact at damage == 1.0.
+              If 1.0 is absent, pick the *largest* available fraction.
+
+            • For all other damage types the intact network is at damage == 0.0,
+              or more generally the *smallest* available fraction.
+            """
+            fracs = sorted(frac_keys)
+            if dmg_type == "groupnorm_scaling":
+                return 1.0 if 1.0 in fracs else fracs[-1]
+            return fracs[0]        # default: 0.0 or smallest
+
         for key in data:
             frac_dict = data[key]
             raw_dict  = raw_points[key]
             if not frac_dict:
                 continue
-            base_frac = sorted(frac_dict.keys())[0]
-            base_vals = np.array(raw_dict[base_frac], dtype=float)
+
+            # Pick the baseline and make sure we have raw values for it
+            base_frac = _baseline_fraction(frac_dict.keys(), damage_type)
+            if base_frac not in raw_dict or len(raw_dict[base_frac]) == 0:
+                # Nothing to scale against – skip this curve
+                continue
+
+            base_vals = np.asarray(raw_dict[base_frac], dtype=float)
+
+            # Convert every fraction to “% of baseline”
             for frac in frac_dict:
-                cur_vals = np.array(raw_dict[frac], dtype=float)
+                cur_vals = np.asarray(raw_dict[frac], dtype=float)
                 min_len  = min(len(base_vals), len(cur_vals))
-                ratio    = 100.0 * cur_vals[:min_len] / np.where(base_vals[:min_len]==0, np.nan, base_vals[:min_len])
-                frac_dict[frac] = (float(np.nanmean(ratio)),
-                                   float(np.nanstd(ratio)),
-                                   len(ratio))
-                raw_dict[frac]  = ratio.tolist()
+                if min_len == 0:
+                    continue
+
+                ratio = 100.0 * cur_vals[:min_len] / np.where(
+                            base_vals[:min_len] == 0,
+                            np.nan,
+                            base_vals[:min_len])
+
+                # Store percentage‑scaled stats
+                frac_dict[frac] = (
+                    float(np.nanmean(ratio)),
+                    float(np.nanstd(ratio)),
+                    len(ratio)
+                )
+                raw_dict[frac] = ratio.tolist()
+
 
     # ------------ 6. PLOT --------------------------------------
     plt.figure(figsize=(8, 6))
@@ -1459,6 +1492,12 @@ def categ_corr_lineplot(
     plt.title(f"{data_type} vs damage — {damage_type}")
     if ylim: plt.ylim(ylim)
     plt.legend()
+
+    # <-- New feature
+    if flip_x_axis:
+        plt.gca().invert_xaxis()
+    # <-- End new feature
+
     plt.tight_layout()
 
     os.makedirs(plot_dir, exist_ok=True)
@@ -1466,6 +1505,9 @@ def categ_corr_lineplot(
                   data_type, damage_type, metric]
     name_parts.extend(damage_layers)
     name_parts.extend(activations_layers)
+    if percentage:
+        name_parts.append("percentage")
+
     if selectivity_fraction is not None:
         name_parts.append(f"top{selectivity_fraction:.2f}-{selection_mode}")
     plot_path = os.path.join(plot_dir, "_".join(name_parts) + ".png")
@@ -1477,129 +1519,108 @@ def categ_corr_lineplot(
 def plot_avg_corr_mat(
     layers,
     damage_type,
+    *,
     image_dir="stimuli/",
     output_dir="average_RDMs",
     subdir_regex=r"damaged_([\d\.]+)$",
-    damage_levels=None, # List
+    damage_levels=None,
     main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
     vmax=1.0,
     plot_dir="plots/",
-    verbose=0
+    verbose=0,
 ):
     """
-    1. Loop over subdirectories matching the damage type and layers.
-    2. For each match, compute the average correlation matrix if not already saved.
-    3. Collect and plot the matrices as subplots, allowing multiple layers and damage types.
+    Build & plot average RDMs using **all permutations** in every file.
+    Works with both *.pkl* and *.zarr* correlation stores.
     """
-    # Prepare data structure
-    fraction_to_matrix = {}
-
-    # Build axis labels once
+    fraction_to_matrix: dict[tuple[float, str], np.ndarray] = {}
     sorted_image_names = get_sorted_filenames(image_dir)
-    n_images=len(sorted_image_names)
+    n_img = len(sorted_image_names)
 
-    # Loop over layers and damage types
     for layer in layers:
-        layer_output_dir = os.path.join(main_dir, damage_type, layer, output_dir)
-        os.makedirs(layer_output_dir, exist_ok=True)
-
-        layer_path = os.path.join(main_dir, damage_type, layer, "RDM")
-
-        if not os.path.isdir(layer_path):
+        rdm_root   = Path(main_dir) / damage_type / layer / "RDM"
+        cache_root = Path(main_dir) / damage_type / layer / output_dir
+        cache_root.mkdir(parents=True, exist_ok=True)
+        if not rdm_root.exists():
+            print(f"[warn] missing {rdm_root}")
             continue
 
-        for subdir_name in os.listdir(layer_path):
-            subdir_path = os.path.join(layer_path, subdir_name)
-            if not os.path.isdir(subdir_path):
+        for sub in rdm_root.iterdir():
+            if not sub.is_dir():
                 continue
-
-            # Check for suffix or regex match
             if damage_levels:
-                if not any(subdir_name.endswith(f"damaged_{suffix}") for suffix in damage_levels):
+                if not any(sub.name.endswith(f"damaged_{lvl}") for lvl in damage_levels):
                     continue
+                frac = float(extract_string_numeric_parts(sub.name)[1])
             else:
-                match = re.search(subdir_regex, subdir_name)
-                if not match:
+                m = re.search(subdir_regex, sub.name)
+                if not m:
                     continue
+                frac = float(m.group(1))
+            frac = round(frac, 3)
 
-            fraction = round(float(match.group(1)) if not damage_levels else extract_string_numeric_parts(subdir_name)[1],3)
-            
-            # Prepare output file name
-            out_fname = f"avg_RDM_{fraction}.pkl"
-            out_path = os.path.join(layer_output_dir, out_fname)
-            # Check for precomputed matrix
-            if os.path.exists(out_path):
-                print(f"Found existing average RDM for fraction={fraction}, layer={layer}; loading it.")
-                with open(out_path, "rb") as f:
-                    avg_mat = np.array(pickle.load(f), dtype=np.float32)
+            cache_file = cache_root / f"avg_RDM_{frac}.pkl"
+            if cache_file.exists():
+                avg_mat = np.asarray(pd.read_pickle(cache_file), dtype=np.float32)
             else:
-                all_mats = []
-                print(f"No precomputed average RDM for fraction={fraction}, layer={layer}; computing now.")
-                for fname in os.listdir(subdir_path):
-                    if fname.lower().endswith(".pkl"):
-                        pkl_path = os.path.join(subdir_path, fname)
-                        with open(pkl_path, "rb") as f:
-                            matrix_list = pickle.load(f)
-                        mat = np.array(matrix_list, dtype=np.float32)
-                        all_mats.append(mat)
+                mats = []
+                for item in sub.iterdir():
+                    if item.suffix.lower() in (".pkl", ".zarr"):
+                        try:
+                            mats.extend(load_all_corr_mats(item))
+                        except Exception as exc:
+                            print(f"[skip] {item}: {exc}")
+                if not mats:
+                    continue
+                avg_mat = np.mean(mats, axis=0).astype(np.float32)
+                pd.to_pickle(avg_mat.tolist(), cache_file)
 
-                avg_mat = np.mean(all_mats, axis=0) if all_mats else None
-                if avg_mat is not None:
-                    with open(out_path, "wb") as f:
-                        pickle.dump(avg_mat.tolist(), f)
+            fraction_to_matrix[(frac, layer)] = avg_mat
 
-            if avg_mat is not None:
-                fraction_to_matrix[(fraction, layer)] = avg_mat
+    if not fraction_to_matrix:
+        print("No matrices found – nothing to plot.")
+        return
 
-    # Plot results
-    sorted_fractions = sorted(fraction_to_matrix.keys())
-    n_subplots = len(sorted_fractions)
-    n_cols = int(math.ceil(n_subplots ** 0.5))
-    n_rows = int(math.ceil(n_subplots / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows), squeeze=False)
+    # ---------- plotting ----------
+    keys = sorted(fraction_to_matrix)
+    n   = len(keys)
+    n_c = int(np.ceil(n ** 0.5))
+    n_r = int(np.ceil(n / n_c))
+    fig, axes = plt.subplots(n_r, n_c, figsize=(4*n_c, 4*n_r), squeeze=False)
     axes = axes.ravel()
-    
 
-    for i, (fraction, layer) in enumerate(sorted_fractions):
-        avg_mat = fraction_to_matrix[(fraction, layer)]
-        ax = axes[i]
-        im = ax.imshow(avg_mat, cmap="viridis", vmin=0, vmax=vmax)
-        ax.set_xticks(range(n_images))
-        ax.set_yticks(range(n_images))
+    for i, (frac, layer) in enumerate(keys):
+        R   = fraction_to_matrix[(frac, layer)]
+        ax  = axes[i]
+        im  = ax.imshow(R, cmap="viridis", vmin=0, vmax=vmax)
+        ax.set_xticks(range(n_img))
+        ax.set_yticks(range(n_img))
         ax.set_xticklabels(sorted_image_names, rotation=90, fontsize=4)
         ax.set_yticklabels(sorted_image_names, fontsize=4)
-        ax.set_title(f"Fraction={fraction}, Layer={layer}")
+        ax.set_title(f"{layer} — dmg={frac}")
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    for j in range(i + 1, len(axes)):
-        axes[j].axis("off")
+    for ax in axes[i+1:]:
+        ax.axis("off")
+
     plt.suptitle(damage_type)
     plt.tight_layout()
-        # Saving plot
-    os.makedirs(plot_dir, exist_ok=True)
-    model_name = main_dir.split("/")[-2] # Assuming that there is a slash after the model name ("/cornet/")
-    plot_name = f"{model_name}_RDM_{damage_type}"
 
-    for layer in layers:
-        plot_name = plot_name + f"_{layer}"
+    plot_dir = Path(plot_dir); plot_dir.mkdir(parents=True, exist_ok=True)
+    model_name = Path(main_dir).parts[-2]  # “…/damaged/<model>/…”
+    n_lvls = len(damage_levels) if damage_levels else len(keys)
+    tag_layers = "_".join(layers)
+    out_png = plot_dir / f"{model_name}_RDM_{damage_type}_{tag_layers}_{n_lvls}-levels.png"
 
-    n_damages = len(damage_levels)
-    
-    plot_name = plot_name + f"_{n_damages}-levels"
-
-    save_path = os.path.join(plot_dir, plot_name)
-
-    if verbose==1:
-        save_plot = input(f"Save plot under {save_path}? Y/N: ")
-
-        if save_plot.capitalize() == "Y":
-            plt.savefig(save_path, dpi=500)
+    if verbose == 1:
+        if input(f"Save plot to {out_png}? [Y/n] ").strip().lower() in ("", "y"):
+            plt.savefig(out_png, dpi=500)
         plt.show()
     elif verbose == 0:
-        plt.savefig(save_path, dpi=500)
+        plt.savefig(out_png, dpi=500)
+        plt.close(fig)
     else:
-        ValueError(f"{verbose} is not a valid value. Use 0 or 1.")
-
+        raise ValueError("verbose must be 0 or 1")
 
 
 def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):
@@ -1664,7 +1685,42 @@ def plot_categ_differences(
        "selectivity" -> correlation-based data from ".../RDM/<act_layer>"
        "svm_..." -> classification accuracy from ".../svm_15/<act_layer>".
     """
+    # ---------------- NEW COMMON IO HELPERS --------------------------
 
+    def load_svm_dataframes(item_path: str | os.PathLike) -> list[pd.DataFrame]:
+        """
+        Return one DataFrame per permutation.
+
+        Accepts .pkl, .zarr, or a directory containing either.
+        """
+        dfs = []
+
+        if os.path.isfile(item_path):
+            if str(item_path).endswith(".pkl"):
+                df = pd.read_pickle(item_path)
+                if not isinstance(df, pd.DataFrame):
+                    raise ValueError(f"{item_path} did not contain a DataFrame.")
+                dfs.append(df)
+
+            elif str(item_path).endswith(".zarr"):
+                with zarr.open(str(item_path), mode="r") as zr:
+                    for perm in zr.attrs["perm_indices"]:
+                        df = load_activations_zarr(item_path, perm=perm)
+                        dfs.append(df)
+
+            else:
+                raise ValueError(f"Unsupported file type: {item_path}")
+
+        elif os.path.isdir(item_path):
+            for fn in sorted(os.listdir(item_path)):
+                if fn.endswith((".pkl", ".zarr")):
+                    dfs += load_svm_dataframes(os.path.join(item_path, fn))
+        else:
+            raise FileNotFoundError(f"{item_path} is neither file nor directory.")
+
+        if not dfs:
+            raise FileNotFoundError(f"No SVM DataFrames found in {item_path}")
+        return dfs
     # ---------------- HELPER FUNCTIONS ----------------
     def unify_image_name(cat_str):
         """ Convert 'scene' -> 'place' for selectivity categories. """
@@ -1696,33 +1752,7 @@ def plot_categ_differences(
             return (fname, "")
 
     # ----------- SELECTIVITY FUNCTIONS -------------
-    def load_correlation_matrices(item_path, n_files):
-        def _validate_matrix(mat, path_str):
-            if len(mat) != n_files:
-                raise ValueError(
-                    f"Matrix in '{path_str}' has {len(mat)} rows, but expected {n_files}."
-                )
-            for row in mat:
-                if len(row) != n_files:
-                    raise ValueError(f"Non-square row in '{path_str}'.")
-        mats = []
-        if os.path.isfile(item_path):
-            with open(item_path, 'rb') as f:
-                mat = pickle.load(f)
-            _validate_matrix(mat, item_path)
-            mats.append(mat)
-        elif os.path.isdir(item_path):
-            for fname in sorted(os.listdir(item_path)):
-                if fname.endswith(".pkl"):
-                    path = os.path.join(item_path, fname)
-                    with open(path, 'rb') as f:
-                        mat = pickle.load(f)
-                    _validate_matrix(mat, path)
-                    mats.append(mat)
-        else:
-            raise FileNotFoundError(f"'{item_path}' is neither file nor directory.")
-        return mats
-
+    
     def compute_differences_selectivity(matrices, sorted_filenames, categories_list):
         """
         For each focal category, compute (within-cat) - (between-cat) for each other cat.
@@ -1770,26 +1800,6 @@ def plot_categ_differences(
         return diffs_dict
 
     # ----------- SVM FUNCTIONS -------------
-    def load_svm_dataframes(item_path):
-        """Load all .pkl files as DataFrames from a dir or a single file."""
-        dfs = []
-        if os.path.isfile(item_path):
-            df = pd.read_pickle(item_path)
-            if not isinstance(df, pd.DataFrame):
-                raise ValueError(f"File '{item_path}' did not contain a DataFrame.")
-            dfs.append(df)
-        elif os.path.isdir(item_path):
-            for fname in sorted(os.listdir(item_path)):
-                if fname.endswith(".pkl"):
-                    path = os.path.join(item_path, fname)
-                    df = pd.read_pickle(path)
-                    if not isinstance(df, pd.DataFrame):
-                        raise ValueError(f"File '{path}' did not contain a DataFrame.")
-                    dfs.append(df)
-        else:
-            raise FileNotFoundError(f"'{item_path}' is neither file nor directory.")
-        return dfs
-
     def compute_svm_pairwise_accuracies(dataframes, categories_list):
         """
         For each focal cat 'cat' and other cat 'oc':
@@ -1977,7 +1987,7 @@ def plot_categ_differences(
                         dfs = load_svm_dataframes(item_path)
                         diffs_dict = compute_svm_pairwise_accuracies(dfs, categories_list)
                     else:
-                        mats = load_correlation_matrices(item_path, n_files)
+                        mats = load_all_corr_mats(item_path)
                         diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
 
                     all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
@@ -2368,7 +2378,7 @@ def pair_corr_scatter_subplots(
             # We'll plot each of the first n_permutations
             for j, pkl_file in enumerate(pkl_files[:n_permutations]):
                 pkl_path = os.path.join(subdir_path, pkl_file)
-                df = safe_load_pickle(pkl_path)
+                df = load_activations_zarr(pkl_path)
 
                 rowname1 = f"{image1}.jpg"
                 rowname2 = f"{image2}.jpg"
@@ -2473,12 +2483,12 @@ def damage_type_lineplot(
     layer,
     damage_types,
     main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
-    categories=["animal", "face", "object", "place", "total"],
+    categories=("animal", "face", "object", "place", "total"),
     metric="observed_difference",
     subdir_regex=r"damaged_([\d\.]+)$",
     plot_dir="plots/",
-    common_ylim=None,  # tuple or None
-    verbose=0  # 0 or 1
+    common_ylim=None,
+    verbose=0,
 ):
     """
     1) Aggregates data for each damage_type & category.
@@ -2489,312 +2499,176 @@ def damage_type_lineplot(
        - The top and bottom axes have different colors and different param scales.
     4) If common_ylim is provided, it's applied to all subplots for consistent comparison.
     """
+    # ------------------------------------------------------------------
+    # Helper : read **all permutations** from either a Pickle or a Zarr
+    # ------------------------------------------------------------------
+    def _load_selectivity_dicts(path: str | os.PathLike) -> list[dict]:
+        out = []
+        if os.path.isfile(path):
+            if str(path).endswith(".pkl"):
+                try:
+                    with open(path, "rb") as f:
+                        d = pickle.load(f)
+                    if isinstance(d, dict):
+                        out.append(d)
+                except Exception as exc:
+                    print(f"[warn] could not read {path}: {exc}")
 
-    # -------------
-    # STEP 1: AGGREGATE DATA
-    # -------------
-    data = {}  # data[(damage_type, category)] -> { param_value : (mean, std) }
+            elif str(path).endswith(".zarr"):
+                try:
+                    root = zarr.open(str(path), mode="r")
+                    for perm in root.attrs.get("perm_indices", []):
+                        df = load_activations_zarr(path, perm=perm)
+                        # expect a 1‑row DataFrame whose single cell is the dict
+                        if df.shape[0] == 1 and isinstance(df.iloc[0, 0], dict):
+                            out.append(df.iloc[0, 0])
+                        else:
+                            print(f"[warn] {path} did not contain a dict payload")
+                except Exception as exc:
+                    print(f"[warn] could not read {path}: {exc}")
+        elif os.path.isdir(path):
+            for fn in sorted(os.listdir(path)):
+                if fn.endswith((".pkl", ".zarr")):
+                    out += _load_selectivity_dicts(os.path.join(path, fn))
+        return out
+    # ------------------------------------------------------------------
 
-    for damage_type in damage_types:
-        layer_path = os.path.join(main_dir, damage_type, layer, "selectivity")
-        output_path = os.path.join(main_dir, damage_type, layer, "avg_selectivity")
+    # ------------- STEP 1 – aggregate ---------------------------------
+    data = { (dt, cat): {} for dt in damage_types for cat in categories }
+
+    for dmg_type in damage_types:
+        layer_path   = os.path.join(main_dir, dmg_type, layer, "selectivity")
+        output_path  = os.path.join(main_dir, dmg_type, layer, "avg_selectivity")
         os.makedirs(output_path, exist_ok=True)
 
         if not os.path.isdir(layer_path):
-            print(f"Warning: {layer_path} not found. Skipping {damage_type}.")
+            print(f"[warn] {layer_path} not found – skipping '{dmg_type}'")
             continue
 
-        # Initialize data structures
-        for cat in categories:
-            data[(damage_type, cat)] = {}
+        for subdir in os.listdir(layer_path):
+            m = re.search(subdir_regex, subdir)
+            if not (m and os.path.isdir(os.path.join(layer_path, subdir))):
+                continue                                    # not a “damaged_x” dir
 
-        # Check subdirectories
-        for subdir_name in os.listdir(layer_path):
-            subdir_path = os.path.join(layer_path, subdir_name)
-            if not os.path.isdir(subdir_path):
-                continue
+            frac = round(float(m.group(1)), 3)
+            cache = os.path.join(output_path, f"avg_selectivity_{frac}.pkl")
 
-            match = re.search(subdir_regex, subdir_name)
-            if not match:
-                continue  # Not a "damaged_xxx" folder
+            # -- build cache if missing --------------------------------
+            if not os.path.exists(cache):
+                agg: dict[str, list[float]] = {c: [] for c in categories}
 
-            fraction_raw = float(match.group(1))
-            fraction_rounded = round(fraction_raw, 3)
+                for d in _load_selectivity_dicts(os.path.join(layer_path, subdir)):
+                    for cat, met in d.items():
+                        if cat in categories and metric in met:
+                            agg[cat].append(float(met[metric]))
 
-            fraction_file_name = f"avg_selectivity_{fraction_rounded}.pkl"
-            fraction_file_path = os.path.join(output_path, fraction_file_name)
+                stats = {
+                    c: {
+                        "mean": float(np.mean(v)) if v else np.nan,
+                        "std":  float(np.std (v)) if v else np.nan,
+                    } for c, v in agg.items()
+                }
+                with open(cache, "wb") as f:
+                    pickle.dump(stats, f)
 
-            # If we haven't aggregated this fraction yet, do so
-            if not os.path.exists(fraction_file_path):
-                aggregated_data = {}  # aggregated_data[cat][metric] = []
-
-                for fname in os.listdir(subdir_path):
-                    if fname.lower().endswith(".pkl"):
-                        pkl_path = os.path.join(subdir_path, fname)
-                        with open(pkl_path, "rb") as f:
-                            content = pickle.load(f)
-                        if not isinstance(content, dict):
-                            continue
-                        for cat_name, metrics_dict in content.items():
-                            if not isinstance(metrics_dict, dict):
-                                continue
-                            if cat_name not in aggregated_data:
-                                aggregated_data[cat_name] = {}
-                            for metric_name, val in metrics_dict.items():
-                                aggregated_data[cat_name].setdefault(metric_name, [])
-                                aggregated_data[cat_name][metric_name].append(val)
-
-                # Compute mean & std
-                stats_dict = {}
-                for cat_name, metrics_map in aggregated_data.items():
-                    stats_dict[cat_name] = {}
-                    for metric_name, vals_list in metrics_map.items():
-                        if len(vals_list) == 0:
-                            continue
-                        arr = np.array(vals_list, dtype=float)
-                        mean_val = float(np.mean(arr))
-                        std_val = float(np.std(arr))
-                        stats_dict[cat_name][metric_name] = {
-                            "mean": mean_val,
-                            "std": std_val
-                        }
-
-                # Save aggregated stats
-                with open(fraction_file_path, "wb") as f:
-                    pickle.dump(stats_dict, f)
-
-            # Load stats
-            aggregated_content = safe_load_pickle(fraction_file_path)
-            if not isinstance(aggregated_content, dict):
-                continue
-
+            # -- read cache & fill master dict -------------------------
+            cached = safe_load_pickle(cache) or {}
             for cat in categories:
-                if cat in aggregated_content:
-                    if (isinstance(aggregated_content[cat], dict) and 
-                        metric in aggregated_content[cat]):
-                        mean_val = aggregated_content[cat][metric]["mean"]
-                        std_val = aggregated_content[cat][metric]["std"]
-                        data[(damage_type, cat)][fraction_rounded] = (mean_val, std_val)
+                if (isinstance(cached.get(cat), dict) and
+                        metric in cached[cat]):
+                    μ = cached[cat][metric]["mean"]
+                    σ = cached[cat][metric]["std"]
+                    data[(dmg_type, cat)][frac] = (μ, σ)
 
-    # -------------
-    # STEP 2: PLOT ONE SUBPLOT PER DAMAGE TYPE
-    # -------------
-    num_damage_types = len(damage_types)
-    if num_damage_types == 0:
-        print("No valid damage types found. Exiting.")
+    # ------------- STEP 2 – single‑axis sub‑plots ---------------------
+    n = len(damage_types)
+    if n == 0:
+        print("No valid damage types → nothing to plot.")
         return
 
-    fig, axes = plt.subplots(
-        1, num_damage_types, 
-        figsize=(5 * num_damage_types, 5),
-        squeeze=False
-    )
-    axes = axes[0]  # Flatten single row
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 5), squeeze=False)
+    axes = axes[0]
 
-    for i, damage_type in enumerate(damage_types):
-        ax = axes[i]
-        any_data_plotted = False
-
+    for ax, dmg_type in zip(axes, damage_types):
+        plotted = False
         for cat in categories:
-            fraction_dict = data.get((damage_type, cat), {})
-            if len(fraction_dict) == 0:
+            pts = data[(dmg_type, cat)]
+            if not pts:
                 continue
+            x = sorted(pts)
+            y = [pts[v][0] for v in x]
+            e = [pts[v][1] for v in x]
+            ax.errorbar(x, y, yerr=e, fmt="-o", capsize=3, label=cat)
+            plotted = True
 
-            x_sorted = sorted(fraction_dict.keys())
-            y_means = [fraction_dict[x][0] for x in x_sorted]
-            y_stds  = [fraction_dict[x][1] for x in x_sorted]
+        if not plotted:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                    transform=ax.transAxes)
 
-            ax.errorbar(
-                x_sorted, y_means, yerr=y_stds,
-                fmt='-o', capsize=3,
-                label=f"{cat}"
-            )
-            any_data_plotted = True
-
-        if not any_data_plotted:
-            ax.text(0.5, 0.5, "No data found", ha="center", va="center", transform=ax.transAxes)
-
-        # Try a heuristic label:
-        if "fraction" in damage_type.lower():
-            ax.set_xlabel("Fraction of units set to 0")
-        elif "noise" in damage_type.lower() or "std" in damage_type.lower():
-            ax.set_xlabel("Std of Gaussian noise")
+        if "fraction" in dmg_type.lower():
+            ax.set_xlabel("Fraction of units 0")
+        elif "noise" in dmg_type.lower() or "std" in dmg_type.lower():
+            ax.set_xlabel("Noise σ")
         else:
-            ax.set_xlabel(f"{damage_type} param")
+            ax.set_xlabel(f"{dmg_type} param")
 
         ax.set_ylabel(metric)
-        ax.set_title(f"Layer {layer} - {damage_type}")
+        ax.set_title(f"{layer} — {dmg_type}")
         ax.legend()
+        if common_ylim: ax.set_ylim(common_ylim)
 
-        # Common ylim if requested
-        if common_ylim is not None:
-            ax.set_ylim(common_ylim)
-
-        # Force x-axis to start at 0 if that makes sense
-        # (We'll do a quick check if all x>0)
-        all_x = [x for c in categories for x in data.get((damage_type, c), {}).keys()]
-        if len(all_x) > 0:
-            min_x = min(all_x)
-            max_x = max(all_x)
-            if min_x >= 0:  # If the param is always >= 0
-                ax.set_xlim(left=0)
-            ax.set_xlim(right=max_x)
+        xs = [v for cat in categories for v in data[(dmg_type, cat)]]
+        if xs and min(xs) >= 0:
+            ax.set_xlim(left=0, right=max(xs))
 
     fig.tight_layout()
 
-    # Save the per-damage-type subplots figure
     os.makedirs(plot_dir, exist_ok=True)
-    model_name = main_dir.split("/")[-2]  # e.g. "cornet_rt"
-    plot_name = f"{model_name}_lineplot_{layer}_SUBPLOTS"
-    for damage_type in damage_types:
-        plot_name += f"_{damage_type}"
-    for category in categories:
-        plot_name += f"_{category[0]}"
-    plot_name += f"_{metric}.png"
-    save_path = os.path.join(plot_dir, plot_name)
+    mdl = main_dir.rstrip("/").split("/")[-1]
+    fn  = f"{mdl}_lineplot_{layer}_SUBPLOTS_" + "_".join(damage_types) + f"_{metric}.png"
+    plt.savefig(os.path.join(plot_dir, fn), dpi=300)
+    if verbose: plt.show()
+    else:       plt.close(fig)
 
-    if verbose == 1:
-        save_plot = input(f"Save subplot figure under {save_path}? Y/N: ")
-        if save_plot.capitalize() == "Y":
-            plt.savefig(save_path, dpi=300)
-        plt.show()
-    else:
-        plt.savefig(save_path, dpi=300)
-        plt.close(fig)
+    # ------------- STEP 3 – twin‑axes plot (exactly two damage types) -
+    if len(damage_types) != 2:
+        print("Twinned‑axis plot skipped (need exactly 2 damage types).")
+        return
 
-    # -------------
-    # STEP 3: IF EXACTLY TWO DAMAGE TYPES, CREATE A "TWINS" PLOT
-    # -------------
+    d1, d2 = damage_types
+    fig2, ax_bot = plt.subplots(figsize=(7, 5))
+    ax_top = ax_bot.twiny()
 
-    if num_damage_types == 2:
-        ##### DUAL AXIS SECTION START #####
-        d1, d2 = damage_types
-
-        # Prepare figure
-        fig2, ax_bottom = plt.subplots(figsize=(7, 5))
-        # Create top axis
-        ax_top = ax_bottom.twiny()
-
-        # For color differentiation
-        color_bottom = "C0"
-        color_top    = "C1"
-
-        # -------------
-        # BOTTOM AXIS: damage_type d1
-        # -------------
-        any_data_bottom = False
-        all_x_bottom = []
-
+    def _plot(axis, dmg, color):
+        xs_all = []
         for cat in categories:
-            fraction_dict = data.get((d1, cat), {})
-            if len(fraction_dict) == 0:
-                continue
+            pts = data[(dmg, cat)]
+            if not pts: continue
+            x = sorted(pts)
+            y = [pts[v][0] for v in x]
+            e = [pts[v][1] for v in x]
+            axis.errorbar(x, y, yerr=e, fmt="-o", capsize=3,
+                          color=color, label=f"{dmg}:{cat}")
+            xs_all += x
+        if xs_all and min(xs_all) >= 0:
+            axis.set_xlim(left=0, right=max(xs_all))
 
-            x_sorted = sorted(fraction_dict.keys())
-            y_means = [fraction_dict[x][0] for x in x_sorted]
-            y_stds  = [fraction_dict[x][1] for x in x_sorted]
-            line_bottom = ax_bottom.errorbar(
-                x_sorted, y_means, yerr=y_stds,
-                fmt='-o', capsize=3,
-                color=color_bottom,
-                label=f"{d1}:{cat}"
-            )
-            any_data_bottom = True
-            all_x_bottom.extend(x_sorted)
+    _plot(ax_bot, d1, "C0"); ax_bot.set_xlabel(f"{d1} param", color="C0")
+    _plot(ax_top, d2, "C1"); ax_top.set_xlabel(f"{d2} param", color="C1")
+    for ax, c in [(ax_bot, "C0"), (ax_top, "C1")]:
+        ax.tick_params(axis="x", labelcolor=c)
+        ax.spines[("bottom" if ax is ax_bot else "top")].set_edgecolor(c)
+    ax_bot.set_ylabel(metric)
+    if common_ylim: ax_bot.set_ylim(common_ylim)
+    ln1, lb1 = ax_bot.get_legend_handles_labels()
+    ln2, lb2 = ax_top.get_legend_handles_labels()
+    ax_bot.legend(ln1 + ln2, lb1 + lb2, loc="best")
+    fig2.tight_layout()
 
-        # If bottom data is >= 0, force x to start at 0
-        if any_data_bottom and len(all_x_bottom) > 0:
-            min_x1, max_x1 = min(all_x_bottom), max(all_x_bottom)
-            if min_x1 >= 0:
-                ax_bottom.set_xlim(left=0)
-            ax_bottom.set_xlim(right=max_x1)
-
-        # Label bottom axis
-        ax_bottom.set_xlabel(
-            f"{d1} parameter", 
-            color=color_bottom
-        )
-        ax_bottom.tick_params(axis='x', labelcolor=color_bottom)
-        ax_bottom.spines["bottom"].set_edgecolor(color_bottom)
-        # The y-axis is shared
-        ax_bottom.set_ylabel(metric)
-
-        # -------------
-        # TOP AXIS: damage_type d2
-        # -------------
-        any_data_top = False
-        all_x_top = []
-
-        for cat in categories:
-            fraction_dict = data.get((d2, cat), {})
-            if len(fraction_dict) == 0:
-                continue
-
-            x_sorted = sorted(fraction_dict.keys())
-            y_means = [fraction_dict[x][0] for x in x_sorted]
-            y_stds  = [fraction_dict[x][1] for x in x_sorted]
-            line_top = ax_top.errorbar(
-                x_sorted, y_means, yerr=y_stds,
-                fmt='-s', capsize=3,
-                color=color_top,
-                label=f"{d2}:{cat}"
-            )
-            any_data_top = True
-            all_x_top.extend(x_sorted)
-
-        # If top data is >= 0, force x to start at 0
-        if any_data_top and len(all_x_top) > 0:
-            min_x2, max_x2 = min(all_x_top), max(all_x_top)
-            if min_x2 >= 0:
-                ax_top.set_xlim(left=0)
-            ax_top.set_xlim(right=max_x2)
-
-        # Label top axis
-        ax_top.set_xlabel(
-            f"{d2} parameter", 
-            color=color_top
-        )
-        ax_top.tick_params(axis='x', labelcolor=color_top)
-        ax_top.spines["top"].set_edgecolor(color_top)
-
-        # Optionally set common y-limits
-        if common_ylim is not None:
-            ax_bottom.set_ylim(common_ylim)
-            ax_top.set_ylim(common_ylim)
-
-        # Combine legends
-        lines_bottom, labels_bottom = ax_bottom.get_legend_handles_labels()
-        lines_top, labels_top = ax_top.get_legend_handles_labels()
-        ax_bottom.legend(
-            lines_bottom + lines_top, 
-            labels_bottom + labels_top,
-            loc="best"
-        )
-
-        ax_bottom.set_title(f"Twinned Axes for Layer {layer}")
-
-        fig2.tight_layout()
-
-        # Save
-        plot_name_twinned = f"{model_name}_lineplot_{layer}_TWINS"
-        for damage_type in damage_types:
-            plot_name_twinned += f"_{damage_type}"
-        for category in categories:
-            plot_name_twinned += f"_{category[0]}"
-        plot_name_twinned += f"_{metric}.png"
-
-        save_path_twinned = os.path.join(plot_dir, plot_name_twinned)
-
-        if verbose == 1:
-            save_plot = input(f"Save twinned figure under {save_path_twinned}? Y/N: ")
-            if save_plot.capitalize() == "Y":
-                plt.savefig(save_path_twinned, dpi=300)
-            plt.show()
-        else:
-            plt.savefig(save_path_twinned, dpi=300)
-            plt.close(fig2)
-    else:
-        print("Skipping twinned-axes plot, because we have != 2 damage types.")
+    fn_tw = f"{mdl}_lineplot_{layer}_TWINS_{d1}_{d2}_{metric}.png"
+    plt.savefig(os.path.join(plot_dir, fn_tw), dpi=300)
+    if verbose: plt.show()
+    else:       plt.close(fig2)
 
 
 def normalize_module_name(name):
@@ -2918,194 +2792,164 @@ def svm_process_split(train_idx1, train_idx2,
                                              act1_scaled, act2_scaled)
 
 
-def svm_process_file(pkl_file, training_samples=15, clip_val=1e6, max_permutations=None):
+def _iter_activation_dfs(src: str | os.PathLike) -> Iterator[pd.DataFrame]:
     """
-    Load a .pkl file of activations (4 categories × 16 examples each = 64 rows),
-    run SVM classification for all category pairs. 
-    - If max_permutations < 256, we randomly sample that many permutations.
-    - We prebuild arrays for each permutation to reduce overhead.
+    Yield one activation DataFrame per permutation contained in *src*.
 
-    Returns:
-        A DataFrame with one row per SVM permutation, columns = each category pair,
-        or None if the file is invalid (too few rows).
+    *src* can be
+    • a legacy Pickle file  – yields exactly one DataFrame
+    • a “.zarr” directory   – yields **all** permutations found inside
+                              (order preserved as in root.attrs['perm_indices'])
     """
-    df = pd.read_pickle(pkl_file)
-    df = df.drop("numeric_index", axis=1, errors="ignore")
-    df.columns = df.columns.astype(str)
+    path = Path(src)
+    if path.suffix == ".pkl":
+        df = pd.read_pickle(path)
+        if not isinstance(df, pd.DataFrame):
+            raise ValueError(f"{path} does not contain a pandas DataFrame.")
+        yield df
 
-    if len(df) < 64:
-        return None
+    elif path.suffix == ".zarr" and path.is_dir():
+        root = zarr.open(str(path), mode="r")
+        perm_ids = root.attrs.get("perm_indices", list(range(root["activ"].shape[0])))
+        for perm in perm_ids:
+            yield load_activations_zarr(path, perm=perm)
 
-    # Extract the four categories (16 rows each)
-    cat1 = df.iloc[0:16].to_numpy()
-    cat2 = df.iloc[16:32].to_numpy()
-    cat3 = df.iloc[32:48].to_numpy()
-    cat4 = df.iloc[48:64].to_numpy()
-
-    categories = {
-        "animal": cat1,
-        "face":   cat2,
-        "object":  cat3, 
-        "place": cat4 
-    }
-
-    # Clip raw activations
-    for key in categories:
-        categories[key] = np.clip(categories[key], -clip_val, clip_val)
-
-    pairs = list(combinations(categories.keys(), 2))
-    pair_to_accuracies = {f"{p[0]}_vs_{p[1]}": [] for p in pairs}
-
-    for (name1, name2) in pairs:
-        act1 = categories[name1]
-        act2 = categories[name2]
-
-        # Removed Scaler fitting for now
-        """# Fit RobustScaler once for the combined data of this pair
-        combined = np.concatenate((act1, act2), axis=0)
-        scaler = StandardScaler()
-        scaler.fit(combined)
-        min_epsilon = 1e-6
-        scaler.scale_[scaler.scale_ < min_epsilon] = min_epsilon
-
-        act1_scaled = scaler.transform(act1)
-        act2_scaled = scaler.transform(act2)"""
-
-        act1_scaled = np.clip(
-            np.nan_to_num(act1, nan=0.0, posinf=clip_val, neginf=-clip_val),
-            -clip_val, clip_val
-        )
-        act2_scaled = np.clip(
-            np.nan_to_num(act2, nan=0.0, posinf=clip_val, neginf=-clip_val),
-            -clip_val, clip_val
-        )
-
-        # Generate all train/test splits
-        indices = np.arange(16)
-        train_combos_1 = list(combinations(indices, training_samples))
-        train_combos_2 = list(combinations(indices, training_samples))
-        all_splits = list(product(train_combos_1, train_combos_2))
-
-        if max_permutations is not None and max_permutations < len(all_splits):
-            sampled_splits = random.sample(all_splits, max_permutations)
-        else:
-            sampled_splits = all_splits
-
-        # Precompute test indices so we don't do it repeatedly
-        test_combos_1 = {tc: tuple(np.setdiff1d(indices, tc)) for tc in train_combos_1}
-        test_combos_2 = {tc: tuple(np.setdiff1d(indices, tc)) for tc in train_combos_2}
-
-        # *** Prebuild all arrays into a single list ***
-        all_data = []
-        for (train_idx1, train_idx2) in sampled_splits:
-            test_idx1 = test_combos_1[train_idx1]
-            test_idx2 = test_combos_2[train_idx2]
-
-            X_train = np.concatenate((act1_scaled[np.array(train_idx1)],
-                                      act2_scaled[np.array(train_idx2)]))
-            y_train = np.concatenate((np.zeros(len(train_idx1), dtype=np.int64),
-                                      np.ones(len(train_idx2), dtype=np.int64)))
-
-            X_test = np.concatenate((act1_scaled[np.array(test_idx1)],
-                                     act2_scaled[np.array(test_idx2)]))
-            y_test = np.concatenate((np.zeros(len(test_idx1), dtype=np.int64),
-                                     np.ones(len(test_idx2), dtype=np.int64)))
-
-            all_data.append((X_train, y_train, X_test, y_test))
-
-        # Remove parallel processing for now
-        """results = Parallel(n_jobs=1)(
-            delayed(train_and_test_svm_arrays)(X_train, y_train, X_test, y_test)
-            for (X_train, y_train, X_test, y_test) in all_data
-        )"""
-        results = (train_and_test_svm_arrays(X_train, y_train, X_test, y_test) for (X_train, y_train, X_test, y_test) in all_data)
-
-        pair_key = f"{name1}_vs_{name2}"
-        pair_to_accuracies[pair_key] = results
-
-    # Build final DataFrame
-    data_dict = {pair: pair_to_accuracies[pair] for pair in pair_to_accuracies}
-    df_runs = pd.DataFrame(data_dict)
-    return df_runs
-
-
-def svm_process_directory(parent_dir, training_samples=15, allowed_subdirs=None, max_permutations=None):
-    """
-    Recursively walk through parent_dir. For any folder whose path
-    includes "activations", we check the next directory after "activations"
-    and only process it if it's in allowed_subdirs (if provided).
-
-    - parent_dir: the root directory to start searching
-    - training_samples: number of training samples per category
-    - allowed_subdirs: optional list of subdirectory names to process
-        e.g. ["V1", "IT"]. If None or empty, we process all subdirectories.
-
-    We then gather all .pkl files in these valid subdirectories,
-    run SVM permutations, and save results under a mirrored "svm_{training_samples}/"
-    folder.
-    """
-    if allowed_subdirs is None:
-        allowed_subdirs = []  # means "no filtering"
-
-    # We'll collect all files that pass the subdir filter in this list
-    pkl_file_paths = []
-
-    for root, dirs, files in os.walk(parent_dir):
-        # Check if "activations" is in the path
-        if "activations" in root.split(os.sep):
-            # Figure out the subdirectory immediately after "activations"
-            parts = root.split(os.sep)
-            try:
-                idx = parts.index("activations")
-            except ValueError:
-                continue  # Shouldn't happen if "activations" is in path
-
-            # subfolders after 'activations'
-            subfolders_after_activations = parts[idx+1:]  # might be ["V1", "subsubdir"] if root is "parent/activations/V1/subsubdir"
-
-            # If there's at least one subfolder after "activations",
-            # we check whether subfolders_after_activations[0] is in allowed_subdirs.
-            # If allowed_subdirs is empty, we skip the filter (process everything).
-            if allowed_subdirs:
-                if not subfolders_after_activations or subfolders_after_activations[0] not in allowed_subdirs:
-                    # skip this directory
-                    continue
-
-            # If we reach here, it means we're either not filtering,
-            # or the subdirectory is in allowed_subdirs.
-            # Collect .pkl files
-            for fname in files:
-                if fname.lower().endswith(".pkl"):
-                    pkl_file_paths.append((root, fname))
-
-    # Now process each file with a progress bar
-    from tqdm import tqdm
-    for root, fname in tqdm(pkl_file_paths, desc="Processing PKL files", total=len(pkl_file_paths)):
-        in_path = os.path.join(root, fname)
-        # Mirror structure by replacing "activations" with "svm_{training_samples}"
-        parts = root.split(os.sep)
-        idx = parts.index("activations")
-        activations_folder = os.path.join(*parts[:idx+1])
-        rel_path = os.path.relpath(in_path, activations_folder)
-
-        svm_dir = os.path.join(os.path.dirname(activations_folder), f"svm_{training_samples}")
-        out_path = os.path.join(svm_dir, rel_path)
-
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        df_result = svm_process_file(in_path, training_samples=training_samples,max_permutations=max_permutations)
-        if df_result is not None:
-            df_result.to_pickle(out_path)
+    else:
+        raise FileNotFoundError(f"{src} is neither a .pkl file nor a .zarr store.")
 
 
 def train_and_test_svm_arrays(X_train, y_train, X_test, y_test):
-    """
-    Train and test a linear SVM given (X_train, y_train) and (X_test, y_test).
-    Returns the test accuracy.
-    """
     clf = SVC(kernel="linear", random_state=42)
     clf.fit(X_train, y_train)
-    preds_test = clf.predict(X_test)
-    return np.mean(preds_test == y_test)
+    return np.mean(clf.predict(X_test) == y_test)
+
+
+def svm_process_file(
+    activ_path,
+    training_samples: int = 15,
+    clip_val: float = 1e6,
+    max_permutations: int | None = None,
+):
+    """
+    For every permutation in *activ_path* run a 1‑vs‑1 SVM on each category pair.
+    Returns a DataFrame whose **rows = permutations** and
+    **columns = 'animal_vs_face', …**.
+    """
+    rows = []                       # one dict per permutation
+
+    for df in _iter_activation_dfs(activ_path):
+        df = df.drop("numeric_index", axis=1, errors="ignore")
+        df.columns = df.columns.astype(str)
+
+        if len(df) < 64:            # 4 cats × 16 images => 64 rows
+            continue
+
+        # -------- split into the four 16‑row category blocks ----------
+        blocks = {
+            "animal": df.iloc[0:16].to_numpy(dtype=float),
+            "face":   df.iloc[16:32].to_numpy(dtype=float),
+            "object": df.iloc[32:48].to_numpy(dtype=float),
+            "place":  df.iloc[48:64].to_numpy(dtype=float),
+        }
+        for k in blocks:
+            blocks[k] = np.clip(
+                np.nan_to_num(blocks[k], nan=0.0, posinf=clip_val, neginf=-clip_val),
+                -clip_val, clip_val
+            )
+
+        pairs = list(combinations(blocks.keys(), 2))
+        perm_row = {}
+
+        for (c1, c2) in pairs:
+            a1, a2 = blocks[c1], blocks[c2]
+            idx = np.arange(16)
+
+            train_cmb1 = list(combinations(idx, training_samples))
+            train_cmb2 = list(combinations(idx, training_samples))
+            all_splits = list(product(train_cmb1, train_cmb2))
+
+            if max_permutations and max_permutations < len(all_splits):
+                all_splits = random.sample(all_splits, max_permutations)
+
+            accs = []
+            for tr1, tr2 in all_splits:
+                tst1 = tuple(np.setdiff1d(idx, tr1))
+                tst2 = tuple(np.setdiff1d(idx, tr2))
+
+                X_tr = np.vstack((a1[list(tr1)], a2[list(tr2)]))
+                y_tr = np.hstack((np.zeros(len(tr1)), np.ones(len(tr2))))
+                X_te = np.vstack((a1[list(tst1)], a2[list(tst2)]))
+                y_te = np.hstack((np.zeros(len(tst1)), np.ones(len(tst2))))
+
+                accs.append(train_and_test_svm_arrays(X_tr, y_tr, X_te, y_te))
+
+            perm_row[f"{c1}_vs_{c2}"] = np.mean(accs)   # average over splits
+
+        rows.append(perm_row)
+
+    return None if not rows else pd.DataFrame(rows)
+
+
+def svm_process_directory(
+    parent_dir,
+    training_samples: int = 15,
+    allowed_subdirs: list[str] | None = None,
+    max_permutations: int | None = None,
+):
+    """
+    Walk *parent_dir*; for every activation Pickle **or** Zarr found under an
+    `.../activations/...` path (optionally filtered by *allowed_subdirs*)
+    run `svm_process_file()` and save the results in a mirrored
+        .../svm_<training_samples>/ path as **.zarr**.
+    """
+    allowed_subdirs = allowed_subdirs or []
+    activ_files: list[tuple[str, str]] = []    # [(root, fname_or_dir), ...]
+
+    for root, dirs, files in os.walk(parent_dir):
+        if "activations" not in root.split(os.sep):
+            continue
+
+        # Identify which “activation layer” we are in (first folder after 'activations')
+        parts = root.split(os.sep)
+        try:
+            act_idx = parts.index("activations")
+        except ValueError:
+            continue
+
+        sub_after = parts[act_idx + 1] if len(parts) > act_idx + 1 else None
+        if allowed_subdirs and sub_after not in allowed_subdirs:
+            continue
+
+        # Pickle files
+        for f in files:
+            if f.endswith(".pkl"):
+                activ_files.append((root, f))
+        # Zarr directories at this level
+        for d in list(dirs):        # copy since we may mutate dirs
+            if d.endswith(".zarr"):
+                activ_files.append((root, d))
+                dirs.remove(d)      # do not descend into the .zarr folder
+
+    from tqdm import tqdm
+    for root, name in tqdm(activ_files, desc="SVM processing"):
+        in_path = os.path.join(root, name)
+
+        # Mirror the path, swapping "activations" → "svm_<training_samples>"
+        parts = root.split(os.sep)
+        act_idx = parts.index("activations")
+        act_root = os.path.join(*parts[: act_idx + 1])
+        rel = os.path.relpath(in_path, act_root)
+        svm_dir = os.path.join(os.path.dirname(act_root), f"svm_{training_samples}")
+        out_path = os.path.join(svm_dir, rel)
+
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        df = svm_process_file(
+            in_path,
+            training_samples=training_samples,
+            max_permutations=max_permutations,
+        )
+        if df is not None:
+            append_activation_to_zarr(df, out_path, perm_idx=0)
 
 
 def evaluate_imagenet_perclass(model, loader, device, topk=(1, 5)):
@@ -3486,33 +3330,23 @@ def _gather_svm(mv_root: Path,
                 train_samples: int,
                 allowed: set[str]):
     """
-    Collect SVM accuracy pickles and return a list[dict] of long rows.
-
-    metric:
-        "overall"  – mean across *all* pairwise columns (alias "score")
-        "by_category" – mean of columns that involve each focal category
+    Collect SVM accuracy results (either .pkl or .zarr) and return a
+    list[dict] of long‑form rows compatible with build_long_df().
     """
-    if metric == "score":          # backward-compat
+    if metric == "score":                 # legacy alias
         metric = "overall"
     if metric not in ("overall", "by_category"):
-        raise ValueError("dependent.metric for SVM must be "
-                         "'overall', 'score', or 'by_category'")
+        raise ValueError("metric must be 'overall', 'score', or 'by_category'")
 
     rows, n_files = [], 0
-    folder_name = f"svm_{train_samples}"
+    folder = f"svm_{train_samples}"
 
     for dmg_type in ("units", "noise", "connections"):
         if allowed and dmg_type not in allowed:
             continue
-        type_dir = mv_root / dmg_type
-        if not type_dir.exists():
-            print(f"[skip] {type_dir} (missing)")
-            continue
-
-        for dmg_layer in type_dir.iterdir():
-            svm_dir = dmg_layer / folder_name
+        for dmg_layer in (mv_root / dmg_type).iterdir():
+            svm_dir = dmg_layer / folder
             if not svm_dir.exists():
-                print(f"[skip] {svm_dir} (missing)")
                 continue
 
             for act_layer in svm_dir.iterdir():
@@ -3521,24 +3355,19 @@ def _gather_svm(mv_root: Path,
                         continue
                     lvl = float(damaged.name.split("_")[-1])
 
-                    for pkl in damaged.glob("*.pkl"):
+                    for item in damaged.iterdir():
+                        is_pkl  = item.suffix.lower() == ".pkl"
+                        is_zarr = item.suffix.lower() == ".zarr" and item.is_dir()
+                        if not (is_pkl or is_zarr):
+                            continue
                         n_files += 1
-                        repl = int(pkl.stem)
-                        try:
-                            df = pd.read_pickle(pkl)
-                        except Exception as exc:
-                            print(f"[warn] could not read {pkl}: {exc}")
-                            continue
-                        if not isinstance(df, pd.DataFrame):
-                            print(f"[warn] {pkl} is not a DataFrame; skipped")
-                            continue
-                        df = df.select_dtypes("number")
-                        if df.empty:
-                            print(f"[warn] {pkl} has no numeric columns; skipped")
+
+                        scores = _load_svm_scores(item, categories=("animal","face","object","place","overall"))
+                        if not scores:
                             continue
 
                         if metric == "overall":
-                            val = float(df.mean(axis=1).mean())
+                            val = scores.get("overall", np.nan)
                             rows.append(dict(
                                 value        = val,
                                 model_variant= mv_name,
@@ -3547,33 +3376,26 @@ def _gather_svm(mv_root: Path,
                                 damage_layer = dmg_layer.name,
                                 damage_level = lvl,
                                 category     = "overall",
-                                replicate    = repl,
+                                replicate    = int(item.stem) if is_pkl else 0,
                             ))
                         else:  # by_category
-                            cats = sorted({p for col in df.columns.str.lower()
-                                             for p in col.split("_vs_")})
-                            for cat in cats:
-                                mask = df.columns.str.contains(cat, case=False, regex=False)
-                                if mask.any():
-                                    val = float(df.loc[:, mask].mean(axis=1).mean())
-                                    rows.append(dict(
-                                        value        = val,
-                                        model_variant= mv_name,
-                                        include_bias = bias_flag,
-                                        damage_type  = dmg_type,
-                                        damage_layer = dmg_layer.name,
-                                        damage_level = lvl,
-                                        category     = cat,
-                                        replicate    = repl,
-                                    ))
+                            for cat, val in scores.items():
+                                if cat == "overall":
+                                    continue
+                                rows.append(dict(
+                                    value        = val,
+                                    model_variant= mv_name,
+                                    include_bias = bias_flag,
+                                    damage_type  = dmg_type,
+                                    damage_layer = dmg_layer.name,
+                                    damage_level = lvl,
+                                    category     = cat,
+                                    replicate    = int(item.stem) if is_pkl else 0,
+                                ))
 
     if n_files == 0:
-        raise RuntimeError(f"No SVM pickle files found under {mv_root}")
-    if not rows:
-        raise RuntimeError("SVM pickles were found but produced no usable rows. "
-                           "Check 'metric' or file contents.")
+        raise RuntimeError(f"No SVM files found under {mv_root}")
     return rows
-
 
 
 def _gather_imagenet(mv_root: Path,
@@ -3676,76 +3498,378 @@ def get_top_unit_indices(
 
 
 def generate_category_selective_RDMs(
-    activations_root: str, # root of damage type directory e.g., .../connections
+    activations_root: str,
     layer_name: str,
     top_frac: float,
-    categories: Sequence[str] = ("faces","places","objects","animals"),
-    damage_levels: Sequence[str] = None,
-    selection_mode: str = "percentage",  # "percentage" or "percentile"
+    categories: Sequence[str] = ("faces", "places", "objects", "animals"),
+    damage_levels: Sequence[str] | None = None,
+    selection_mode: str = "percentage",  # or "percentile"
     selectivity_file: str = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
     damage_layer: str = "V1",
-    activation_layer: str = "IT"
+    activation_layer: str = "IT",
 ):
     """
-    Build category-selective RDMs from per-image activation pickles, using flat unit indices.
-    selectivity_file: path to the selectivity .pkl or .csv file with columns: layer,unit,mw_animals,...
+    Build category‑selective RDMs from per‑image activations.
+    Works with both legacy Pickles and new Zarr activation stores.
+
+    Output: one Pickle per (category × damage × permutation) saved under
+        …/<damage_layer>/RDM_<frac>_<mode>/<activation_layer>/<cat>_selective/<damage>/perm<#>.pkl
     """
     from pathlib import Path
+    import zarr
 
-    selectivity_path = Path(selectivity_file)
-    # Load selectivity table
-    if selectivity_path.suffix == ".pkl":
-        sel_df = pd.read_pickle(selectivity_path)
-    elif selectivity_path.suffix == ".csv":
-        sel_df = pd.read_csv(selectivity_path)
+    # ---------------------------------------------------- #
+    # 1)  Load selectivity table & pick top‑selective units
+    # ---------------------------------------------------- #
+    sel_path = Path(selectivity_file)
+    if sel_path.suffix == ".pkl":
+        sel_df = pd.read_pickle(sel_path)
+    elif sel_path.suffix == ".csv":
+        sel_df = pd.read_csv(sel_path)
     else:
-        raise ValueError("Selectivity file must be .pkl or .csv")
+        raise ValueError("selectivity_file must be .pkl or .csv")
 
-    # 1) For each category, select top unit indices for the given layer
-    idxs_by_cat = {}
+    idxs_by_cat: dict[str, np.ndarray] = {}
     for cat in categories:
-        cat_key = cat if f"mw_{cat}" in sel_df.columns else f"{cat}s"  # handle plural/singular
-        mw_col = f"mw_{cat_key}"
-        layer_rows = sel_df[sel_df["layer"] == "module." + layer_name]
-        if mw_col not in layer_rows.columns:
-            raise ValueError(f"Column {mw_col} not found in selectivity file.")
+        col = f"mw_{cat}" if f"mw_{cat}" in sel_df.columns else f"mw_{cat}s"
+        rows = sel_df[sel_df["layer"] == f"module.{layer_name}"]
+        if col not in rows.columns:
+            raise ValueError(f"{col} missing in selectivity file.")
         if selection_mode == "percentage":
-            k = max(1, int(len(layer_rows) * top_frac))
-            top = layer_rows.nlargest(k, mw_col)
+            k = max(1, int(len(rows) * top_frac))
+            top = rows.nlargest(k, col)
         elif selection_mode == "percentile":
-            cutoff = np.percentile(layer_rows[mw_col], top_frac)
-            top = layer_rows[layer_rows[mw_col] >= cutoff]
+            thr = np.percentile(rows[col], top_frac)
+            top = rows[rows[col] >= thr]
         else:
             raise ValueError("selection_mode must be 'percentage' or 'percentile'")
-        idxs = top["unit"].astype(int).values
-        idxs_by_cat[cat] = np.array(idxs, dtype=int)
+        idxs_by_cat[cat] = top["unit"].astype(int).to_numpy()
 
-    # 2) determine damage levels if not provided
+    # ----------------------------------------------- #
+    # 2)  Walk damage‑level folders under activations #
+    # ----------------------------------------------- #
     activ_root = Path(activations_root) / damage_layer / "activations" / activation_layer
     if damage_levels is None:
-        damage_levels = sorted(
-            d for d in os.listdir(activ_root)
-            if (activ_root/d).is_dir()
-        )
+        damage_levels = sorted(d.name for d in activ_root.iterdir() if d.is_dir())
 
-    # 3) process each category × damage level
-    root_out = Path(activations_root) / damage_layer / f"RDM_{top_frac:.2f}_{selection_mode}" / activation_layer
-    for cat, idxs in idxs_by_cat.items():
+    out_root = (
+        Path(activations_root)
+        / damage_layer
+        / f"RDM_{top_frac:.2f}_{selection_mode}"
+        / activation_layer
+    )
+
+    for cat, flat_idx in idxs_by_cat.items():
         for dmg in damage_levels:
             in_dir  = activ_root / dmg
-            out_dir = root_out / (cat.strip("s")+"_selective") / dmg
+            out_dir = out_root / (cat.rstrip("s") + "_selective") / dmg
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            for pkl_fname in sorted(in_dir.glob("*.pkl")):
-                # load activations [n_images, n_units]
-                with open(pkl_fname, "rb") as f:
-                    A = pickle.load(f)
-                    image_names = list(A.index)
-                    A= np.asarray(A)
-                # restrict to top-selective units (flat indices)
-                A_sub = A[:, idxs]                   # [n_images, n_top_units]
-                # build RDM: Pearson corr across the rows
-                R = np.corrcoef(A_sub)               # [n_images, n_images]
-                # save
-                with open(out_dir / pkl_fname.name, "wb") as f:
-                    pickle.dump({'RDM': R, 'image_names': image_names}, f)
+            # -------- iterate over activation files (.zarr or .pkl) --------
+            for act_path in sorted(in_dir.iterdir()):
+                if act_path.suffix == ".zarr":
+                    root = zarr.open(act_path, mode="r")
+                    perms = root.attrs.get("perm_indices", [])
+                    img_names = root.attrs["image_names"]
+                    for perm in perms:
+                        df = load_activations_zarr(act_path, perm=perm)  # DataFrame
+                        A  = df.to_numpy()[:, flat_idx]
+                        R  = np.corrcoef(A)
+                        out_pkl = out_dir / f"{perm}.pkl"
+                        with open(out_pkl, "wb") as f:
+                            pickle.dump({"RDM": R, "image_names": img_names}, f)
+
+                elif act_path.suffix == ".pkl":          # legacy
+                    df = pd.read_pickle(act_path)
+                    img_names = df.index.tolist()
+                    A = df.to_numpy()[:, flat_idx]
+                    R = np.corrcoef(A)
+                    out_pkl = out_dir / act_path.name
+                    with open(out_pkl, "wb") as f:
+                        pickle.dump({"RDM": R, "image_names": img_names}, f)
+                # silently ignore anything else
+
+
+def get_all_groupnorm_layers(model, base_path=""):
+    """
+    Recursively find all submodules under `model` that are nn.GroupNorm,
+    returning a list of layer paths.
+
+    Parameters:
+        model (nn.Module): The model or module to search.
+        base_path (str): The starting path.
+
+    Returns:
+        List[str]: A list of dot-separated paths to each GroupNorm module.
+    """
+    gn_layers = []
+
+    # If the current module itself is a GroupNorm, record its path
+    if isinstance(model, nn.GroupNorm):
+        gn_layers.append(base_path)
+        # We don't need to recurse further into a GroupNorm layer
+        return gn_layers
+
+    # Otherwise, recurse into children
+    for name, submodule in model._modules.items():
+        if submodule is None:
+            continue
+        if base_path == "":
+            new_path = name
+        else:
+            # Note: Preserving the original pathing style from your code
+            new_path = base_path + "._modules." + name
+
+        gn_layers.extend(get_all_groupnorm_layers(submodule, new_path))
+
+    return gn_layers
+
+
+def apply_groupnorm_scaling(
+    model: nn.Module,
+    scaling_factor: float,
+    *,
+    layer_paths: Sequence[str] | None = None,
+    apply_to_all_layers: bool = False,
+    include_bias: bool = False,
+    targets: Sequence[str] = ("groupnorm",),
+    gain_control_noise: float = 0.0,  # Noise level to be used while scaling
+) -> None:
+    """
+    Multiply weights (and optional biases) by *scaling_factor*.
+    Add Gaussian noise (before scaling) with std = gain_control_noise * weight.std().
+    """
+    do_gn  = "groupnorm" in targets
+    do_conv= "conv"      in targets
+    if not (do_gn or do_conv):
+        return
+
+    def _collect_targets(root_mod: nn.Module, root_path: str):
+        paths = []
+        if do_gn:
+            paths += get_all_groupnorm_layers(root_mod, root_path)
+        if do_conv:
+            paths += get_all_conv_layers(root_mod, root_path, include_bias)
+        return paths
+
+    with torch.no_grad():
+        if apply_to_all_layers:
+            for p in _collect_targets(model, ""):
+                _scale_module_(get_layer_from_path(model, p),
+                               scaling_factor, include_bias, gain_control_noise)
+        else:
+            for block in (layer_paths or []):
+                submod = get_layer_from_path(model, block)
+                for p in _collect_targets(submod, block):
+                    _scale_module_(get_layer_from_path(model, p),
+                                   scaling_factor, include_bias, gain_control_noise)
+
+def _scale_module_(module: nn.Module,
+                   factor: float,
+                   include_bias: bool = False,
+                   gain_control_noise: float = 0.0) -> None:
+    """
+    Add Gaussian noise to weights/biases (before scaling), then scale.
+    """
+    if hasattr(module, "weight") and module.weight is not None:
+        if gain_control_noise > 0:
+            sd = module.weight.data.std().item()
+            noise = torch.randn_like(module.weight.data) * (gain_control_noise * sd)
+            module.weight.data.add_(noise)
+        module.weight.data.mul_(factor)
+    if include_bias and hasattr(module, "bias") and module.bias is not None:
+        if gain_control_noise > 0:
+            sd = module.bias.data.std().item()
+            noise = torch.randn_like(module.bias.data) * (gain_control_noise * sd)
+            module.bias.data.add_(noise)
+        module.bias.data.mul_(factor)
+
+
+# ── compressor used for every Zarr store ─────────────────────────────
+_COMP = numcodecs.Blosc(cname="zstd",
+                        clevel=7,
+                        shuffle=numcodecs.Blosc.BITSHUFFLE)
+
+
+def _unique_store(base: Path, tag: str, shape_tail: tuple[int, ...]) -> Path:
+    """
+    Return a collision‑free Zarr path such as
+
+        myfile__activ_25089.zarr
+        myfile__rdm_64.zarr
+
+    so that objects with different shapes never share the same store.
+    """
+    suffix = "_".join(map(str, shape_tail))
+    return base.with_suffix("").with_name(f"{base.stem}__{tag}_{suffix}.zarr")
+
+
+def _init_store(zarr_path: Path, n_imgs: int, n_feat: int,
+                chunks: tuple[int,int] | None = None):
+    """Create an empty growable array  (None × n_imgs × n_feat)."""
+    if chunks is None:
+        chunks = (1, n_imgs, n_feat)          # appending one perm at a time
+    root = zarr.open(zarr_path, mode="w")
+    root.zeros("activ",
+               shape=(0, n_imgs, n_feat),           # 0 → growable
+               chunks=chunks, dtype="f2",
+               compressor=_COMP, overwrite=True)
+    root.attrs["image_names"]  = []
+    root.attrs["perm_indices"] = []
+
+
+def load_activations_zarr(source: str | Path,
+                          perm: int | None = None) -> pd.DataFrame:
+    """
+    Return one permutation (default: the **first**) as a DataFrame identical
+    to what the old Pickle contained.  If *perm* is None and >1 perms exist
+    the caller must disambiguate.
+    """
+    root  = zarr.open(Path(source).with_suffix(".zarr"), mode="r")
+    imset = root.attrs["image_names"]
+    perms = root.attrs["perm_indices"]
+    if perm is None:
+        perm = perms[0]
+    try:
+        i = perms.index(perm)
+    except ValueError:
+        raise KeyError(f"perm {perm} not in {perms}")
+    arr = root["activ"][i]                   # lazy read one chunk
+    return pd.DataFrame(arr, index=imset)
+
+
+def list_zarr_files(dir_path: str | Path) -> List[Path]:
+    """Return *sorted* list of foo.zarr directories in *dir_path*."""
+    p = Path(dir_path)
+    return sorted([d for d in p.iterdir() if d.suffix == ".zarr" and d.is_dir()])
+
+
+def load_matrix_zarr(path: str | Path, perm: int = 0) -> np.ndarray:
+    """Load one permutation (default: 0) from a correlation‑matrix zarr store."""
+    df = load_activations_zarr(path, perm=perm)  # <- your existing helper
+    return df.to_numpy(dtype=np.float32)
+
+
+def load_all_corr_mats(item: str | Path) -> list[np.ndarray]:
+    """
+    Yield **all permutations** found in *item*.
+
+    • If *item* is  *.zarr  ➜ read root['activ'] → (P, N, N) and split.  
+    • If *item* is  *.pkl   ➜ single matrix → length‑1 list.
+
+    Returned matrices are float32.
+    """
+    p = Path(item)
+    if p.suffix.lower() == ".zarr" and p.is_dir():
+        root = zarr.open(p, mode="r")
+        perms = root["activ"][:]                    # (P, N, N)
+        return [m.astype(np.float32, copy=False) for m in perms]
+    elif p.suffix.lower() == ".pkl":
+        with open(p, "rb") as f:
+            mat = pickle.load(f)
+        return [np.asarray(mat, dtype=np.float32)]
+    else:
+        raise ValueError(f"Unsupported correlation file: {p}")
+
+
+def _coerce_to_2d(arr_like: Any) -> np.ndarray:
+    """
+    • DataFrame / Series → values
+    • 1‑D → (1,‑)
+    • 2‑D → unchanged
+    Raises if ndim > 2.
+    """
+    if isinstance(arr_like, pd.DataFrame):
+        arr = arr_like.values
+    elif isinstance(arr_like, pd.Series):
+        arr = arr_like.values[None, :]          # → (1, nFeat)
+    else:
+        arr = np.asarray(arr_like)
+
+    if arr.ndim == 1:
+        arr = arr[None, :]                      # promote to (1,‑)
+    if arr.ndim != 2:
+        raise ValueError(f"cannot coerce shape {arr.shape} to 2‑D")
+    return arr
+
+
+def append_matrix_to_zarr(mat: np.ndarray,
+                          target: str | Path,
+                          perm_idx: int):
+    """
+    Append one square correlation matrix into a Zarr store.
+    Each distinct matrix size lives in its own store.
+    """
+    assert mat.ndim == 2 and mat.shape[0] == mat.shape[1], "RDM must be square"
+
+    zarr_path = _unique_store(Path(target), "rdm", (mat.shape[0],))
+
+    if not zarr_path.exists():
+        root = zarr.open(zarr_path, mode="w")
+        root.zeros("activ",
+                   shape=(0, *mat.shape),
+                   chunks=(1, *mat.shape),
+                   dtype="f4",
+                   compressor=_COMP)
+        root.attrs["perm_indices"] = []
+
+    root = zarr.open(zarr_path, mode="a")
+    z = root["activ"]
+
+    tmp = f"tmp_{os.getpid()}_{perm_idx}"
+    z.store[tmp] = mat.astype("float32", copy=False)[None, ...]
+
+    try:
+        z.append(z.store[tmp])
+    except ValueError:
+        alt = _unique_store(zarr_path.with_suffix(""), "rdm_alt", (mat.shape[0],))
+        root_alt = zarr.open(alt, mode="w")
+        root_alt.zeros("activ",
+                       shape=(0, *mat.shape),
+                       chunks=(1, *mat.shape),
+                       dtype="f4",
+                       compressor=_COMP)
+        root_alt["activ"].append(mat[None, ...])
+
+    del z.store[tmp]
+    root.attrs["perm_indices"] = root.attrs["perm_indices"] + [perm_idx]
+
+
+
+
+def append_activation_to_zarr(df: pd.DataFrame,
+                              target: str | Path,
+                              perm_idx: int):
+    """
+    Append one activation permutation (images × features) into a Zarr store.
+    If the current store is incompatible, a new store with a shape‑tagged
+    name is created automatically.
+    """
+    zarr_path = _unique_store(Path(target), "activ", df.shape[1:])
+
+    arr = df.astype("float16").to_numpy()
+    n_img, n_feat = arr.shape
+
+    if not zarr_path.exists():
+        _init_store(zarr_path, n_img, n_feat)
+
+    root = zarr.open(zarr_path, mode="a")
+    z = root["activ"]
+
+    tmp = f"tmp_{os.getpid()}_{perm_idx}"
+    z.store[tmp] = arr[None, ...]
+
+    try:
+        z.append(z.store[tmp])
+    except ValueError:
+        # shape changed since this store was first created → fallback
+        alt = _unique_store(zarr_path.with_suffix(""), "activ_alt", arr.shape[1:])
+        _init_store(alt, n_img, n_feat)
+        z_alt = zarr.open(alt, mode="a")["activ"]
+        z_alt.append(arr[None, ...])
+        z_alt.store.close()
+
+    del z.store[tmp]
+    root.attrs["image_names"] = df.index.tolist()
+    root.attrs["perm_indices"] = root.attrs["perm_indices"] + [perm_idx]
+

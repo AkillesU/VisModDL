@@ -2,8 +2,11 @@
 selectivity_csv_dir: unit_selectivity
 category: animals
 top_unit_selection: percentage
-top_frac: [0.01, 0.05, 0.1, 0.2, 0.5]
+top_frac: [0.01, 0.05, 0.1]
+n_random_repeats: 100
 category_images: categ_images_testset/animals
+image_categories: [places, faces, objects]
+max_images: 64
 pixels_per_degree: None
 output_dir: it2v1_analysis
 gaussian_sigma: 0

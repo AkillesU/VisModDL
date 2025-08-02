@@ -1,0 +1,149 @@
+subdir: "cornet_rt5_c/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling_c_noise0.500"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      data_type: "selectivity"
+      flip_x_axis: True
+      plot_dir: "plots/cornet_rt5_c/within-between"
+      selectivity_fraction: 1
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V2"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling_c_noise0.500"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      #ylim: [-15,105]
+      data_type: "selectivity"
+      flip_x_axis: True
+      plot_dir: "plots/cornet_rt5_c/within-between"
+      selectivity_fraction: 1
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V4"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling_c_noise0.500"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      #ylim: [-15,105]
+      data_type: "selectivity"
+      flip_x_axis: True
+      plot_dir: "plots/cornet_rt5_c/within-between"
+      selectivity_fraction: 1
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling_c_noise0.500"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      #ylim: [-15,105]
+      data_type: "selectivity"
+      flip_x_axis: True
+      selectivity_fraction: 1
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling_c_noise0.500"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      ylim: [0,0.25]
+      flip_x_axis: True
+      data_type: "selectivity"
+      plot_dir: "plots/cornet_rt5_c/within-between"
+      selectivity_fraction: 1
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling_c_noise0.500"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      #ylim: [-15,105]
+      data_type: "selectivity"
+      flip_x_axis: True
+      plot_dir: "plots/cornet_rt5_c/within-between"
+      selectivity_fraction: 1
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling_c_noise0.500"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
+      flip_x_axis: True
+      plot_dir: "plots/cornet_rt5_c/within-between"
+      selectivity_fraction: 1
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V2"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling_c_noise0.500"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
+      flip_x_axis: True
+      plot_dir: "plots/cornet_rt5_c/within-between"
+      selectivity_fraction: 1
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V4"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling_c_noise0.500"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
+      flip_x_axis: True
+      plot_dir: "plots/cornet_rt5_c/within-between"
+      selectivity_fraction: 1
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      damage_type: "groupnorm_scaling_c_noise0.500"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
+      flip_x_axis: True
+      plot_dir: "plots/cornet_rt5_c/within-between"
+      selectivity_fraction: 1
