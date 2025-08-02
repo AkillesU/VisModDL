@@ -1127,33 +1127,62 @@ def safe_load_pickle(file_path):
 
 def _load_svm_scores(path, categories):
     """
-    Helper that returns  {category: score_float, …}  for one SVM result file.
-    Works with either Pickle (old style dict) or Zarr (DataFrame).
+    Helper that returns {category: {'score': {'mean', 'std', 'n', 'vals'}}, ...}
+    for one SVM result file. Works with either Pickle (old style dict) or Zarr/DataFrame.
     """
     if str(path).lower().endswith(".pkl"):
         d = safe_load_pickle(path)
-        if d is None:                               # corrupted / empty
+        if d is None:  # corrupted / empty
             return {}
-        # old file structure:  d = {"animal":{"score":…}, …}
-        return {k.lower(): v.get("score", np.nan) for k, v in d.items()}
+        # If already in the desired structure, return as is
+        if all(isinstance(v, dict) and "score" in v for v in d.values()):
+            return d
+        # Otherwise, try to convert old style: d = {"animal":{"score":…}, …}
+        result = {}
+        for k, v in d.items():
+            score = v.get("score", v)  # handle both {"score": ...} and direct value
+            if isinstance(score, dict):
+                result[k.lower()] = {"score": score}
+            else:
+                result[k.lower()] = {"score": {"mean": float(score), "std": 0.0, "n": 1, "vals": [float(score)]}}
+        return result
 
-    # ---- zarr branch -------------------------------------------------
+    # ---- zarr/dataframe branch -------------------------------------------------
     try:
         df = load_activations_zarr(path)
     except Exception as exc:
         print(f"[warn] could not read {path}: {exc}")
         return {}
 
-    df = df.select_dtypes("number")                # keep only numeric cols
-    if df.empty:
-        return {}
+    # Convert all columns to float
+    df = df.apply(pd.to_numeric, errors="coerce")
+    result = {}
 
-    scores = {"overall": float(df.mean().mean())}
+    # Per-category stats
     for cat in categories:
-        mask = df.columns.str.contains(cat, case=False, regex=False)
-        if mask.any():
-            scores[cat] = float(df.loc[:, mask].mean().mean())
-    return scores
+        mask = [cat.lower() in str(col).lower() for col in df.columns]
+        vals = df.loc[:, mask].values.flatten()
+        vals = vals[~np.isnan(vals)]
+        result[cat] = {
+            "score": {
+                "mean": float(np.mean(vals)) if len(vals) else float("nan"),
+                "std": float(np.std(vals, ddof=1)) if len(vals) else float("nan"),
+                "n": int(len(vals)),
+                "vals": [float(v) for v in vals]
+            }
+        }
+    # "total" stats: all values
+    all_vals = df.values.flatten()
+    all_vals = all_vals[~np.isnan(all_vals)]
+    result["total"] = {
+        "score": {
+            "mean": float(np.mean(all_vals)) if len(all_vals) else float("nan"),
+            "std": float(np.std(all_vals, ddof=1)) if len(all_vals) else float("nan"),
+            "n": int(len(all_vals)),
+            "vals": [float(v) for v in all_vals]
+        }
+    }
+    return result
 
 
 def categ_corr_lineplot(
