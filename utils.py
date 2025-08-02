@@ -1127,72 +1127,86 @@ def safe_load_pickle(file_path):
 
 def _load_svm_scores(path, categories):
     """
-    Helper that returns {category: {'score': {'mean', 'std', 'n', 'vals'}}, ...}
-    for one SVM result file. Works with either Pickle (old style dict) or Zarr/DataFrame.
+    Return **one scalar per category** (plus "overall") for a single SVM
+    replicate file.
+
+    Accepted file types
+    -------------------
+    • legacy Pickle containing a DataFrame, numpy array, or old dict format  
+    • new Zarr stores produced by `svm_process_*`
+
+    Output structure
+    ----------------
+        {
+            "animal" : 0.923,   # mean accuracy for columns that contain "animal"
+            "face"   : 0.871,
+            "object" : 0.886,
+            "place"  : 0.905,
+            "overall": 0.896    # mean over *all* numeric values
+        }
+    Values are `float`; missing data → `np.nan`.
     """
+    import os, pickle, numpy as np, pandas as pd, zarr
+
+    def _df_to_scalar_scores(df: pd.DataFrame, cats):
+        df = df.apply(pd.to_numeric, errors="coerce")
+        out = {}
+        for cat in cats:
+            mask = [cat.lower() in str(col).lower() for col in df.columns]
+            vals = df.loc[:, mask].values.flatten()
+            vals = vals[~np.isnan(vals)]
+            out[cat] = float(np.mean(vals)) if len(vals) else np.nan
+
+        all_vals = df.values.flatten()
+        all_vals = all_vals[~np.isnan(all_vals)]
+        out["overall"] = float(np.mean(all_vals)) if len(all_vals) else np.nan
+        return out
+
+    # ── Pickle branch ────────────────────────────────────────────────
     if str(path).lower().endswith(".pkl"):
-        d = safe_load_pickle(path)
-        if d is None:  # corrupted / empty
+        if not (os.path.exists(path) and os.path.getsize(path) > 0):
             return {}
-        # If it's a DataFrame, process as DataFrame
-        if isinstance(d, pd.DataFrame):
-            df = d.apply(pd.to_numeric, errors="coerce")
-        # If it's a numpy array, convert to DataFrame
-        elif isinstance(d, np.ndarray):
-            df = pd.DataFrame(d)
-        # If it's a dict, check for the expected structure
-        elif isinstance(d, dict):
-            if all(isinstance(v, dict) and "score" in v for v in d.values()):
-                return d
-            # Otherwise, try to convert old style: d = {"animal":{"score":…}, …}
-            result = {}
-            for k, v in d.items():
-                score = v.get("score", v)  # handle both {"score": ...} and direct value
-                if isinstance(score, dict):
-                    result[k.lower()] = {"score": score}
-                else:
-                    result[k.lower()] = {"score": {"mean": float(score), "std": 0.0, "n": 1, "vals": [float(score)]}}
-            return result
-        else:
-            # Unknown type, cannot process
+        try:
+            with open(path, "rb") as f:
+                obj = pickle.load(f)
+        except EOFError:
             return {}
 
-    # ---- zarr/dataframe branch -------------------------------------------------
-    try:
-        df = load_activations_zarr(path)
-    except Exception as exc:
-        print(f"[warn] could not read {path}: {exc}")
+        # DataFrame → numeric conversion
+        if isinstance(obj, pd.DataFrame):
+            return _df_to_scalar_scores(obj, categories)
+
+        # ndarray → DataFrame first
+        if isinstance(obj, np.ndarray):
+            return _df_to_scalar_scores(pd.DataFrame(obj), categories)
+
+        # old dict styles
+        if isinstance(obj, dict):
+            flat = {}
+            for k, v in obj.items():
+                if isinstance(v, dict) and "score" in v and "mean" in v["score"]:
+                    flat[k.lower()] = float(v["score"]["mean"])
+                else:  # even older: {"animal": 0.92}
+                    try:
+                        flat[k.lower()] = float(v)
+                    except Exception:
+                        continue
+            out = {c: flat.get(c, np.nan) for c in categories}
+            all_vals = [v for v in flat.values() if not np.isnan(v)]
+            out["overall"] = float(np.mean(all_vals)) if all_vals else np.nan
+            return out
+
+        # unknown → fall through to empty
         return {}
 
-    # Convert all columns to float
-    df = df.apply(pd.to_numeric, errors="coerce")
-    result = {}
-
-    # Per-category stats
-    for cat in categories:
-        mask = [cat.lower() in str(col).lower() for col in df.columns]
-        vals = df.loc[:, mask].values.flatten()
-        vals = vals[~np.isnan(vals)]
-        result[cat] = {
-            "score": {
-                "mean": float(np.mean(vals)) if len(vals) else float("nan"),
-                "std": float(np.std(vals, ddof=1)) if len(vals) else float("nan"),
-                "n": int(len(vals)),
-                "vals": [float(v) for v in vals]
-            }
-        }
-    # "total" stats: all values
-    all_vals = df.values.flatten()
-    all_vals = all_vals[~np.isnan(all_vals)]
-    result["total"] = {
-        "score": {
-            "mean": float(np.mean(all_vals)) if len(all_vals) else float("nan"),
-            "std": float(np.std(all_vals, ddof=1)) if len(all_vals) else float("nan"),
-            "n": int(len(all_vals)),
-            "vals": [float(v) for v in all_vals]
-        }
-    }
-    return result
+    # ── Zarr branch ──────────────────────────────────────────────────
+    try:
+        root = zarr.open(str(path), mode="r")
+        # first permutation is enough (each perm is already averaged over splits)
+        df = pd.DataFrame(root["activ"][0])
+        return _df_to_scalar_scores(df, categories)
+    except Exception:
+        return {}
 
 
 def categ_corr_lineplot(
