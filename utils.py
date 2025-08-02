@@ -1134,18 +1134,28 @@ def _load_svm_scores(path, categories):
         d = safe_load_pickle(path)
         if d is None:  # corrupted / empty
             return {}
-        # If already in the desired structure, return as is
-        if all(isinstance(v, dict) and "score" in v for v in d.values()):
-            return d
-        # Otherwise, try to convert old style: d = {"animal":{"score":…}, …}
-        result = {}
-        for k, v in d.items():
-            score = v.get("score", v)  # handle both {"score": ...} and direct value
-            if isinstance(score, dict):
-                result[k.lower()] = {"score": score}
-            else:
-                result[k.lower()] = {"score": {"mean": float(score), "std": 0.0, "n": 1, "vals": [float(score)]}}
-        return result
+        # If it's a DataFrame, process as DataFrame
+        if isinstance(d, pd.DataFrame):
+            df = d.apply(pd.to_numeric, errors="coerce")
+        # If it's a numpy array, convert to DataFrame
+        elif isinstance(d, np.ndarray):
+            df = pd.DataFrame(d)
+        # If it's a dict, check for the expected structure
+        elif isinstance(d, dict):
+            if all(isinstance(v, dict) and "score" in v for v in d.values()):
+                return d
+            # Otherwise, try to convert old style: d = {"animal":{"score":…}, …}
+            result = {}
+            for k, v in d.items():
+                score = v.get("score", v)  # handle both {"score": ...} and direct value
+                if isinstance(score, dict):
+                    result[k.lower()] = {"score": score}
+                else:
+                    result[k.lower()] = {"score": {"mean": float(score), "std": 0.0, "n": 1, "vals": [float(score)]}}
+            return result
+        else:
+            # Unknown type, cannot process
+            return {}
 
     # ---- zarr/dataframe branch -------------------------------------------------
     try:
