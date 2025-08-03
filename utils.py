@@ -1291,7 +1291,7 @@ def categ_corr_lineplot(
 
                 # 1. Build RDM directory path
                 rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
-                if not rdm_dir.exists():
+                if (not rdm_dir.exists() or not any(rdm_dir.rglob("*.pkl"))):
                     # 2. Generate RDMs if missing
                     print("MISSING")
                     activ_root = os.path.join(main_dir, damage_type)
@@ -3595,7 +3595,7 @@ def generate_category_selective_RDMs(
         …/<damage_layer>/RDM_<frac>_<mode>/<activation_layer>/<cat>_selective/<damage>/perm<#>.pkl
     """
     from pathlib import Path
-    import zarr
+
 
     # ---------------------------------------------------- #
     # 1)  Load selectivity table & pick top‑selective units
@@ -3610,7 +3610,13 @@ def generate_category_selective_RDMs(
 
     idxs_by_cat: dict[str, np.ndarray] = {}
     for cat in categories:
-        col = f"mw_{cat}" if f"mw_{cat}" in sel_df.columns else f"mw_{cat}s"
+        col = (f"mw_{cat}"      if f"mw_{cat}"      in sel_df.columns else
+               f"mw_{cat}s"     if f"mw_{cat}s"     in sel_df.columns else
+               "mw_scene"       if cat == "place" and "mw_scene"  in sel_df.columns else
+               "mw_scenes"      if cat == "place" and "mw_scenes" in sel_df.columns else
+               None)
+        if col is None:
+            raise ValueError(f"No selectivity column for category '{cat}'.")
         rows = sel_df[sel_df["layer"] == f"module.{layer_name}"]
         if col not in rows.columns:
             raise ValueError(f"{col} missing in selectivity file.")
