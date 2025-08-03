@@ -3618,6 +3618,8 @@ def generate_category_selective_RDMs(
         if col is None:
             raise ValueError(f"No selectivity column for category '{cat}'.")
         rows = sel_df[sel_df["layer"] == f"module.{layer_name}"]
+        print(rows)
+        print(f"Found {len(rows)} rows for category '{cat}' in selectivity file.")
         if col not in rows.columns:
             raise ValueError(f"{col} missing in selectivity file.")
         if selection_mode == "percentage":
@@ -3629,6 +3631,8 @@ def generate_category_selective_RDMs(
         else:
             raise ValueError("selection_mode must be 'percentage' or 'percentile'")
         idxs_by_cat[cat] = top["unit"].astype(int).to_numpy()
+
+        print(len(idxs_by_cat[cat]), "top units for category", cat))
 
     # ----------------------------------------------- #
     # 2)  Walk damage‑level folders under activations #
