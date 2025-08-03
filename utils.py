@@ -1586,10 +1586,10 @@ def categ_corr_lineplot(
     name_parts.extend(activations_layers)
     categ_letters = (
     "all" if categories is None
-    else "".join(cat[0] for cat in categories)   # "aopf"
+    else "".join(cat[0] for cat in categories))   # "aopf"
     
     name_parts.append(categ_letters)
-)
+
     if percentage:
         name_parts.append("percentage")
 
