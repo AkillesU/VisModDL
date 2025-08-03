@@ -1584,6 +1584,12 @@ def categ_corr_lineplot(
                   data_type, damage_type, metric]
     name_parts.extend(damage_layers)
     name_parts.extend(activations_layers)
+    categ_letters = (
+    "all" if categories is None
+    else "".join(cat[0] for cat in categories)   # "aopf"
+    
+    name_parts.append(categ_letters)
+)
     if percentage:
         name_parts.append("percentage")
 
