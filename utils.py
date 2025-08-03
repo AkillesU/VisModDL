@@ -3632,7 +3632,7 @@ def generate_category_selective_RDMs(
             raise ValueError("selection_mode must be 'percentage' or 'percentile'")
         idxs_by_cat[cat] = top["unit"].astype(int).to_numpy()
 
-        print(len(idxs_by_cat[cat]), "top units for category", cat))
+        print(len(idxs_by_cat[cat]), "top units for category", cat)
 
     # ----------------------------------------------- #
     # 2)  Walk damage‑level folders under activations #
