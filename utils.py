@@ -3925,43 +3925,48 @@ def append_matrix_to_zarr(mat: np.ndarray,
     root.attrs["perm_indices"] = root.attrs["perm_indices"] + [perm_idx]
 
 
-
-
 def append_activation_to_zarr(df: pd.DataFrame,
-                              target: str | Path,
-                              perm_idx: int):
+                              folder: os.PathLike,
+                              perm_idx: int) -> None:
     """
-    Append one activation permutation (images × features) into a Zarr store.
-    If the current store is incompatible, a new store with a shape‑tagged
-    name is created automatically.
+    Append a (N_img × N_feat) activation tensor *df* for one permutation
+    to a grow-able Zarr store living inside *folder*.
+
+    One permutation  →  one store.
     """
-    zarr_path = _unique_store(Path(target), "activ", df.shape[1:])
+    import numpy as np, zarr, os, shutil
+    from pathlib import Path
 
-    arr = df.astype("float16").to_numpy()
-    n_img, n_feat = arr.shape
+    n_img, n_feat = df.shape
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
 
-    if not zarr_path.exists():
-        _init_store(zarr_path, n_img, n_feat)
+    # ------------------------------------------------------------------ #
+    # 1) Strictly one store per permutation:   "<perm>__activ_<feat>.zarr"
+    # ------------------------------------------------------------------ #
+    zarr_name = f"{perm_idx}__activ_{n_feat}.zarr"
+    zarr_path = folder / zarr_name
 
-    root = zarr.open(zarr_path, mode="a")
-    z = root["activ"]
+    # If the file already exists *delete it* so we never get shape clashes
+    if zarr_path.exists():
+        shutil.rmtree(zarr_path)
 
-    tmp = f"tmp_{os.getpid()}_{perm_idx}"
-    z.store[tmp] = arr[None, ...]
+    root = zarr.open(zarr_path, mode="w")
+    z = root.create_dataset(
+        "activ",
+        shape=(0, n_img, n_feat),
+        chunks=(1, n_img, n_feat),
+        dtype=np.float16,
+        compressor=zarr.Blosc(cname="zstd", clevel=3),
+        overwrite=True,
+    )
+    z.append(df.to_numpy()[None, ...])         # (1, N_img, N_feat)
 
-    try:
-        z.append(z.store[tmp])
-    except ValueError:
-        # shape changed since this store was first created → fallback
-        alt = _unique_store(zarr_path.with_suffix(""), "activ_alt", arr.shape[1:])
-        _init_store(alt, n_img, n_feat)
-        z_alt = zarr.open(alt, mode="a")["activ"]
-        z_alt.append(arr[None, ...])
-        z_alt.store.close()
-
-    del z.store[tmp]
-    root.attrs["image_names"] = df.index.tolist()
-    root.attrs["perm_indices"] = root.attrs["perm_indices"] + [perm_idx]
+    root.attrs.update(
+        image_names=df.index.tolist(),
+        perm_indices=[perm_idx],
+        column_names=list(df.columns),         # QoL: restore original DF
+    )
 
 
 def _build_radial_map(H: int, W: int, device=None) -> torch.Tensor:
