@@ -3662,6 +3662,7 @@ def generate_category_selective_RDMs(
                     img_names = root.attrs["image_names"]
                     for perm in perms:
                         df = load_activations_zarr(act_path, perm=perm)  # DataFrame
+                        print(df.shape, "activations loaded for", act_path.name)
                         A  = df.to_numpy()[:, flat_idx]
                         R  = np.corrcoef(A)
                         out_pkl = out_dir / f"{perm}.pkl"
