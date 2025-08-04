@@ -51,69 +51,53 @@ def main():
     "groupnorm_scaling_targets",
     ["groupnorm"]                   
 )
+    # New eccentricity params
+    eccentricity_layer_path       = config.get("eccentricity_layer_path", None)
+    eccentricity_bands            = config.get("eccentricity_bands", [])   # e.g. [[0.60, 1.00]]
+    ecc_fraction_to_mask_params          = config.get("ecc_fraction_to_mask",[0, 21, 0.05])
     # -----------------------------------------------------------------------
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Call for noise damage
-    run_damage(
-        model_info=model_info, 
-        pretrained=pretrained,
-        fraction_to_mask_params=fraction_to_mask_params,
-        noise_levels_params=noise_levels_params,
-        groupnorm_scaling_params=groupnorm_scaling_params, # Pass new param
-        layer_paths_to_damage=layer_paths_to_damage,
-        apply_to_all_layers=apply_to_all_layers,
-        manipulation_method="noise",
-        mc_permutations=mc_permutations,
-        layer_name=layer_name,
-        activation_layers_to_save=layer_path,
-        image_dir=image_dir,
-        only_conv=only_conv,
-        include_bias=include_bias,
-        masking_level=masking_level,
+    common_kwargs = dict(                     
+        model_info              = model_info,
+        pretrained              = pretrained,
+        fraction_to_mask_params = fraction_to_mask_params,
+        noise_levels_params     = noise_levels_params,
+        groupnorm_scaling_params= groupnorm_scaling_params,
+        layer_paths_to_damage   = layer_paths_to_damage,
+        apply_to_all_layers     = apply_to_all_layers,
+        mc_permutations         = mc_permutations,
+        layer_name              = layer_name,
+        activation_layers_to_save = layer_path,
+        image_dir               = image_dir,
+        only_conv               = only_conv,
+        include_bias            = include_bias,
+        masking_level           = masking_level,
         groupnorm_scaling_targets = groupnorm_scaling_targets
     )
 
-    # Call for connection/unit masking
-    run_damage(
-        model_info=model_info, 
-        pretrained=pretrained,
-        fraction_to_mask_params=fraction_to_mask_params,
-        noise_levels_params=noise_levels_params,
-        groupnorm_scaling_params=groupnorm_scaling_params, # Pass new param
-        layer_paths_to_damage=layer_paths_to_damage,
-        apply_to_all_layers=apply_to_all_layers,
-        manipulation_method="connections",
-        mc_permutations=mc_permutations,
-        layer_name=layer_name,
-        activation_layers_to_save=layer_path,
-        image_dir=image_dir,
-        only_conv=only_conv,
-        include_bias=include_bias,
-        masking_level=masking_level,
-        groupnorm_scaling_targets = groupnorm_scaling_targets
-    )
+    # Noise ---------------------------------------------------------
+    run_damage(**common_kwargs, manipulation_method="noise")
 
-    # New call for GroupNorm scaling damage
+    # Connection / unit masking ------------------------------------
+    run_damage(**common_kwargs, manipulation_method="connections")
+
+    # GroupNorm scaling --------------------------------------------
     run_damage(
-        model_info=model_info,
-        pretrained=pretrained,
-        fraction_to_mask_params=fraction_to_mask_params,
-        noise_levels_params=noise_levels_params,
-        groupnorm_scaling_params=groupnorm_scaling_params,  # <-- use new param
-        layer_paths_to_damage=layer_paths_to_damage,
-        apply_to_all_layers=apply_to_all_layers,
-        manipulation_method="groupnorm_scaling", # <-- set new method
-        mc_permutations=mc_permutations,
-        layer_name=layer_name,
-        activation_layers_to_save=layer_path,
-        image_dir=image_dir,
-        only_conv=only_conv,
-        include_bias=include_bias,
-        masking_level=masking_level,
-        groupnorm_scaling_targets = groupnorm_scaling_targets,
+        **common_kwargs,
+        manipulation_method="groupnorm_scaling",
         gain_control_noise=gain_control_noise
+    )
+
+    # Eccentricity-based activation thinning ------------------
+    #     (creates sub-folders eccentricity_0.60-1.00/)
+    run_damage(
+        **common_kwargs,
+        manipulation_method="eccentricity",
+        eccentricity_layer_path = eccentricity_layer_path,
+        eccentricity_bands      = eccentricity_bands,
+        ecc_fraction_to_mask_params    = ecc_fraction_to_mask_params
     )
     
 if __name__ == "__main__":

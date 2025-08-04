@@ -869,6 +869,9 @@ def run_damage(
     groupnorm_scaling_targets,
     gain_control_noise=0.0,
     masking_level="connections",
+    eccentricity_layer_path=None, # Specific layer path. The output will be used for damage
+    eccentricity_bands: list[list[float]] | None = [[0.60, 1.00]], # Define a set of [min,max] normalised eccentricity bands
+    ecc_fraction_to_mask_params=[0,0,0],
     run_suffix=""
 ):
     """
@@ -897,6 +900,9 @@ def run_damage(
     elif manipulation_method == "groupnorm_scaling": # <-- new branch
         damage_levels_list = generate_params_list(groupnorm_scaling_params)
         noise_dict = None # Ensure noise_dict is not used
+    elif manipulation_method == "eccentricity":
+        damage_levels_list = generate_params_list(ecc_fraction_to_mask_params)
+        noise_dict = None
     else:
         raise ValueError(f"manipulation_method '{manipulation_method}' is not recognized.")
 
@@ -925,7 +931,8 @@ def run_damage(
     
     print("Activations to be saved for ",layer_paths_to_damage, ": ", final_layers_to_hook)
 
-    total_iterations = len(damage_levels_list) * mc_permutations
+    
+
 
     # C)  Folder tag: 'noise', 'connections', 'units', or 'groupnorm_scaling'
     if manipulation_method == "noise":
@@ -942,128 +949,146 @@ def run_damage(
     else:
         dir_tag = manipulation_method          # fallback, should not occur
 
+    if manipulation_method != "eccentricity":
+        eccentricity_bands = [None]
+
+    total_iterations = len(damage_levels_list) * mc_permutations * len(eccentricity_bands)
+
     # SECTION 4: (Kept) The original style: one forward pass per image.
     with tqdm(total=total_iterations, desc=f"Running {manipulation_method} alteration") as pbar:
-        for damage_level in damage_levels_list:
-            for permutation_index in range(mc_permutations):
-                # 1) Load fresh model & attach multi-hook
-                model, activations = load_model(
-                    model_info=model_info,
-                    pretrained=pretrained,
-                    layer_name=layer_name,
-                    layer_path=final_layers_to_hook  # multi-layer hooking
-                )
-                model.eval()
+        for band in eccentricity_bands:
+            if manipulation_method == "eccentricity":
+                r_min, r_max = band
+                dir_tag = f"eccentricity_{r_min:.2f}-{r_max:.2f}" # Create dir_tag for this specific eccentricity band
 
-                # 2) Apply the chosen damage
-                if manipulation_method == "connections":
-                    apply_masking(
-                        model,
-                        fraction_to_mask=damage_level,
-                        layer_paths=layer_paths_to_damage,
-                        apply_to_all_layers=apply_to_all_layers,
-                        masking_level=masking_level,  
-                        only_conv=only_conv,
-                        include_bias=include_bias
+            for damage_level in damage_levels_list:
+                for permutation_index in range(mc_permutations):
+                    # 1) Load fresh model & attach multi-hook
+                    model, activations = load_model(
+                        model_info=model_info,
+                        pretrained=pretrained,
+                        layer_name=layer_name,
+                        layer_path=final_layers_to_hook  # multi-layer hooking
                     )
-                elif manipulation_method == "noise":
-                    apply_noise(
-                        model,
-                        noise_level=damage_level,
-                        noise_dict=noise_dict,
-                        layer_paths=layer_paths_to_damage,
-                        apply_to_all_layers=apply_to_all_layers,
-                        only_conv=only_conv,
-                        include_bias=include_bias
-                    )
-                elif manipulation_method == "groupnorm_scaling":
-                    apply_groupnorm_scaling(
-                        model,
-                        scaling_factor=damage_level,
-                        layer_paths=layer_paths_to_damage,
-                        apply_to_all_layers=apply_to_all_layers,
-                        include_bias=include_bias,
-                        targets = groupnorm_scaling_targets,
-                        gain_control_noise=gain_control_noise
-                    )
+                    model.eval()
 
-                # 3) Now we do the old "extract_activations" approach (one image at a time)
-                per_layer_data = {lp: [] for lp in final_layers_to_hook}
+                    # 2) Apply the chosen damage
+                    if manipulation_method == "connections":
+                        apply_masking(
+                            model,
+                            fraction_to_mask=damage_level,
+                            layer_paths=layer_paths_to_damage,
+                            apply_to_all_layers=apply_to_all_layers,
+                            masking_level=masking_level,  
+                            only_conv=only_conv,
+                            include_bias=include_bias
+                        )
+                    elif manipulation_method == "noise":
+                        apply_noise(
+                            model,
+                            noise_level=damage_level,
+                            noise_dict=noise_dict,
+                            layer_paths=layer_paths_to_damage,
+                            apply_to_all_layers=apply_to_all_layers,
+                            only_conv=only_conv,
+                            include_bias=include_bias
+                        )
+                    elif manipulation_method == "groupnorm_scaling":
+                        apply_groupnorm_scaling(
+                            model,
+                            scaling_factor=damage_level,
+                            layer_paths=layer_paths_to_damage,
+                            apply_to_all_layers=apply_to_all_layers,
+                            include_bias=include_bias,
+                            targets = groupnorm_scaling_targets,
+                            gain_control_noise=gain_control_noise
+                        )
+                    elif manipulation_method == "eccentricity":
+                        apply_eccentricity_mask(
+                            model,
+                            layer_path=eccentricity_layer_path,
+                            r_min=r_min,
+                            r_max=r_max,
+                            fraction=damage_level,
+                            per_channel=False)
 
-                image_files = [
-                    f for f in os.listdir(image_dir)
-                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-                ]
-                image_files.sort()
+                    # 3) Now we do the old "extract_activations" approach (one image at a time)
+                    per_layer_data = {lp: [] for lp in final_layers_to_hook}
 
-                for image_file in image_files:
-                    img_path = os.path.join(image_dir, image_file)
-                    input_tensor = preprocess_image(img_path)
+                    image_files = [
+                        f for f in os.listdir(image_dir)
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+                    ]
+                    image_files.sort()
 
-                    # run forward
-                    with torch.no_grad():
-                        model(input_tensor)
+                    for image_file in image_files:
+                        img_path = os.path.join(image_dir, image_file)
+                        input_tensor = preprocess_image(img_path)
 
-                    # 'activations[lp]' is now the last image's output for that layer
+                        # run forward
+                        with torch.no_grad():
+                            model(input_tensor)
+
+                        # 'activations[lp]' is now the last image's output for that layer
+                        for lp in final_layers_to_hook:
+                            out_flat = activations[lp].flatten()
+                            per_layer_data[lp].append(out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat)
+
+                    # 4) For each layer, build a DataFrame, compute correlation, selectivity, and save
                     for lp in final_layers_to_hook:
-                        out_flat = activations[lp].flatten()
-                        per_layer_data[lp].append(out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat)
+                        # build a 2D array [N_images, features]
+                        arr_2d = np.stack(per_layer_data[lp], axis=0)
+                        activations_df = pd.DataFrame(arr_2d, index=image_files)
 
-                # 4) For each layer, build a DataFrame, compute correlation, selectivity, and save
-                for lp in final_layers_to_hook:
-                    # build a 2D array [N_images, features]
-                    arr_2d = np.stack(per_layer_data[lp], axis=0)
-                    activations_df = pd.DataFrame(arr_2d, index=image_files)
+                        # sort indices
+                        activations_df_sorted = sort_activations_by_numeric_index(activations_df)
 
-                    # sort indices
-                    activations_df_sorted = sort_activations_by_numeric_index(activations_df)
+                        lp_name = lp.split(".")[2]
+                        # save activations
+                        activation_dir = (
+                            f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
+                            f"{dir_tag}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
+                        )
+                        os.makedirs(activation_dir, exist_ok=True)
+                        activation_dir_path = os.path.join(activation_dir, f"{permutation_index}")
 
-                    lp_name = lp.split(".")[2]
-                    # save activations
-                    activation_dir = (
-                        f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                        f"{dir_tag}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
-                    )
-                    os.makedirs(activation_dir, exist_ok=True)
-                    activation_dir_path = os.path.join(activation_dir, f"{permutation_index}")
+                        reduced_df = activations_df_sorted.astype(np.float16)
+                        # Saving activations to zarr format
+                        append_activation_to_zarr(reduced_df, activation_dir_path, perm_idx=permutation_index)
 
-                    reduced_df = activations_df_sorted.astype(np.float16)
-                    # Saving activations to zarr format
-                    append_activation_to_zarr(reduced_df, activation_dir_path, perm_idx=permutation_index)
+                        # compute correlation matrix
+                        correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
 
-                    # compute correlation matrix
-                    correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
+                        # save correlation matrix
+                        corrmat_dir = (
+                            f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
+                            f"{dir_tag}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
+                        )
+                        os.makedirs(corrmat_dir, exist_ok=True)
+                        corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}")
+                        append_activation_to_zarr(
+                            pd.DataFrame(correlation_matrix.astype("float32")),
+                            corrmat_path,                      # keep path
+                            perm_idx=permutation_index
+                        )
 
-                    # save correlation matrix
-                    corrmat_dir = (
-                        f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                        f"{dir_tag}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
-                    )
-                    os.makedirs(corrmat_dir, exist_ok=True)
-                    corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}")
-                    append_activation_to_zarr(
-                        pd.DataFrame(correlation_matrix.astype("float32")),
-                        corrmat_path,                      # keep path
-                        perm_idx=permutation_index
-                    )
+                        # compute within-between
+                        categories_array = assign_categories(sorted_image_names)
+                        results = calc_within_between(correlation_matrix, categories_array)
+                        results = convert_np_to_native(results)
 
-                    # compute within-between
-                    categories_array = assign_categories(sorted_image_names)
-                    results = calc_within_between(correlation_matrix, categories_array)
-                    results = convert_np_to_native(results)
+                        # save selectivity
+                        selectivity_dir = (
+                            f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
+                            f"{dir_tag}/{layer_name}/selectivity/{lp_name}/damaged_{round(damage_level,3)}"
+                        )
+                        os.makedirs(selectivity_dir, exist_ok=True)
+                        selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.pkl")
+                        with open(selectivity_path, "wb") as f:
+                            pickle.dump(results, f)
 
-                    # save selectivity
-                    selectivity_dir = (
-                        f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                        f"{dir_tag}/{layer_name}/selectivity/{lp_name}/damaged_{round(damage_level,3)}"
-                    )
-                    os.makedirs(selectivity_dir, exist_ok=True)
-                    selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.pkl")
-                    with open(selectivity_path, "wb") as f:
-                        pickle.dump(results, f)
-
-                # update progress
-                pbar.update(1)
+                    # update progress
+                    pbar.update(1)
 
     print("All damage permutations completed!")
 
@@ -1127,33 +1152,88 @@ def safe_load_pickle(file_path):
 
 def _load_svm_scores(path, categories):
     """
-    Helper that returns  {category: score_float, …}  for one SVM result file.
-    Works with either Pickle (old style dict) or Zarr (DataFrame).
+    Load one SVM replicate file and return *scalars*:
+
+        {'animal': 0.92, 'face': 0.88, 'object': 0.89, 'place': 0.90,
+         'overall': 0.897, 'total': 0.897}
+
+    Accepted inputs
+    ----------------
+    •  *.pkl  containing a DataFrame, ndarray, or legacy dict
+    •  *.zarr directory produced by `svm_process_*`
+
+    Notes
+    -----
+    * The four base categories are **always** computed so the downstream
+      cache files keep the full set of statistics, even if the caller only
+      asked for `categories=['total']`.
+    * Missing categories → value = np.nan.
     """
+    import os, pickle, numpy as np, pandas as pd, zarr
+
+    BASE_CATS = ("animal", "face", "object", "place")
+    want_cats = set(cat.lower() for cat in categories) | set(BASE_CATS)
+
+    # ---------- helper -------------------------------------------------
+    def _df_to_scores(df: pd.DataFrame, cat_set):
+        df = df.apply(pd.to_numeric, errors="coerce")
+        out = {}
+        for cat in cat_set:
+            mask = [cat in str(col).lower() for col in df.columns]
+            vals = df.loc[:, mask].values.flatten()
+            vals = vals[~np.isnan(vals)]
+            out[cat] = float(np.mean(vals)) if len(vals) else np.nan
+
+        all_vals = df.values.flatten()
+        all_vals = all_vals[~np.isnan(all_vals)]
+        grand = float(np.mean(all_vals)) if len(all_vals) else np.nan
+        out["overall"] = grand
+        out["total"]   = grand          # alias wanted by plotting scripts
+        return out
+    # -------------------------------------------------------------------
+
+    # ---------- Pickle branch ------------------------------------------
     if str(path).lower().endswith(".pkl"):
-        d = safe_load_pickle(path)
-        if d is None:                               # corrupted / empty
+        if not (os.path.exists(path) and os.path.getsize(path) > 0):
             return {}
-        # old file structure:  d = {"animal":{"score":…}, …}
-        return {k.lower(): v.get("score", np.nan) for k, v in d.items()}
+        try:
+            with open(path, "rb") as f:
+                obj = pickle.load(f)
+        except EOFError:
+            return {}
 
-    # ---- zarr branch -------------------------------------------------
+        if isinstance(obj, pd.DataFrame):
+            return _df_to_scores(obj, want_cats)
+
+        if isinstance(obj, np.ndarray):
+            return _df_to_scores(pd.DataFrame(obj), want_cats)
+
+        if isinstance(obj, dict):                   # legacy formats
+            # try modern nested {"animal":{"score":{"mean":…}}}
+            maybe = {}
+            for k, v in obj.items():
+                if isinstance(v, dict) and "score" in v and "mean" in v["score"]:
+                    maybe[k.lower()] = float(v["score"]["mean"])
+                else:                               # very old {"animal": 0.93}
+                    try:
+                        maybe[k.lower()] = float(v)
+                    except Exception:
+                        continue
+            df = pd.DataFrame([maybe])              # 1-row DF for helper
+            return _df_to_scores(df, want_cats)
+
+        return {}                                   # unknown pickle content
+
+    # ---------- Zarr branch --------------------------------------------
     try:
-        df = load_activations_zarr(path)
-    except Exception as exc:
-        print(f"[warn] could not read {path}: {exc}")
+        root = zarr.open(str(path), mode="r")
+        arr  = root["activ"][0]                     # first permutation
+        # try to recover column names (added by append_activation_to_zarr fix)
+        cols = root.attrs.get("column_names")
+        df   = pd.DataFrame(arr, columns=cols)
+        return _df_to_scores(df, want_cats)
+    except Exception:
         return {}
-
-    df = df.select_dtypes("number")                # keep only numeric cols
-    if df.empty:
-        return {}
-
-    scores = {"overall": float(df.mean().mean())}
-    for cat in categories:
-        mask = df.columns.str.contains(cat, case=False, regex=False)
-        if mask.any():
-            scores[cat] = float(df.loc[:, mask].mean().mean())
-    return scores
 
 
 def categ_corr_lineplot(
@@ -1211,7 +1291,7 @@ def categ_corr_lineplot(
 
                 # 1. Build RDM directory path
                 rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
-                if not rdm_dir.exists():
+                if (not rdm_dir.exists() or not any(rdm_dir.rglob("*.pkl"))):
                     # 2. Generate RDMs if missing
                     print("MISSING")
                     activ_root = os.path.join(main_dir, damage_type)
@@ -1378,8 +1458,7 @@ def categ_corr_lineplot(
                                 if not scores:
                                     continue
                                 for cat_name, val in scores.items():
-                                    if cat_name in categories:
-                                        agg[cat_name].append(val)
+                                    agg.setdefault(cat_name, []).append(val)
                         # save aggregated stats
                         packed = {
                             c: {
@@ -1509,6 +1588,12 @@ def categ_corr_lineplot(
                   data_type, damage_type, metric]
     name_parts.extend(damage_layers)
     name_parts.extend(activations_layers)
+    categ_letters = (
+    "all" if categories is None
+    else "".join(cat[0] for cat in categories))   # "aopf"
+    
+    name_parts.append(categ_letters)
+
     if percentage:
         name_parts.append("percentage")
 
@@ -3520,7 +3605,7 @@ def generate_category_selective_RDMs(
         …/<damage_layer>/RDM_<frac>_<mode>/<activation_layer>/<cat>_selective/<damage>/perm<#>.pkl
     """
     from pathlib import Path
-    import zarr
+
 
     # ---------------------------------------------------- #
     # 1)  Load selectivity table & pick top‑selective units
@@ -3535,8 +3620,16 @@ def generate_category_selective_RDMs(
 
     idxs_by_cat: dict[str, np.ndarray] = {}
     for cat in categories:
-        col = f"mw_{cat}" if f"mw_{cat}" in sel_df.columns else f"mw_{cat}s"
+        col = (f"mw_{cat}"      if f"mw_{cat}"      in sel_df.columns else
+               f"mw_{cat}s"     if f"mw_{cat}s"     in sel_df.columns else
+               "mw_scene"       if cat == "place" and "mw_scene"  in sel_df.columns else
+               "mw_scenes"      if cat == "place" and "mw_scenes" in sel_df.columns else
+               None)
+        if col is None:
+            raise ValueError(f"No selectivity column for category '{cat}'.")
         rows = sel_df[sel_df["layer"] == f"module.{layer_name}"]
+        print(rows)
+        print(f"Found {len(rows)} rows for category '{cat}' in selectivity file.")
         if col not in rows.columns:
             raise ValueError(f"{col} missing in selectivity file.")
         if selection_mode == "percentage":
@@ -3548,6 +3641,8 @@ def generate_category_selective_RDMs(
         else:
             raise ValueError("selection_mode must be 'percentage' or 'percentile'")
         idxs_by_cat[cat] = top["unit"].astype(int).to_numpy()
+
+        print(len(idxs_by_cat[cat]), "top units for category", cat)
 
     # ----------------------------------------------- #
     # 2)  Walk damage‑level folders under activations #
@@ -3577,6 +3672,7 @@ def generate_category_selective_RDMs(
                     img_names = root.attrs["image_names"]
                     for perm in perms:
                         df = load_activations_zarr(act_path, perm=perm)  # DataFrame
+                        print(df.shape, "activations loaded for", act_path.name)
                         A  = df.to_numpy()[:, flat_idx]
                         R  = np.corrcoef(A)
                         out_pkl = out_dir / f"{perm}.pkl"
@@ -3839,41 +3935,122 @@ def append_matrix_to_zarr(mat: np.ndarray,
     root.attrs["perm_indices"] = root.attrs["perm_indices"] + [perm_idx]
 
 
-
-
 def append_activation_to_zarr(df: pd.DataFrame,
-                              target: str | Path,
-                              perm_idx: int):
+                              folder: os.PathLike,
+                              perm_idx: int) -> None:
     """
-    Append one activation permutation (images × features) into a Zarr store.
-    If the current store is incompatible, a new store with a shape‑tagged
-    name is created automatically.
+    Append a (N_img × N_feat) activation tensor *df* for one permutation
+    to a grow-able Zarr store living inside *folder*.
+
+    One permutation  →  one store.
     """
-    zarr_path = _unique_store(Path(target), "activ", df.shape[1:])
+    import numpy as np, zarr, os, shutil
+    from pathlib import Path
 
-    arr = df.astype("float16").to_numpy()
-    n_img, n_feat = arr.shape
+    n_img, n_feat = df.shape
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
 
-    if not zarr_path.exists():
-        _init_store(zarr_path, n_img, n_feat)
+    # ------------------------------------------------------------------ #
+    # 1) Strictly one store per permutation:   "<perm>__activ_<feat>.zarr"
+    # ------------------------------------------------------------------ #
+    zarr_name = f"{perm_idx}__activ_{n_feat}.zarr"
+    zarr_path = folder / zarr_name
 
-    root = zarr.open(zarr_path, mode="a")
-    z = root["activ"]
+    # If the file already exists *delete it* so we never get shape clashes
+    if zarr_path.exists():
+        shutil.rmtree(zarr_path)
 
-    tmp = f"tmp_{os.getpid()}_{perm_idx}"
-    z.store[tmp] = arr[None, ...]
+    root = zarr.open(zarr_path, mode="w")
+    z = root.create_dataset(
+        "activ",
+        shape=(0, n_img, n_feat),
+        chunks=(1, n_img, n_feat),
+        dtype=np.float16,
+        compressor=zarr.Blosc(cname="zstd", clevel=3),
+        overwrite=True,
+    )
+    z.append(df.to_numpy()[None, ...])         # (1, N_img, N_feat)
 
-    try:
-        z.append(z.store[tmp])
-    except ValueError:
-        # shape changed since this store was first created → fallback
-        alt = _unique_store(zarr_path.with_suffix(""), "activ_alt", arr.shape[1:])
-        _init_store(alt, n_img, n_feat)
-        z_alt = zarr.open(alt, mode="a")["activ"]
-        z_alt.append(arr[None, ...])
-        z_alt.store.close()
+    root.attrs.update(
+        image_names=df.index.tolist(),
+        perm_indices=[perm_idx],
+        column_names=list(df.columns),         # QoL: restore original DF
+    )
 
-    del z.store[tmp]
-    root.attrs["image_names"] = df.index.tolist()
-    root.attrs["perm_indices"] = root.attrs["perm_indices"] + [perm_idx]
 
+def _build_radial_map(H: int, W: int, device=None) -> torch.Tensor:
+    """Return an (H×W) tensor of *normalised* radii belongs to [0, 1].
+
+    0 ≡ centre pixel, 1 ≡ farthest corner. Works for rectangular maps.
+    """
+    yy = torch.arange(H, device=device).view(H, 1).float()
+    xx = torch.arange(W, device=device).view(1, W).float()
+    cy, cx = (H - 1) / 2.0, (W - 1) / 2.0
+    rr = torch.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
+    return rr / rr.max()
+
+
+def _gen_band_mask(shape: Tuple[int, int, int, int],
+                   r_min: float,
+                   r_max: float,
+                   frac: float,
+                   *,
+                   per_channel: bool = False,
+                   device=None) -> torch.Tensor:
+    """Create a Bernoulli mask that zeros *frac* of units with r belongs to [r_min, r_max)."""
+    _, C, H, W = shape
+    rmap = _build_radial_map(H, W, device)
+    band = (rmap >= r_min) & (rmap < r_max)
+
+    if per_channel:
+        keep = torch.bernoulli(torch.full((C, H, W), 1 - frac, device=device))
+        mask = torch.where(band, keep, torch.ones((C, H, W), device=device))
+        return mask.unsqueeze(0)            # → (1, C, H, W)
+    else:
+        keep = torch.bernoulli(torch.full((H, W), 1 - frac, device=device))
+        mask = torch.where(band, keep, torch.ones((H, W), device=device))
+        return mask.unsqueeze(0).unsqueeze(0)  # → (1, 1, H, W)
+
+
+def apply_eccentricity_mask(model: torch.nn.Module,
+                            *,
+                            layer_path: str,
+                            r_min: float,
+                            r_max: float,
+                            fraction: float,
+                            per_channel: bool = False,
+                            ) -> None:
+    """Register a forward‑hook that randomly zeros `fraction` of activations
+    in the eccentricity ring [r_min, r_max).
+
+    Parameters
+    ----------
+    model        : the nn.Module holding the target layer.
+    layer_path   : dotted path from `model` to the layer to hook.
+    r_min, r_max : lower / upper bound **normalised to [0, 1]**.
+    fraction     : proportion of units inside the band to delete (0–1).
+    per_channel  : if *True* draw a separate Bernoulli for every (c,x,y), else
+                   share one spatial mask for all channels.
+    """
+    assert 0.0 <= r_min < r_max <= 1.0, "r_min/r_max must satisfy 0 ≤ r_min < r_max ≤ 1"
+    assert 0.0 <= fraction <= 1.0,      "fraction must be in [0, 1]"
+
+    # Resolve dotted path lazily to avoid circular imports ----------------------
+    from utils import get_layer_from_path
+    target_layer = get_layer_from_path(model, layer_path)
+
+    # Cache one mask per unique output shape – allows variable batch sizes ------
+    _mask_cache: dict[Tuple[int, int, int, int], torch.Tensor] = {}
+
+    def _hook(_module, _input, output):
+        key = tuple(output.shape)
+        if key not in _mask_cache:
+            _mask_cache[key] = _gen_band_mask(
+                key, r_min, r_max, fraction,
+                per_channel=per_channel,
+                device=output.device,
+            )
+        return output * _mask_cache[key]
+
+    target_layer.register_forward_hook(_hook)

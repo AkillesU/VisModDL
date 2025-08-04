@@ -1,5 +1,25 @@
-subdir: "cornet_rt5_c/"
+subdir: "cornet_rt5_c/svm"
 tasks:
+  - function: "categ_corr_lineplot"
+    parameters:
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      categories: ["total"]
+      verbose: 0
+      data_type: "svm_15"
+      ylim: [0.45,1.05]
+  - function: "categ_corr_lineplot"
+    parameters:
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      categories: ["face","place", "object","animal"]
+      verbose: 0
+      data_type: "svm_15"
+      ylim: [0.45,1.05]
   - function: "categ_corr_lineplot"
     parameters:
       damage_layers: ["V1","V2","V4","IT"]
