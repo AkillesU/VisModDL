@@ -1551,11 +1551,15 @@ def categ_corr_lineplot(
         ys = [frac_dict[x][0] for x in xs]
         err= [frac_dict[x][1] for x in xs]
         lbl = f"{layer}-{act_key}-{cat}"
+        # Normalise Imagenet values to get same colour coding
         if data_type == "imagenet":
             color_cat = "total"
+            color_act = "IT"
         else:
             color_cat = cat
-        color = get_color_for_triple(layer, act_key, str(color_cat))
+            color_act = act_key
+
+        color = get_color_for_triple(layer, color_act, str(color_cat))
         plt.errorbar(xs, ys, yerr=err, fmt='-o', capsize=4, label=lbl, color=color)
         if scatter:
             for x in xs:
