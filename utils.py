@@ -1544,7 +1544,6 @@ def categ_corr_lineplot(
     # ------------ 6. PLOT --------------------------------------
     plt.figure(figsize=(8, 6))
     for (layer, act_key, cat), frac_dict in data.items():
-        print(layer, act_key, cat)
         if not frac_dict or cat not in categories:
             continue
         xs = sorted(frac_dict.keys())
