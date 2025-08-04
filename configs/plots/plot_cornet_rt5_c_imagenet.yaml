@@ -33,3 +33,36 @@ tasks:
       metric: top5
       categories: [overall]
       activations_layers: None
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: data/haupt_stim_activ/damaged/cornet_rt5_c/
+      damage_layers: [V1,V2,V4,IT]
+      damage_type: connections
+      verbose: 0
+      ylim: [-0.1,1]
+      data_type: imagenet
+      metric: top1
+      categories: [overall]
+      activations_layers: None
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: data/haupt_stim_activ/damaged/cornet_rt5_c+b/
+      damage_layers: [V1,V2,V4,IT]
+      damage_type: units
+      verbose: 0
+      ylim: [-0.1,1]
+      data_type: imagenet
+      metric: top1
+      categories: [overall]
+      activations_layers: None
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: data/haupt_stim_activ/damaged/cornet_rt5_c/
+      damage_layers: [V1,V2,V4,IT]
+      damage_type: noise
+      verbose: 0
+      ylim: [-0.1,1]
+      data_type: imagenet
+      metric: top1
+      categories: [overall]
+      activations_layers: None
