@@ -327,6 +327,70 @@ def apply_masking(
     unchanged elsewhere in the codebase.
     """
     param_masks = {}
+    # Activation-level unit masking 
+    if masking_level == "unit_activations":
+        # Ignore include_bias for activation masking (no bias at this stage).
+        # Enumerate target layers
+        target_paths = []
+        if apply_to_all_layers:
+            # If want to add support "all layers", call get_all_conv_layers(model, "")
+            raise NotImplementedError("unit_activations with apply_to_all_layers=True not implemented")
+        else:
+            for path in layer_paths:
+                base = get_layer_from_path(model, path)
+                if only_conv:
+                    target_paths.extend(get_all_conv_layers(base, path))
+                else:
+                    # You can also support Linear here via get_all_weight_layers
+                    target_paths.extend(get_all_weight_layers(base, path))
+
+        # Register forward hooks that zero whole output channels/features.
+        for w_path in target_paths:
+            layer = get_layer_from_path(model, w_path)
+
+            # Determine number of units from WEIGHT shape if available (out_channels/out_features),
+            # fall back to an attribute if needed.
+            if hasattr(layer, "weight") and layer.weight is not None:
+                num_units = layer.weight.shape[0]
+            elif hasattr(layer, "out_channels"):
+                num_units = layer.out_channels
+            elif hasattr(layer, "out_features"):
+                num_units = layer.out_features
+            else:
+                continue  # skip layers we can’t size
+
+            k = int(fraction_to_mask * num_units)
+            if k <= 0:
+                # nothing to mask for this layer at this damage level
+                continue
+
+            # Draw unit indices once per layer/permutation (like unit weight masking).
+            # We store a 1D mask; we’ll move it to the right device/dtype inside the hook.
+            unit_idx = torch.randperm(num_units)[:k]
+            base_mask_1d = torch.ones(num_units, dtype=torch.float32)
+            base_mask_1d[unit_idx] = 0.0
+
+            def _act_unit_mask_hook(module, _inputs, output, mask_1d=base_mask_1d):
+                # Handle tensor or tuple outputs
+                def _apply(o):
+                    # Expect o shape [N, C, ...] for conv or [N, F] for linear
+                    if not torch.is_tensor(o) or o.dim() < 2:
+                        return o
+                    m = mask_1d.to(device=o.device, dtype=o.dtype)
+                    # Build view: [1, C, 1, 1, ...] to broadcast across batch & spatial dims
+                    view = [1, o.shape[1]] + [1] * (o.dim() - 2)
+                    return o * m.view(*view)
+
+                if isinstance(output, tuple):
+                    new_first = _apply(output[0])
+                    return (new_first,) + output[1:]
+                else:
+                    return _apply(output)
+
+            layer.register_forward_hook(_act_unit_mask_hook)
+
+        # Done: hooks are registered; nothing else to do for this mode.
+        return
 
     # Build the mask tensors
     with torch.no_grad():
@@ -938,7 +1002,12 @@ def run_damage(
     if manipulation_method == "noise":
         dir_tag = "noise"
     elif manipulation_method == "connections":
-        dir_tag = "units" if masking_level == "units" else "connections"
+        if masking_level == "units":
+            dir_tag = "units"
+        elif masking_level == "unit_activations":
+            dir_tag = "unit_activations"
+        else:
+            dir_tag = "connections"
     elif manipulation_method == "groupnorm_scaling":
         # ---- build a concise tag “g”, “c”, or “g+c” -----------------
         _map = {"groupnorm": "g", "conv": "c"}
