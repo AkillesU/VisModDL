@@ -1411,12 +1411,15 @@ def categ_corr_lineplot(
                                 selectivities.append(sel)
                             # Aggregate
                             mean_sel = float(np.mean(selectivities))
-                            std_sel = float(np.std(selectivities,ddof=1))
-                            stats = {"mean": mean_sel, "std": std_sel, "n": len(selectivities)}
+                            std_sel  = float(np.std(selectivities, ddof=1))
+                            stats = {"mean": mean_sel, "std": std_sel, "n": len(selectivities), "vals": [float(x) for x in selectivities]}
                             with open(avg_file, "wb") as f:
                                 pickle.dump(stats, f)
-                        # Store for plotting
+
+                            # existing
                         data[(layer, act, cat)][float(dmg_level)] = (stats["mean"], stats["std"], stats["n"])
+                        # NEW: give percentage-scaling the raw points it needs
+                        raw_points[(layer, act, cat)][float(dmg_level)] = stats["vals"]
                 if "total" in categories:
                     data[(layer, act_key, "total")] = {}
                     raw_points[(layer, act_key, "total")] = {}
@@ -1450,10 +1453,11 @@ def categ_corr_lineplot(
                                 all_selectivities.append(sel)
                         if all_selectivities:
                             mean_sel = float(np.mean(all_selectivities))
-                            std_sel = float(np.std(all_selectivities, ddof=1))
-                            stats = {"mean": mean_sel, "std": std_sel, "n": len(all_selectivities)}
-                            data[(layer, act_key, "total")][float(dmg_level)] = (mean_sel, std_sel, len(all_selectivities))
-                            raw_points[(layer, act_key, "total")][float(dmg_level)] = all_selectivities
+                            std_sel  = float(np.std(all_selectivities, ddof=1))
+                            stats = {"mean": mean_sel, "std": std_sel, "n": len(all_selectivities), "vals": [float(x) for x in all_selectivities]}
+                            # write a cache file if you wish (optional), then:
+                            data[(layer, act_key, "total")][float(dmg_level)] = (stats["mean"], stats["std"], stats["n"])
+                            raw_points[(layer, act_key, "total")][float(dmg_level)] = stats["vals"]
 
 
             else:
