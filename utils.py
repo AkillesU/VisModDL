@@ -1354,7 +1354,7 @@ def categ_corr_lineplot(
             act_key = act
             if data_type == "selectivity" and selectivity_fraction is not None:
                 if "total" in categories:
-                    categories_rdm = ("face", "object", "animal", "place") # FIX THIS
+                    categories_rdm = ["face", "object", "animal", "place"] # FIX THIS
                 else:
                     categories_rdm = categories
 
@@ -1504,33 +1504,14 @@ def categ_corr_lineplot(
                             if not (is_pkl or is_zarr):
                                 continue
 
-                            # ---- SVM MODE ----
-                            if data_type.startswith("svm"):
-                                scores = _load_svm_scores(p, categories)
-                                if not scores:
-                                    continue
-                                for cat_name, val in scores.items():
-                                    agg.setdefault(cat_name, []).append(val)
-                                continue  # handled; go to next file
-
-                            # For ImageNet & Selectivity we expect pickles with dict content.
-                            # If a .zarr appears here, we don't know its structure, so skip it
-                            # (or implement a reader if you actually store these as zarr too).
-                            if is_zarr:
-                                # TODO: implement a zarr loader if your ImageNet/Selectivity runs write zarr.
-                                continue
-
-                            # load the pickle content (define `content`)
-                            content = safe_load_pickle(p)
-                            if content is None:
-                                try:
-                                    with open(p, "rb") as f:
-                                        content = pickle.load(f)
-                                except Exception:
-                                    continue  # unreadable file; skip
-
                             # ---- IMAGE NET MODE ----
                             if data_type == "imagenet":
+                                if is_zarr:
+                                    # TODO: implement a zarr loader if ImageNet stats are stored as zarr
+                                    continue
+                                content = safe_load_pickle(p) or (pickle.load(open(p, "rb")) if os.path.isfile(p) else None)
+                                if content is None:
+                                    continue
                                 for cat in categories:
                                     if str(cat).lower() == "overall":
                                         val = content["overall"][metric]
@@ -1543,12 +1524,23 @@ def categ_corr_lineplot(
 
                             # ---- SELECTIVITY MODE ----
                             elif data_type == "selectivity":
+                                if is_zarr:
+                                    # No zarr reader defined for selectivity summaries
+                                    continue
+                                content = safe_load_pickle(p) or (pickle.load(open(p, "rb")) if os.path.isfile(p) else None)
                                 if not isinstance(content, dict):
                                     continue
-                                for cat_name, met_dict in content.items():
-                                    if (cat_name in categories and
-                                        metric in met_dict):
-                                        agg.setdefault(cat_name, []).append(float(met_dict[metric]))
+
+                                # If "total" is requested, collect base categories so we can synthesize "total"
+                                base_cats = ["animal", "face", "object", "place"]
+                                if "total" in categories:
+                                    for cat_name, met_dict in content.items():
+                                        if (cat_name in base_cats) and (metric in met_dict):
+                                            agg.setdefault(cat_name, []).append(float(met_dict[metric]))
+                                else:
+                                    for cat_name, met_dict in content.items():
+                                        if (cat_name in categories) and (metric in met_dict):
+                                            agg.setdefault(cat_name, []).append(float(met_dict[metric]))
 
                             # ---- SVM MODE ----
                             else:   # data_type starts with "svm"
@@ -1557,6 +1549,17 @@ def categ_corr_lineplot(
                                     continue
                                 for cat_name, val in scores.items():
                                     agg.setdefault(cat_name, []).append(val)
+
+                        # If "total" was requested for selectivity, flatten base categories into "total"
+                        if data_type == "selectivity" and ("total" in categories):
+                            base_cats = ("animal", "face", "object", "place")
+                            total_vals = []
+                            for bc in base_cats:
+                                total_vals.extend(agg.get(bc, []))
+                            if total_vals:
+                                agg["total"] = total_vals
+                        # --- END PATCH ---
+
                         # save aggregated stats
                         packed = {
                             c: {
