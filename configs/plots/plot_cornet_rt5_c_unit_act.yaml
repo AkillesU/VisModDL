@@ -1,0 +1,92 @@
+subdir: "cornet_rt5_c/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "unit_activations"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,1]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V2"]
+      activations_layers: ["IT"]
+      damage_type: "unit_activations"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,1]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V4"]
+      activations_layers: ["IT"]
+      damage_type: "unit_activations"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,1]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      damage_type: "unit_activations"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,1]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "unit_activations"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1", "V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "unit_activations"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selectivity_file_dir: unit_selectivity
+      fmap_shape: [512,7,7]
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1", "V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "unit_activations"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.1,0.5]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selectivity_file_dir: unit_selectivity
+      fmap_shape: [512,7,7]
