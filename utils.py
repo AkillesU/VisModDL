@@ -1641,9 +1641,14 @@ def categ_corr_lineplot(
                                 if is_zarr:
                                     # TODO: implement a zarr loader if ImageNet stats are stored as zarr
                                     continue
-                                content = safe_load_pickle(p) or (pickle.load(open(p, "rb")) if os.path.isfile(p) else None)
+                                # load the pickle content (define `content`)
+                                content = safe_load_pickle(p)
                                 if content is None:
-                                    continue
+                                    try:
+                                        with open(p, "rb") as f:
+                                            content = pickle.load(f)
+                                    except Exception:
+                                        continue  # unreadable file; skip
                                 for cat in categories:
                                     if str(cat).lower() == "overall":
                                         val = content["overall"][metric]
@@ -1659,14 +1664,21 @@ def categ_corr_lineplot(
                                 if is_zarr:
                                     # No zarr reader defined for selectivity summaries
                                     continue
-                                content = safe_load_pickle(p) or (pickle.load(open(p, "rb")) if os.path.isfile(p) else None)
+                                # load the pickle content (define `content`)
+                                content = safe_load_pickle(p)
+                                if content is None:
+                                    try:
+                                        with open(p, "rb") as f:
+                                            content = pickle.load(f)
+                                    except Exception:
+                                        continue
                                 if not isinstance(content, dict):
                                     continue
 
                                 base_cats = ["animal", "face", "object", "place"]
 
                                 if "total" in categories:
-                                    # Prefer direct 'total' from the file if present
+                                    # Prefer direct 'total' if present in the file
                                     if ("total" in content) and (metric in content["total"]):
                                         agg.setdefault("total", []).append(float(content["total"][metric]))
                                     else:
