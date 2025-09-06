@@ -73,8 +73,6 @@ tasks:
       ylim: [-0.1,0.5]
       data_type: "selectivity"
       selectivity_fraction: 0.01
-      selectivity_file_dir: unit_selectivity
-      fmap_shape: [512,7,7]
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -88,5 +86,3 @@ tasks:
       ylim: [-0.1,0.5]
       data_type: "selectivity"
       selectivity_fraction: 0.05
-      selectivity_file_dir: unit_selectivity
-      fmap_shape: [512,7,7]
