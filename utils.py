@@ -1504,6 +1504,31 @@ def categ_corr_lineplot(
                             if not (is_pkl or is_zarr):
                                 continue
 
+                            # ---- SVM MODE ----
+                            if data_type.startswith("svm"):
+                                scores = _load_svm_scores(p, categories)
+                                if not scores:
+                                    continue
+                                for cat_name, val in scores.items():
+                                    agg.setdefault(cat_name, []).append(val)
+                                continue  # handled; go to next file
+
+                            # For ImageNet & Selectivity we expect pickles with dict content.
+                            # If a .zarr appears here, we don't know its structure, so skip it
+                            # (or implement a reader if you actually store these as zarr too).
+                            if is_zarr:
+                                # TODO: implement a zarr loader if your ImageNet/Selectivity runs write zarr.
+                                continue
+
+                            # load the pickle content (define `content`)
+                            content = safe_load_pickle(p)
+                            if content is None:
+                                try:
+                                    with open(p, "rb") as f:
+                                        content = pickle.load(f)
+                                except Exception:
+                                    continue  # unreadable file; skip
+
                             # ---- IMAGE NET MODE ----
                             if data_type == "imagenet":
                                 for cat in categories:
