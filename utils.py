@@ -914,7 +914,7 @@ def get_params_sd(model: nn.Module) -> dict:
     
     return sd_dict
 
-       
+
 def run_damage(
     model_info,
     pretrained,
@@ -933,15 +933,22 @@ def run_damage(
     groupnorm_scaling_targets,
     gain_control_noise=0.0,
     masking_level="connections",
-    eccentricity_layer_path=None, # Specific layer path. The output will be used for damage
-    eccentricity_bands: list[list[float]] | None = [[0.60, 1.00]], # Define a set of [min,max] normalised eccentricity bands
-    ecc_fraction_to_mask_params=[0,0,0],
-    run_suffix=""
-):
+    eccentricity_layer_path=None,  # Specific layer path. The output will be used for damage
+    eccentricity_bands: list[list[float]] | None = [[0.60, 1.00]],  # [min,max] normalized eccentricity bands
+    ecc_fraction_to_mask_params=[0, 0, 0],
+    run_suffix="",
+    # Graded eccentricity params
+    ecc_profile: str = "linear",
+    ecc_mode: str = "dropout",
+    ecc_per_channel: bool = False,
+    ecc_poly_deg: float = 2.0,
+    ecc_exp_k: float = 4.0,
+    ecc_reverse: bool = False,
+    ):
     """
     A merged run_damage that handles multiple manipulation methods.
     """
-    # SECTION 2: (Unchanged) Time steps & run_suffix from original code
+    # Determine time_steps for saving
     if "time_steps" in model_info:
         time_steps = str(model_info['time_steps'])
     elif model_info['name'] == "cornet_rt":
@@ -952,25 +959,32 @@ def run_damage(
     # Keep original run_suffix logic
     run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
 
+    # --------------------------
     # A) Determine the list of damage levels
+    # --------------------------
     if manipulation_method == "connections":
         damage_levels_list = generate_params_list(fraction_to_mask_params)
-        noise_dict = None # Ensure noise_dict is not used for other methods
+        noise_dict = None
     elif manipulation_method == "noise":
         damage_levels_list = generate_params_list(noise_levels_params)
-        # For noise, we do the original approach of loading a model once
-        model, _ = load_model(model_info, pretrained=pretrained, layer_name="temp", layer_path="module._modules.V1._modules.output")
+        model, _ = load_model(model_info, pretrained=pretrained, layer_name="temp",
+                                layer_path="module._modules.V1._modules.output")
         noise_dict = get_params_sd(model)
-    elif manipulation_method == "groupnorm_scaling": # <-- new branch
+    elif manipulation_method == "groupnorm_scaling":
         damage_levels_list = generate_params_list(groupnorm_scaling_params)
-        noise_dict = None # Ensure noise_dict is not used
+        noise_dict = None
     elif manipulation_method == "eccentricity":
+        damage_levels_list = generate_params_list(ecc_fraction_to_mask_params)
+        noise_dict = None
+    elif manipulation_method == "eccentricity_gradual":
         damage_levels_list = generate_params_list(ecc_fraction_to_mask_params)
         noise_dict = None
     else:
         raise ValueError(f"manipulation_method '{manipulation_method}' is not recognized.")
 
-    # B) Identify earliest damaged block (new logic), filter activation layers
+    # --------------------------
+    # B) Identify earliest damaged block
+    # --------------------------
     top_level_blocks_in_order = ["V1", "V2", "V4", "IT"]
     block_order_map = {b: i for i, b in enumerate(top_level_blocks_in_order)}
 
@@ -980,25 +994,20 @@ def run_damage(
         if top_block_dmg in block_order_map:
             damage_indices.append(block_order_map[top_block_dmg])
 
-    if damage_indices:
-        earliest_damage_idx = min(damage_indices)
-    else:
-        earliest_damage_idx = 0
-    
+    earliest_damage_idx = min(damage_indices) if damage_indices else 0
+
+    # Load model for final layers to hook
     if isinstance(activation_layers_to_save, list):
         model, _ = load_model(model_info, pretrained=pretrained, layer_path=activation_layers_to_save[0])
     else:
         model, _ = load_model(model_info, pretrained=pretrained, layer_path=activation_layers_to_save)
-    
-        # Now filter activation_layers_to_save to keep only those whose top-level block >= earliest_damage_idx
-    final_layers_to_hook = get_final_layers_to_hook(model,activation_layers_to_save,layer_paths_to_damage)
-    
-    print("Activations to be saved for ",layer_paths_to_damage, ": ", final_layers_to_hook)
 
-    
+    final_layers_to_hook = get_final_layers_to_hook(model, activation_layers_to_save, layer_paths_to_damage)
+    print("Activations to be saved for ", layer_paths_to_damage, ": ", final_layers_to_hook)
 
-
-    # C)  Folder tag: 'noise', 'connections', 'units', or 'groupnorm_scaling'
+    # --------------------------
+    # C) Directory naming
+    # --------------------------
     if manipulation_method == "noise":
         dir_tag = "noise"
     elif manipulation_method == "connections":
@@ -1009,111 +1018,138 @@ def run_damage(
         else:
             dir_tag = "connections"
     elif manipulation_method == "groupnorm_scaling":
-        # ---- build a concise tag “g”, “c”, or “g+c” -----------------
         _map = {"groupnorm": "g", "conv": "c"}
-        sel  = [_map[t] for t in sorted(set(groupnorm_scaling_targets))]
+        sel = [_map[t] for t in sorted(set(groupnorm_scaling_targets))]
         targ_tag = "+".join(sel)
-        # Add noise level to parent directory name
-        dir_tag  = f"groupnorm_scaling_{targ_tag}_noise{gain_control_noise:.3f}"
+        dir_tag = f"groupnorm_scaling_{targ_tag}_noise{gain_control_noise:.3f}"
     else:
-        dir_tag = manipulation_method          # fallback, should not occur
+        dir_tag = manipulation_method
 
-    if manipulation_method != "eccentricity":
-        eccentricity_bands = [None]
-
+    # --------------------------
+    # D) Total iterations
+    # --------------------------
     total_iterations = len(damage_levels_list) * mc_permutations * len(eccentricity_bands)
 
-    # SECTION 4: (Kept) The original style: one forward pass per image.
+    # --------------------------
+    # E) Run main loops
+    # --------------------------
     with tqdm(total=total_iterations, desc=f"Running {manipulation_method} alteration") as pbar:
-        for band in eccentricity_bands:
-            if manipulation_method == "eccentricity":
-                r_min, r_max = band
-                dir_tag = f"eccentricity_{r_min:.2f}-{r_max:.2f}" # Create dir_tag for this specific eccentricity band
+        for r_start, r_end in eccentricity_bands:
+            
+            # For graded eccentricity, create clean folder naming
+            if manipulation_method == "eccentricity_gradual":
+                sweep_start = damage_levels_list[0]
 
+                # Base folder includes band
+                if sweep_start > 0.0:
+                    band_label = f"band{r_start:.2f}-{r_end:.2f}_min_{sweep_start:.2f}"
+                else:
+                    band_label = f"band{r_start:.2f}-{r_end:.2f}"
+
+                dir_tag = f"eccentricity_gradual_{band_label}"
+
+            elif manipulation_method == "eccentricity":
+                dir_tag = f"eccentricity_{r_start:.2f}-{r_end:.2f}"
+
+            # --------------------------
+            # Damage level loop
+            # --------------------------
             for damage_level in damage_levels_list:
                 for permutation_index in range(mc_permutations):
-                    # 1) Load fresh model & attach multi-hook
+
+                    # 1) Load fresh model
                     model, activations = load_model(
                         model_info=model_info,
                         pretrained=pretrained,
                         layer_name=layer_name,
-                        layer_path=final_layers_to_hook  # multi-layer hooking
+                        layer_path=final_layers_to_hook
                     )
                     model.eval()
 
-                    # 2) Apply the chosen damage
+                    # 2) Apply chosen damage
                     if manipulation_method == "connections":
                         apply_masking(
-                            model,
-                            fraction_to_mask=damage_level,
+                            model, fraction_to_mask=damage_level,
                             layer_paths=layer_paths_to_damage,
                             apply_to_all_layers=apply_to_all_layers,
-                            masking_level=masking_level,  
+                            masking_level=masking_level,
                             only_conv=only_conv,
                             include_bias=include_bias
                         )
+
                     elif manipulation_method == "noise":
                         apply_noise(
-                            model,
-                            noise_level=damage_level,
+                            model, noise_level=damage_level,
                             noise_dict=noise_dict,
                             layer_paths=layer_paths_to_damage,
                             apply_to_all_layers=apply_to_all_layers,
                             only_conv=only_conv,
                             include_bias=include_bias
                         )
+
                     elif manipulation_method == "groupnorm_scaling":
                         apply_groupnorm_scaling(
-                            model,
-                            scaling_factor=damage_level,
+                            model, scaling_factor=damage_level,
                             layer_paths=layer_paths_to_damage,
                             apply_to_all_layers=apply_to_all_layers,
                             include_bias=include_bias,
-                            targets = groupnorm_scaling_targets,
+                            targets=groupnorm_scaling_targets,
                             gain_control_noise=gain_control_noise
                         )
+
                     elif manipulation_method == "eccentricity":
                         apply_eccentricity_mask(
                             model,
                             layer_path=eccentricity_layer_path,
-                            r_min=r_min,
-                            r_max=r_max,
+                            r_min=r_start,
+                            r_max=r_end,
                             fraction=damage_level,
-                            per_channel=False)
+                            per_channel=False
+                        )
 
-                    # 3) Now we do the old "extract_activations" approach (one image at a time)
+                    elif manipulation_method == "eccentricity_gradual":
+                        apply_eccentricity_graded(
+                            model,
+                            layer_path=eccentricity_layer_path,
+                            r_start=r_start,
+                            r_end=r_end,
+                            p_min=0.0,
+                            p_max=damage_level,
+                            mode=ecc_mode,
+                            profile=ecc_profile,
+                            per_channel=ecc_per_channel,
+                            poly_deg=ecc_poly_deg,
+                            exp_k=ecc_exp_k,
+                            reverse=ecc_reverse
+                        )
+
+                    # 3) Extract activations for each image
                     per_layer_data = {lp: [] for lp in final_layers_to_hook}
-
-                    image_files = [
+                    image_files = sorted([
                         f for f in os.listdir(image_dir)
                         if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-                    ]
-                    image_files.sort()
+                    ])
 
                     for image_file in image_files:
                         img_path = os.path.join(image_dir, image_file)
                         input_tensor = preprocess_image(img_path)
 
-                        # run forward
                         with torch.no_grad():
                             model(input_tensor)
 
-                        # 'activations[lp]' is now the last image's output for that layer
                         for lp in final_layers_to_hook:
                             out_flat = activations[lp].flatten()
                             per_layer_data[lp].append(out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat)
 
-                    # 4) For each layer, build a DataFrame, compute correlation, selectivity, and save
+                    # 4) Save outputs
                     for lp in final_layers_to_hook:
-                        # build a 2D array [N_images, features]
                         arr_2d = np.stack(per_layer_data[lp], axis=0)
                         activations_df = pd.DataFrame(arr_2d, index=image_files)
-
-                        # sort indices
                         activations_df_sorted = sort_activations_by_numeric_index(activations_df)
 
                         lp_name = lp.split(".")[2]
-                        # save activations
+
+                        # Create directory paths
                         activation_dir = (
                             f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
                             f"{dir_tag}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
@@ -1121,14 +1157,12 @@ def run_damage(
                         os.makedirs(activation_dir, exist_ok=True)
                         activation_dir_path = os.path.join(activation_dir, f"{permutation_index}")
 
+                        # Save activations
                         reduced_df = activations_df_sorted.astype(np.float16)
-                        # Saving activations to zarr format
                         append_activation_to_zarr(reduced_df, activation_dir_path, perm_idx=permutation_index)
 
-                        # compute correlation matrix
+                        # Correlations
                         correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
-
-                        # save correlation matrix
                         corrmat_dir = (
                             f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
                             f"{dir_tag}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
@@ -1137,16 +1171,14 @@ def run_damage(
                         corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}")
                         append_activation_to_zarr(
                             pd.DataFrame(correlation_matrix.astype("float32")),
-                            corrmat_path,                      # keep path
+                            corrmat_path,
                             perm_idx=permutation_index
                         )
 
-                        # compute within-between
+                        # Within-between selectivity
                         categories_array = assign_categories(sorted_image_names)
-                        results = calc_within_between(correlation_matrix, categories_array)
-                        results = convert_np_to_native(results)
+                        results = convert_np_to_native(calc_within_between(correlation_matrix, categories_array))
 
-                        # save selectivity
                         selectivity_dir = (
                             f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
                             f"{dir_tag}/{layer_name}/selectivity/{lp_name}/damaged_{round(damage_level,3)}"
@@ -1156,7 +1188,6 @@ def run_damage(
                         with open(selectivity_path, "wb") as f:
                             pickle.dump(results, f)
 
-                    # update progress
                     pbar.update(1)
 
     print("All damage permutations completed!")
@@ -4362,8 +4393,6 @@ def apply_eccentricity_mask(model: torch.nn.Module,
     assert 0.0 <= r_min < r_max <= 1.0, "r_min/r_max must satisfy 0 ≤ r_min < r_max ≤ 1"
     assert 0.0 <= fraction <= 1.0,      "fraction must be in [0, 1]"
 
-    # Resolve dotted path lazily to avoid circular imports ----------------------
-    from utils import get_layer_from_path
     target_layer = get_layer_from_path(model, layer_path)
 
     # Cache one mask per unique output shape – allows variable batch sizes ------
@@ -4380,3 +4409,104 @@ def apply_eccentricity_mask(model: torch.nn.Module,
         return output * _mask_cache[key]
 
     target_layer.register_forward_hook(_hook)
+
+
+def _gen_graded_mask(
+    shape: Tuple[int, int, int, int],
+    *,
+    r_start: float,
+    r_end: float,
+    p_min: float,
+    p_max: float,
+    mode: str = "dropout",      # "dropout" (stochastic) or "scale" (deterministic attenuation)
+    profile: str = "linear",    # "linear" | "cosine" | "exp" | "poly"
+    per_channel: bool = False,
+    poly_deg: float = 2.0,
+    exp_k: float = 4.0,
+    reverse: bool = False,      # if True, swap p_min/p_max (fovea-heavier)
+    device=None
+) -> torch.Tensor:
+    """
+    Create a *graded* spatial mask based on normalised eccentricity.
+    Returns a multiplicative mask with shape (1,C,H,W) or (1,1,H,W).
+    - mode='dropout': entries are 0/1 (Bernoulli keep), prob( drop ) = p(r).
+    - mode='scale'  : entries are continuous in (0,1], scale = 1 - p(r).
+    """
+    _, C, H, W = shape
+    rmap = _build_radial_map(H, W, device=device)  # [H,W], 0 centre → 1 corner
+
+    # normalise eccentricity into [0,1] over [r_start, r_end]
+    denom = max(1e-6, (r_end - r_start))
+    t = torch.clamp((rmap - r_start) / denom, 0.0, 1.0)
+
+    # choose profile for how p(r) grows with t
+    if profile == "linear":
+        w = t
+    elif profile == "cosine":
+        w = 0.5 - 0.5 * torch.cos(math.pi * t)
+    elif profile == "exp":
+        w = (torch.exp(exp_k * t) - 1.0) / (torch.exp(exp_k) - 1.0)
+    elif profile == "poly":
+        w = t**poly_deg
+    else:
+        raise ValueError(f"Unknown profile '{profile}'")
+
+    if reverse:
+        p_min, p_max = p_max, p_min  # fovea-heavier when reverse=True
+
+    p = p_min + (p_max - p_min) * w  # [H,W]
+
+    if mode == "dropout":
+        # keep prob = 1 - p
+        if per_channel:
+            keep = torch.bernoulli((1.0 - p).unsqueeze(0).repeat(C, 1, 1).to(device))
+            return keep.unsqueeze(0)                          # (1,C,H,W)
+        else:
+            keep = torch.bernoulli((1.0 - p).to(device))
+            return keep.unsqueeze(0).unsqueeze(0)             # (1,1,H,W)
+    elif mode == "scale":
+        scale = (1.0 - p).to(device)                          # (H,W)
+        if per_channel:
+            return scale.unsqueeze(0).repeat(1, C, 1, 1)      # (1,C,H,W)
+        else:
+            return scale.unsqueeze(0).unsqueeze(0)            # (1,1,H,W)
+    else:
+        raise ValueError(f"Unknown mode '{mode}'")
+
+
+def apply_eccentricity_graded(
+    model,
+    *,
+    layer_path: str,
+    r_start: float,
+    r_end: float,
+    p_min: float,
+    p_max: float,
+    mode: str = "dropout",
+    profile: str = "linear",
+    per_channel: bool = False,
+    poly_deg: float = 2.0,
+    exp_k: float = 4.0,
+    reverse: bool = False
+):
+    """
+    Forward hook that applies graded eccentricity damage.
+    """
+    from .utils import get_layer_from_path  # or your existing import path if different
+    assert 0.0 <= r_start < r_end <= 1.0
+    assert 0.0 <= p_min <= 1.0 and 0.0 <= p_max <= 1.0
+
+    target = get_layer_from_path(model, layer_path)
+    _cache = {}
+
+    def _hook(_m, _in, out):
+        key = tuple(out.shape)
+        if key not in _cache:
+            _cache[key] = _gen_graded_mask(
+                key, r_start=r_start, r_end=r_end, p_min=p_min, p_max=p_max,
+                mode=mode, profile=profile, per_channel=per_channel,
+                poly_deg=poly_deg, exp_k=exp_k, reverse=reverse, device=out.device
+            )
+        return out * _cache[key]
+
+    target.register_forward_hook(_hook)
