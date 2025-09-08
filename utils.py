@@ -1772,6 +1772,31 @@ def categ_corr_lineplot(
 
                     # ---------- read cache and populate data ----------
                     agg_content = safe_load_pickle(cache) or {}
+                     # --- FIX: if 'total' was requested but not cached, synthesize it from base categories
+                    if (data_type == "selectivity"
+                        and ("total" in categories)
+                        and ("total" not in agg_content)):
+                        base = ("animal","face","object","place")
+                        if all((b in agg_content) and (metric in agg_content[b]) for b in base):
+                            # concatenate raw vals across base categories and compute stats
+                            vals = []
+                            for b in base:
+                                vals += [float(x) for x in agg_content[b][metric].get("vals", [])]
+                            if vals:
+                                agg_content["total"] = {
+                                    metric: {
+                                        "mean": float(np.mean(vals)),
+                                        "std": float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0,
+                                        "n":   len(vals),
+                                        "vals": vals
+                                    }
+                                }
+                                # optional: persist so the next run is a cache hit with 'total' present
+                                try:
+                                    with open(cache, "wb") as f:
+                                        pickle.dump(agg_content, f)
+                                except Exception:
+                                    pass
                     for cat in categories:
                         cat_key = str(cat).lower() if data_type.startswith("svm") else cat
                         if (cat_key in agg_content and
