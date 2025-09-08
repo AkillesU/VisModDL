@@ -94,7 +94,7 @@ def main():
     #     (creates sub-folders eccentricity_0.60-1.00/)
     run_damage(
         **common_kwargs,
-        manipulation_method=manipulation_method,
+        manipulation_method="eccentricity",
         eccentricity_layer_path = eccentricity_layer_path,
         eccentricity_bands      = eccentricity_bands,
         ecc_fraction_to_mask_params    = ecc_fraction_to_mask_params
@@ -103,7 +103,7 @@ def main():
     # Eccentricity-based activation thinning (graded)
     run_damage(
         **common_kwargs,
-        manipulation_method=manipulation_method,
+        manipulation_method="eccentricity_gradual",
         eccentricity_layer_path = eccentricity_layer_path,
         eccentricity_bands      = config.get("eccentricity_bands_gradual", eccentricity_bands),
         ecc_fraction_to_mask_params = config.get("ecc_fraction_to_mask_gradual", ecc_fraction_to_mask_params),
