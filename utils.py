@@ -4492,7 +4492,6 @@ def apply_eccentricity_graded(
     """
     Forward hook that applies graded eccentricity damage.
     """
-    from .utils import get_layer_from_path  # or your existing import path if different
     assert 0.0 <= r_start < r_end <= 1.0
     assert 0.0 <= p_min <= 1.0 and 0.0 <= p_max <= 1.0
 
