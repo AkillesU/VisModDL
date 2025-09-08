@@ -1702,7 +1702,7 @@ def categ_corr_lineplot(
 
                         # If "total" was requested for selectivity but not directly present, flatten base categories into "total"
                         if data_type == "selectivity" and ("total" in categories) and ("total" not in agg):
-                            base_cats = ("animal", "face", "object", "place")
+                            base_cats = ["animal", "face", "object", "place"]
                             total_vals = []
                             for bc in base_cats:
                                 total_vals.extend(agg.get(bc, []))
