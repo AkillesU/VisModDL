@@ -57,7 +57,7 @@ eccentricity_bands:
   - [0.30, 0.00]  # Reverse direction
 
 
-  # Graded params
-  ecc_profile: linear
-  ecc_mode: dropout
-  ecc_reverse: false
+# Graded params
+ecc_profile: linear
+ecc_mode: dropout
+ecc_reverse: false
