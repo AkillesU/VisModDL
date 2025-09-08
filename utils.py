@@ -1155,7 +1155,7 @@ def run_damage(
                             f"{dir_tag}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
                         )
                         os.makedirs(activation_dir, exist_ok=True)
-                        activation_dir_path = os.path.join(activation_dir, f"{permutation_index}")
+                        activation_dir_path = activation_dir
 
                         # Save activations
                         reduced_df = activations_df_sorted.astype(np.float16)
@@ -1168,7 +1168,7 @@ def run_damage(
                             f"{dir_tag}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
                         )
                         os.makedirs(corrmat_dir, exist_ok=True)
-                        corrmat_path = os.path.join(corrmat_dir, f"{permutation_index}")
+                        corrmat_path = corrmat_dir
                         append_activation_to_zarr(
                             pd.DataFrame(correlation_matrix.astype("float32")),
                             corrmat_path,
