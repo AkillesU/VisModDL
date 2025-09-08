@@ -60,6 +60,8 @@ tasks:
       percentage: False
       ylim: [-0.1,0.5]
       data_type: "selectivity"
+      verbose: 2
+
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -73,6 +75,8 @@ tasks:
       ylim: [-0.1,0.5]
       data_type: "selectivity"
       selectivity_fraction: 0.01
+      verbose: 2
+
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -86,3 +90,5 @@ tasks:
       ylim: [-0.1,0.5]
       data_type: "selectivity"
       selectivity_fraction: 0.05
+      verbose: 2
+

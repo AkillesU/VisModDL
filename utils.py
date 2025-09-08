@@ -1327,6 +1327,12 @@ def categ_corr_lineplot(
     """
     Aggregate replicate files into mean±std curves.
     """
+
+    # ------------ debug helper --------------------------------
+    def _dbg(msg, level=1):
+        if isinstance(verbose, int) and verbose >= level:
+            print(msg)
+
     # ------------ helper loaders (pkl / zarr / activ) ----------
     def _is_zarr_dir(p):
         return os.path.isdir(p) and p.lower().endswith(".zarr")
@@ -1420,6 +1426,10 @@ def categ_corr_lineplot(
     else:
         raise ValueError(f"unknown data_type '{data_type}'")
 
+    _dbg(f"[SETUP] data_type={data_type} metric={metric} categories={categories}", 1)
+    _dbg(f"[SETUP] subdir_regex={subdir_regex!r} main_dir={main_dir}", 2)
+
+
     # ------------ 2. helper for cache filename ----------------
     def agg_fname(frac):
         if data_type == "imagenet":
@@ -1443,6 +1453,8 @@ def categ_corr_lineplot(
 
                 # 1. Build / discover an RDM directory (accept both specific and generic)
                 rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
+                _dbg(f"[RDM DISCOVER] layer={layer} act={act}", 1)
+                _dbg(f"[RDM DISCOVER] rdm_dir={rdm_dir}", 1)
                 found_any = (rdm_dir.exists() and (any(rdm_dir.rglob("*.pkl")) or any(p.name.endswith(".zarr") for p in rdm_dir.rglob("*.zarr"))))
                 if not found_any:
                     # fallback to generic precomputed RDM/activs
@@ -1467,6 +1479,11 @@ def categ_corr_lineplot(
                     cat_dir = rdm_dir / f"{cat}_selective" if rdm_dir.name.startswith("RDM_") else None
                     used_precomputed = False
                     if cat_dir and cat_dir.exists() and any(cat_dir.rglob("*.pkl")) or any(p.name.endswith(".zarr") for p in (cat_dir.rglob("*.zarr") if cat_dir else [])):
+                        
+                        rdm_paths = list(sorted(dmg.glob("*.pkl")))
+                        rdm_paths += [p for p in sorted(dmg.iterdir()) if str(p).lower().endswith(".zarr") and p.is_dir()]
+                        _dbg(f"[RDM] {cat} dmg={dmg_level} files: pkl={len([x for x in rdm_paths if str(x).endswith('.pkl')])} zarr={len([x for x in rdm_paths if str(x).endswith('.zarr')])}", 2)
+
                         used_precomputed = True
                         for dmg in sorted(cat_dir.iterdir()):
                             if not dmg.is_dir():
@@ -1493,6 +1510,8 @@ def categ_corr_lineplot(
                                 mean_sel = float(np.mean(selectivities)) if selectivities else np.nan
                                 std_sel  = float(np.std(selectivities, ddof=1)) if len(selectivities) > 1 else 0.0
                                 stats = {"mean": mean_sel, "std": std_sel, "n": len(selectivities), "vals": [float(x) for x in selectivities]}
+                                
+                                _dbg(f"[SEL] {layer}/{act_key}/{cat} dmg={dmg_level} n={len(selectivities)} mean={stats['mean'] if len(selectivities) else 'nan'}", 1)
                                 with open(avg_file, "wb") as f:
                                     pickle.dump(stats, f)
                             data[(layer, act_key, cat)][float(dmg_level)] = (stats["mean"], stats["std"], stats["n"])
@@ -1503,7 +1522,7 @@ def categ_corr_lineplot(
                         generic_root = Path(main_dir) / damage_type / layer / "RDM" / act
                         if not generic_root.exists():
                             continue
-
+                        _dbg(f"[FALLBACK] generic RDM root = {generic_root}", 1)
                         # pull top units from selectivity_file (expects a table or nested dict; we support both)
                         sel_map = _safe_load_pickle_file(selectivity_file) if selectivity_file else None
                         # tolerant lookups
@@ -1545,8 +1564,10 @@ def categ_corr_lineplot(
                             # parse fraction using your regex
                             m = re.search(subdir_regex, dmg.name)
                             if not m:
+                                _dbg(f"[SKIP] fallback regex miss: {dmg.name}", 2)
                                 continue
                             frac = float(m.group(1))
+                            _dbg(f"[FRACTION] fallback dmg folder {dmg.name} -> {frac}", 2)
                             selectivities = []
 
                             # find zarr activ stores under this damage level
@@ -1602,10 +1623,20 @@ def categ_corr_lineplot(
                     layer_path = os.path.join(main_dir, damage_type, layer, data_subfolder, act)
                     out_base   = os.path.join(main_dir, damage_type, layer, f"avg_{data_type}", act)
                     act_key    = act
+                _dbg(f"[PATH] layer={layer} act={act_key}", 1)
+                _dbg(f"[PATH] layer_path={layer_path}", 2)
+                _dbg(f"[PATH] out_base={out_base}", 2)
 
                 if not os.path.isdir(layer_path):
                     continue
                 os.makedirs(out_base, exist_ok=True)
+                
+                # quick peek at what subdirs we have
+                try:
+                    _subdirs = [d for d in os.listdir(layer_path) if os.path.isdir(os.path.join(layer_path, d))]
+                    _dbg(f"[SUBDIRS] under {layer_path}: {len(_subdirs)} dirs -> {(_subdirs[:6] + ['...']) if len(_subdirs)>6 else _subdirs}", 2)
+                except FileNotFoundError:
+                    _dbg(f"[SUBDIRS] layer_path missing: {layer_path}", 1)
 
                 # init dict slots
                 for cat in categories:
@@ -1620,13 +1651,17 @@ def categ_corr_lineplot(
                         continue
                     m = re.search(subdir_regex, subdir)
                     if not m:
+                        _dbg(f"[SKIP] regex miss: {subdir}", 2)
                         continue
                     frac = round(float(m.group(1)), 3)
                     cache = os.path.join(out_base, agg_fname(frac))
+                    _dbg(f"[FRACTION] {subdir} -> frac={frac}  cache={'HIT' if os.path.exists(cache) else 'MISS'}", 1)
 
                     # ---------- build cache if missing ----------
                     if not os.path.exists(cache):
                         agg = {}                      # cat -> list[values]
+                        _dbg(f"[BUILD] scanning files in {subdir_path}", 2)
+
 
                         for fname in os.listdir(subdir_path):
                             p = os.path.join(subdir_path, fname)
@@ -1673,16 +1708,21 @@ def categ_corr_lineplot(
                                     except Exception:
                                         continue
                                 if not isinstance(content, dict):
-                                    continue
+                                    _dbg(f"[SKIP] not a dict: {fname}", 2)
 
-                                base_cats = ("animal", "face", "object", "place")
+                                    continue
+                                _dbg(f"[FILE] {fname} keys={list(content.keys())[:6]}", 2)
+
+                                base_cats = ["animal", "face", "object", "place"]
 
                                 if "total" in categories:
                                     # Prefer direct 'total' if present in the file
                                     if ("total" in content) and (metric in content["total"]):
                                         agg.setdefault("total", []).append(float(content["total"][metric]))
+                                        _dbg(f"[APPEND] direct 'total' from {fname}: {metric}", 2)
                                     else:
                                         # Fallback: collect base categories so we can synthesize 'total' later
+                                        _dbg(f"[FALLBACK] synthesize total from base cats in {fname}", 2)
                                         for cat_name, met_dict in content.items():
                                             if (cat_name in base_cats) and (metric in met_dict):
                                                 agg.setdefault(cat_name, []).append(float(met_dict[metric]))
@@ -1707,9 +1747,16 @@ def categ_corr_lineplot(
                             for bc in base_cats:
                                 total_vals.extend(agg.get(bc, []))
                             if total_vals:
+                                _dbg(f"[SYNTH] synthesized 'total' from base cats, n={len(total_vals)}", 1)
                                 agg["total"] = total_vals
 
                         # save aggregated stats
+                        if isinstance(agg, dict):
+                            try:
+                                _dbg(f"[PACK] cats={list(agg.keys())}", 1)
+                                _dbg(f"[PACK] counts={{k: len(v) for k,v in agg.items()}}", 2)
+                            except Exception:
+                                pass
                         packed = {
                             c: {
                                 metric: {
