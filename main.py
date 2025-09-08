@@ -99,6 +99,21 @@ def main():
         eccentricity_bands      = eccentricity_bands,
         ecc_fraction_to_mask_params    = ecc_fraction_to_mask_params
     )
+
+    # Eccentricity-based activation thinning (graded)
+    run_damage(
+        **common_kwargs,
+        manipulation_method="eccentricity_gradual",
+        eccentricity_layer_path = eccentricity_layer_path,
+        eccentricity_bands      = config.get("eccentricity_bands_gradual", eccentricity_bands),
+        ecc_fraction_to_mask_params = config.get("ecc_fraction_to_mask_gradual", ecc_fraction_to_mask_params),
+        ecc_profile             = config.get("ecc_profile", "linear"),
+        ecc_mode                = config.get("ecc_mode", "dropout"),
+        ecc_per_channel         = config.get("ecc_per_channel", False),
+        ecc_poly_deg            = config.get("ecc_poly_deg", 2.0),
+        ecc_exp_k               = config.get("ecc_exp_k", 4.0),
+        ecc_reverse             = config.get("ecc_reverse", False)
+    )
     
 if __name__ == "__main__":
     main()
