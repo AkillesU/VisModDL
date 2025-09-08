@@ -58,7 +58,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: False
-      ylim: [-0.1,0.5]
+      ylim: [0,0.2]
       data_type: "selectivity"
       verbose: 2
 
