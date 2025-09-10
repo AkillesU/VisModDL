@@ -1509,17 +1509,17 @@ def categ_corr_lineplot(
                     # Preferred: precomputed selective RDMs at RDM_{frac}_{mode}/<act>/<cat>_selective
                     cat_dir = rdm_dir / f"{cat}_selective" if rdm_dir.name.startswith("RDM_") else None
                     used_precomputed = False
-                    if cat_dir and cat_dir.exists() and any(cat_dir.rglob("*.pkl")) or any(p.name.endswith(".zarr") for p in (cat_dir.rglob("*.zarr") if cat_dir else [])):
-                        
-                        rdm_paths = list(sorted(dmg.glob("*.pkl")))
-                        rdm_paths += [p for p in sorted(dmg.iterdir()) if str(p).lower().endswith(".zarr") and p.is_dir()]
-                        _dbg(f"[RDM] {cat} dmg={dmg_level} files: pkl={len([x for x in rdm_paths if str(x).endswith('.pkl')])} zarr={len([x for x in rdm_paths if str(x).endswith('.zarr')])}", 2)
-
+                    if cat_dir and cat_dir.exists() and (
+                        any(cat_dir.rglob("*.pkl")) or any(p.name.endswith(".zarr") for p in cat_dir.rglob(".zarr"))
+                    ):
                         used_precomputed = True
                         for dmg in sorted(cat_dir.iterdir()):
                             if not dmg.is_dir():
                                 continue
-                            dmg_level = dmg.name.split("_")[-1]
+                            # parse damage level from dirname
+                            m = re.search(subdir_regex, dmg.name)
+                            dmg_level = m.group(1) if m else dmg.name.split("_")[-1]
+
                             avg_file = avg_dir / f"avg_selectivity_{cat}_{dmg_level}.pkl"
                             if avg_file.exists():
                                 with open(avg_file, "rb") as f:
@@ -1527,27 +1527,29 @@ def categ_corr_lineplot(
                             else:
                                 selectivities = []
                                 # accept both *.pkl and *.zarr
-                                rdm_paths = list(sorted(dmg.glob("*.pkl")))
+                                rdm_paths  = list(sorted(dmg.glob("*.pkl")))
                                 rdm_paths += [p for p in sorted(dmg.iterdir()) if _is_zarr_dir(str(p))]
                                 for rdm_path in rdm_paths:
                                     rec = _load_rdm_record(str(rdm_path))
                                     if not rec or "RDM" not in rec:
                                         continue
                                     R = rec["RDM"]
-                                    image_names = assign_categories(rec.get("image_names"))
-                                    sel_dict = calc_within_between(R, image_names)
-                                    sel = sel_dict[cat]["observed_difference"]
+                                    img_names = rec.get("image_names")
+                                    if img_names is None:
+                                        # if missing, skip or attempt a recovery strategy
+                                        continue
+                                    cats = assign_categories(img_names)
+                                    sel  = calc_within_between(R, cats)[cat]["observed_difference"]
                                     selectivities.append(sel)
+
                                 mean_sel = float(np.mean(selectivities)) if selectivities else np.nan
                                 std_sel  = float(np.std(selectivities, ddof=1)) if len(selectivities) > 1 else 0.0
-                                stats = {"mean": mean_sel, "std": std_sel, "n": len(selectivities), "vals": [float(x) for x in selectivities]}
-                                
-                                _dbg(f"[SEL] {layer}/{act_key}/{cat} dmg={dmg_level} n={len(selectivities)} mean={stats['mean'] if len(selectivities) else 'nan'}", 1)
+                                stats    = {"mean": mean_sel, "std": std_sel, "n": len(selectivities), "vals": [float(x) for x in selectivities]}
                                 with open(avg_file, "wb") as f:
                                     pickle.dump(stats, f)
+
                             data[(layer, act_key, cat)][float(dmg_level)] = (stats["mean"], stats["std"], stats["n"])
                             raw_points[(layer, act_key, cat)][float(dmg_level)] = stats["vals"]
-
                     # Fallback: compute selective metrics on-the-fly from generic RDM/<act>/damaged_*/*activ*.zarr
                     if not used_precomputed:
                         generic_root = Path(main_dir) / damage_type / layer / "RDM" / act
