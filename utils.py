@@ -1669,7 +1669,23 @@ def categ_corr_lineplot(
                 # NEW: try to build them if missing
                 if not rdm_dir.exists() or not any(rdm_dir.rglob("*.pkl")):
                     _dbg("[DISCOVER] selective RDMs missing or empty — attempting on-the-fly build from activations.", 1)
-                    _precompute_selective_rdms_if_missing(layer, act, categories_rdm, rdm_dir)
+                    activ_root = Path(main_dir) / damage_type / layer / "activations" / act
+                    _dbg(f"[PRECOMPUTE] activ_root = {activ_root}", 1)
+
+                    if activ_root.exists():
+                        generate_category_selective_RDMs(
+                            activations_root = Path(main_dir) / damage_type,  # <— root ABOVE damage_layer
+                            layer_name       = act,                           # for selectivity table lookup
+                            top_frac         = float(selectivity_fraction),
+                            categories       = list(categories),
+                            selection_mode   = selection_mode,                # "percentage" or "percentile"
+                            selectivity_file = selectivity_file,
+                            damage_layer     = layer,
+                            activation_layer = act,
+                        )
+                        _dbg("[PRECOMPUTE-OK] built selective RDMs from activations.", 1)
+                    else:
+                        _dbg(f"[PRECOMPUTE-MISS] {activ_root} does not exist.", 1)
 
                 # 2) Prepare output directory for averages
                 out_base = Path(main_dir) / damage_type / layer / f"avg_selectivity_top{selectivity_fraction:.2f}_{selection_mode}" / act
