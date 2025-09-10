@@ -8,7 +8,7 @@ tasks:
       damage_type: "eccentricity_gradual_band0.70-1.00"
       categories: ["animal","face","object","place"]
       metric: "observed_difference"
-      verbose: 0
+      verbose: 2
       percentage: True
       data_type: "selectivity"
       flip_x_axis: False
