@@ -1633,7 +1633,7 @@ def categ_corr_lineplot(
 
                 # ----------------- FALLBACK: generic RDM/activ -----------------
                 # If no averages were populated for this (layer, act, any cat), try generic RDM/activ path with unit selection
-                need_fallback = all((len(data.get(layer, act_key, c), {}) == 0) for c in categories_rdm)
+                need_fallback = all(len(data.get((layer, act_key, c), {})) == 0 for c in categories_rdm)
                 if need_fallback:
                     generic_root = Path(main_dir) / damage_type / layer / "RDM" / act
                     if not generic_root.exists():
