@@ -1334,11 +1334,12 @@ def _load_svm_scores(path, categories):
         return _df_to_scores(df, want_cats)
     except Exception:
         return {}
+
 def categ_corr_lineplot(
     damage_layers,
     activations_layers,
     damage_type,
-    main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
+    main_dir="data/haupt_stim_activ/damaged/cornet_rt5_all/",
     categories=("overall",),
     metric="observed_difference",
     subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",   # handles damaged_1.0, damaged_1.0_123, damaged_1.0/...
@@ -1355,7 +1356,10 @@ def categ_corr_lineplot(
 ):
     """
     Aggregate replicate files into mean±std curves.
-    This version adds deep debug instrumentation focused on the selectivity-fraction path.
+
+    Enhancement:
+      - If selectivity RDMs are missing at RDM_{fraction}_{selection_mode}/<act>/<cat>_selective/,
+        compute them from activation .zarr files on the fly, save to disk, and proceed.
     """
     import os, re, pickle, numpy as np
     from pathlib import Path
@@ -1382,21 +1386,25 @@ def categ_corr_lineplot(
 
     def _compute_rdm_from_activ(activ_2d: np.ndarray):
         """
-        Build an RDM from activations if only 'activ' is present.
-        Uses correlation distance: 1 - corr across rows (images).
-        Expects activ_2d.shape == (n_images, n_units).
+        Build an RDM from activations (n_images x n_units).
+        Uses correlation distance across images: 1 - corr(rows).
         """
-        if activ_2d.ndim != 2 or activ_2d.shape[0] < 2:
-            raise ValueError("Need 2D (n_images x n_units) activations to compute an RDM.")
-        C = np.corrcoef(activ_2d)
+        X = activ_2d
+        if X.ndim != 2 or X.shape[0] < 2:
+            raise ValueError("Need 2D (n_images x n_units>=2) activations to compute an RDM.")
+        # Center each image (row), then cosine similarity across images equals correlation
+        X = X - X.mean(axis=1, keepdims=True)
+        denom = np.linalg.norm(X, axis=1, keepdims=True)
+        denom[denom == 0] = 1.0
+        Xn = X / denom
+        C = (Xn @ Xn.T) / X.shape[1]
         return 1.0 - C
 
     def _load_rdm_record(pathlike):
         """
         Return {'RDM': 2D array, 'image_names': list[str] or None}
-        Works for .pkl dicts (keys 'RDM' and 'image_names') and for .zarr stores:
-          - datasets 'RDM' / 'rdm' / 'D' / 'distance'
-          - or fallback: dataset 'activ' / 'activations' (compute RDM)
+        Works for .pkl dicts (keys 'RDM' and optional 'image_names') and .zarr stores
+        that already contain an RDM (not common in your pipeline, but supported).
         """
         if isinstance(pathlike, str) and pathlike.lower().endswith(".pkl"):
             content = _safe_load_pickle_file(pathlike)
@@ -1409,8 +1417,6 @@ def categ_corr_lineplot(
             try:
                 import zarr, numpy as _np
                 root = zarr.open_group(pathlike, mode="r")
-
-                # direct RDM
                 for k in ("RDM", "rdm", "D", "distance"):
                     if k in root:
                         R = _np.array(root[k])
@@ -1424,26 +1430,67 @@ def categ_corr_lineplot(
                         except Exception:
                             pass
                         return {"RDM": R, "image_names": img_names}
-
-                # from activations
-                for akey in ("activ", "activations", "A", "X"):
-                    if akey in root:
-                        A = _np.array(root[akey])
-                        R = _compute_rdm_from_activ(A)
-                        img_names = None
-                        try:
-                            attrs = dict(root[akey].attrs)
-                            for nkey in ("image_names", "images", "stimuli", "image_ids", "ids"):
-                                if nkey in attrs:
-                                    img_names = list(map(str, list(attrs[nkey])))
-                                    break
-                        except Exception:
-                            pass
-                        return {"RDM": R, "image_names": img_names}
             except Exception:
                 return None
+        return None
+
+    # ---------- selectivity helpers (top-k units per category) ----------
+    def _get_top_units_from_selectivity(sel_obj, layer, act, cat, frac, mode):
+        """
+        Returns np.ndarray[int] of unit indices for (layer, act, cat).
+        Supports multiple sel_obj shapes: nested dicts or a DataFrame with columns:
+            'layer','unit','mw_animals','mw_faces','mw_objects','mw_places'
+        """
+        cat_map = {"animal":"mw_animals","face":"mw_faces","object":"mw_objects","place":"mw_places",
+                   "animals":"mw_animals","faces":"mw_faces","objects":"mw_objects","places":"mw_places"}
+        col = cat_map.get(cat, None)
+
+        # Nested dicts
+        if isinstance(sel_obj, dict) and col is None:
+            # Try several nestings
+            for attempt in (
+                lambda: sel_obj.get(layer, {}).get(act, {}).get(cat, None),
+                lambda: sel_obj.get(act, {}).get(cat, None),
+                lambda: sel_obj.get(cat, None),
+            ):
+                v = None
+                try:
+                    v = attempt()
+                except Exception:
+                    v = None
+                if v is not None:
+                    return np.asarray(v, dtype=int)
+
+        # DataFrame-like
+        try:
+            import pandas as pd
+            if col is not None and (hasattr(sel_obj, "columns") and col in sel_obj.columns):
+                df = sel_obj
+                # heuristics to select rows for the right layer/act
+                df_l = df.copy()
+                if "layer" in df_l.columns:
+                    # support exact matches or suffix matches (common pattern: ".../IT")
+                    mask = (df_l["layer"].astype(str) == act) | df_l["layer"].astype(str).str.endswith(f"/{act}")
+                    if mask.any():
+                        df_l = df_l[mask]
+                # sort by category score desc
+                df_l = df_l.sort_values(col, ascending=False)
+                if "unit" not in df_l.columns:
+                    return None
+                top_n = max(1, int(round(frac * len(df_l)))) if mode == "percentage" else max(1, int(frac))
+                return df_l["unit"].to_numpy()[:top_n].astype(int)
+        except Exception:
+            pass
 
         return None
+
+    # ---------- write an RDM pickle ----------
+    def _write_rdm_pickle(out_path, R, image_names):
+        rec = {"RDM": R}
+        if image_names is not None:
+            rec["image_names"] = list(map(str, image_names))
+        with open(out_path, "wb") as f:
+            pickle.dump(rec, f)
 
     # ------------ 1. choose data sub-folder --------------------
     if data_type in ("selectivity",) or data_type.startswith("svm"):
@@ -1469,6 +1516,136 @@ def categ_corr_lineplot(
     data       = {}   # (layer, act_key, cat) -> {frac:(mean,std,n)}
     raw_points = {}   # same keys -> {frac:[replicas]}
 
+    # ===========================================================
+    # Inner: PRECOMPUTE selective RDMs if missing
+    # ===========================================================
+    activ_dir = ("activations")  # we only compute from zarr in non-RDM dirs
+
+    def _precompute_selective_rdms_if_missing(layer, act, categories_rdm, rdm_dir):
+        """
+        If rdm_dir/<cat>_selective is missing or empty, try to compute RDMs from activation .zarr
+        and write them under the expected selective RDM tree.
+        """
+        # quick check: if all cats exist and have any files, nothing to do
+        all_exist = True
+        for cat in categories_rdm:
+            cdir = rdm_dir / f"{cat}_selective"
+            if not cdir.exists():
+                all_exist = False; break
+            if not any(cdir.rglob("*.pkl")) and not any(p for p in cdir.rglob("*.zarr") if p.is_dir()):
+                all_exist = False; break
+        if all_exist:
+            _dbg("[PRECOMPUTE] selective RDMs already present — skipping build.", 2)
+            return
+
+        # locate activations
+        layer_root = Path(main_dir) / damage_type / layer
+        activ_roots = []
+        for base in activ_dir:
+            cand = layer_root / base / act
+            if cand.exists():
+                activ_roots.append(cand)
+        # Prefer non-RDM roots for activations
+        activ_roots = [r for r in activ_roots if r.name.lower() != "rdm"] + [r for r in activ_roots if r.name.lower() == "rdm"]
+
+        if not activ_roots:
+            _dbg(f"[PRECOMPUTE-MISS] No activation roots found under {layer_root} for act={act}. "
+                 f"Tried {activ_dir}.", 1)
+            return
+
+        # load selectivity map
+        sel_obj = _safe_load_pickle_file(selectivity_file) if selectivity_file else None
+        if sel_obj is None:
+            _dbg(f"[PRECOMPUTE-MISS] Could not load selectivity_file: {selectivity_file}", 1)
+            return
+
+        # gather top unit idx per category
+        percat_units = {}
+        for cat in categories_rdm:
+            idx = _get_top_units_from_selectivity(sel_obj, layer, act, cat, selectivity_fraction, selection_mode)
+            if idx is None or len(idx) == 0:
+                _dbg(f"[PRECOMPUTE-MISS] No unit indices for cat={cat} (layer={layer}, act={act}).", 1)
+                percat_units[cat] = None
+            else:
+                percat_units[cat] = np.asarray(idx, dtype=int)
+                _dbg(f"[PRECOMPUTE] {cat}: top {len(percat_units[cat])} units", 2)
+
+        # walk damage folders and build RDMs
+        dmg_re = re.compile(subdir_regex)
+        built_any = False
+
+        for aroot in activ_roots:
+            # expect damaged_* subdirs
+            dmg_dirs = [d for d in sorted(aroot.iterdir()) if d.is_dir() and dmg_re.search(d.name)]
+            if not dmg_dirs:
+                _dbg(f"[PRECOMPUTE-MISS] No damaged_* subdirs under {aroot}", 1)
+                continue
+
+            for dmg_dir in dmg_dirs:
+                m = dmg_re.search(dmg_dir.name)
+                dmg_level = m.group(1) if m else dmg_dir.name
+
+                # find zarr replicates
+                zarrs = [z for z in sorted(dmg_dir.iterdir()) if _is_zarr_dir(str(z))]
+                if not zarrs:
+                    _dbg(f"[PRECOMPUTE-MISS] No .zarr replicates under {dmg_dir}", 2)
+                    continue
+
+                for z in zarrs:
+                    try:
+                        import zarr
+                        root = zarr.open(str(z), mode="r")
+                        A = None; akey_used = None
+                        for akey in ("activ", "activations", "A", "X"):
+                            if akey in root:
+                                A = np.array(root[akey]); akey_used = akey
+                                break
+                        if A is None or A.ndim != 2 or A.shape[0] < 2 or A.shape[1] < 1:
+                            _dbg(f"[PRECOMPUTE-SKIP] Bad activ array in {z.name} (shape={None if A is None else A.shape})", 2)
+                            continue
+
+                        # get image names if present
+                        img_names = None
+                        try:
+                            attrs = dict(root[akey_used].attrs)
+                            for nkey in ("image_names", "images", "stimuli", "image_ids", "ids"):
+                                if nkey in attrs:
+                                    img_names = list(map(str, list(attrs[nkey])))
+                                    break
+                        except Exception:
+                            pass
+
+                        # compute & write per-category RDM
+                        for cat in categories_rdm:
+                            keep = percat_units.get(cat, None)
+                            if keep is None or keep.size == 0:
+                                continue
+                            # bounds
+                            keep = keep[(keep >= 0) & (keep < A.shape[1])]
+                            if keep.size == 0:
+                                continue
+
+                            A_sel = A[:, keep]
+                            R = _compute_rdm_from_activ(A_sel)
+
+                            # out path: RDM_{frac}_{mode}/<act>/<cat>_selective/damaged_x.y/rep_*.pkl
+                            out_cat_dmg = rdm_dir / f"{cat}_selective" / dmg_dir.name
+                            out_cat_dmg.mkdir(parents=True, exist_ok=True)
+                            rep_name = Path(z).stem + ".pkl"  # e.g., replicate name
+                            out_path = out_cat_dmg / rep_name
+                            if not out_path.exists():
+                                _write_rdm_pickle(out_path, R, img_names)
+                                built_any = True
+                                _dbg(f"[PRECOMPUTE-WRITE] {out_path}", 2)
+                    except Exception as e:
+                        _dbg(f"[PRECOMPUTE-ERROR] failed on {z}: {e}", 1)
+                        continue
+
+        if not built_any:
+            _dbg("[PRECOMPUTE-EMPTY] No selective RDMs were written (missing zarrs or unit indices?).", 1)
+        else:
+            _dbg("[PRECOMPUTE-DONE] Selective RDMs created.", 1)
+
     # ------------ 4. crawl the directory tree -----------------
     for layer in damage_layers:
         for act in activations_layers:
@@ -1488,12 +1665,11 @@ def categ_corr_lineplot(
                 rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
                 _dbg(f"[DISCOVER] layer={layer} act={act}", 1)
                 _dbg(f"[DISCOVER] target RDM dir = {rdm_dir}", 1)
-                if not rdm_dir.exists():
-                    parent_rdm_parent = Path(main_dir) / damage_type / layer
-                    siblings = [p.name for p in parent_rdm_parent.iterdir() if p.is_dir() and p.name.startswith("RDM_")] if parent_rdm_parent.exists() else []
-                    _dbg(f"[WARN] target selective RDM dir missing.\n"
-                         f"       looked for: {rdm_dir}\n"
-                         f"       available under {parent_rdm_parent} → {siblings}", 1)
+
+                # NEW: try to build them if missing
+                if not rdm_dir.exists() or not any(rdm_dir.rglob("*.pkl")):
+                    _dbg("[DISCOVER] selective RDMs missing or empty — attempting on-the-fly build from activations.", 1)
+                    _precompute_selective_rdms_if_missing(layer, act, categories_rdm, rdm_dir)
 
                 # 2) Prepare output directory for averages
                 out_base = Path(main_dir) / damage_type / layer / f"avg_selectivity_top{selectivity_fraction:.2f}_{selection_mode}" / act
@@ -1510,12 +1686,10 @@ def categ_corr_lineplot(
                     _dbg(f"[CAT] cat='{cat}' → {cat_dir}", 2)
 
                     if not cat_dir.exists():
-                        # common gotcha: 'scene_selective' instead of 'place_selective'
                         alt = rdm_dir / "scene_selective"
                         alt_exists = alt.exists()
                         _dbg(f"[MISS] {cat_dir} does not exist."
                              f"{' Found scene_selective instead.' if alt_exists else ''}", 1)
-                        # keep behavior: do not flip automatically
                         continue
 
                     # 4) Crawl damage subdirs
@@ -1584,12 +1758,6 @@ def categ_corr_lineplot(
                                 _dbg(f"   [SKIP] RDM not square (shape={R.shape}) in {f.name}", 2)
                                 continue
 
-                            # metric check (debug only; we *do not* convert to preserve behavior)
-                            diag_mean = float(np.mean(np.diag(R)))
-                            looks_like_distance = np.allclose(np.diag(R), 0.0, atol=1e-7)
-                            _dbg(f"   [RDM] {f.name}: shape={R.shape} diag_mean={diag_mean:.3f} "
-                                 f"metric={'distance(1-corr)' if looks_like_distance else 'correlation(?)'}", 3)
-
                             img_names = rec.get("image_names", None)
                             if not img_names:
                                 reasons_skipped["no_names"] += 1
@@ -1614,7 +1782,6 @@ def categ_corr_lineplot(
                         if not selectivities:
                             _dbg(f"[EMPTY] no usable replicas at {dmg} for cat={cat}. "
                                  f"Reasons: {reasons_skipped}", 1)
-                            # keep behavior: do not write empty cache
                             continue
 
                         mean_sel = float(np.mean(selectivities))
@@ -1630,143 +1797,6 @@ def categ_corr_lineplot(
 
                         data[(layer, act_key, cat)][dmg_level] = (mean_sel, std_sel, len(selectivities))
                         raw_points[(layer, act_key, cat)][dmg_level] = list(selectivities)
-
-                # ----------------- FALLBACK: generic RDM/activ -----------------
-                # If no averages were populated for this (layer, act, any cat), try generic RDM/activ path with unit selection
-                need_fallback = all(len(data.get((layer, act_key, c), {})) == 0 for c in categories_rdm)
-                if need_fallback:
-                    generic_root = Path(main_dir) / damage_type / layer / "RDM" / act
-                    if not generic_root.exists():
-                        _dbg(f"[FALLBACK-MISS] generic RDM root not found: {generic_root}", 1)
-                        continue
-                    _dbg(f"[FALLBACK] generic RDM root = {generic_root}", 1)
-
-                    # load unit selectivity map (dict or DF)
-                    sel_map = _safe_load_pickle_file(selectivity_file) if selectivity_file else None
-
-                    # per category unit indices
-                    percat_units = {}
-                    for cat in categories_rdm:
-                        units = None
-                        if isinstance(sel_map, dict):
-                            units = (
-                                sel_map.get(layer, {})
-                                      .get(act, {})
-                                      .get(cat)
-                                or sel_map.get(act, {}).get(cat)
-                                or sel_map.get(cat)
-                            )
-                        if units is None and sel_map is not None:
-                            # dataframe route
-                            try:
-                                df = None
-                                if isinstance(sel_map, pd.DataFrame):
-                                    df = sel_map
-                                elif isinstance(sel_map, dict) and "dataframe" in sel_map:
-                                    df = sel_map["dataframe"]
-                                else:
-                                    df = None
-                                if df is None:
-                                    raise RuntimeError
-                                col = {"animal":"mw_animals","face":"mw_faces","object":"mw_objects","place":"mw_places"}[cat]
-                                df_l = df[df["layer"].astype(str).str.endswith(act)]
-                                df_l = df_l.sort_values(col, ascending=False)
-                                top_n = max(1, int(round(selectivity_fraction * len(df_l))))
-                                units = df_l["unit"].to_numpy()[:top_n]
-                            except Exception:
-                                units = None
-                        if units is None:
-                            _dbg(f"[FALLBACK-SKIP] could not get unit indices for cat={cat}", 1)
-                            percat_units[cat] = None
-                        else:
-                            percat_units[cat] = np.asarray(units, dtype=int)
-
-                    for cat in categories_rdm:
-                        if percat_units.get(cat) is None:
-                            continue
-                        out_base = Path(main_dir) / damage_type / layer / f"avg_selectivity_top{selectivity_fraction:.2f}_{selection_mode}" / act
-                        out_base.mkdir(parents=True, exist_ok=True)
-
-                        for dmg in sorted(generic_root.iterdir()):
-                            if not dmg.is_dir():
-                                continue
-                            m = re.search(subdir_regex, dmg.name)
-                            if not m:
-                                _dbg(f"[SKIP] fallback regex miss: {dmg.name}", 2)
-                                continue
-                            frac = float(m.group(1))
-                            _dbg(f"[FRACTION] fallback dmg folder {dmg.name} -> {frac}", 2)
-
-                            avg_file = out_base / f"avg_selectivity_{cat}_{frac}.pkl"
-                            if avg_file.exists():
-                                try:
-                                    with open(avg_file, "rb") as f:
-                                        stats = pickle.load(f)
-                                    data[(layer, act_key, cat)][frac] = (stats.get("mean", np.nan),
-                                                                         stats.get("std", 0.0),
-                                                                         stats.get("n", 0))
-                                    raw_points[(layer, act_key, cat)][frac] = stats.get("vals", [])
-                                    _dbg(f"[CACHE] hit {avg_file} → n={stats.get('n',0)}", 2)
-                                    continue
-                                except Exception:
-                                    _dbg(f"[CACHE] corrupt {avg_file}; will rebuild.", 1)
-
-                            selectivities = []
-                            # find zarr activ stores under this damage level
-                            for z in sorted(dmg.iterdir()):
-                                if not (_is_zarr_dir(str(z))):
-                                    continue
-                                try:
-                                    import zarr
-                                    root = zarr.open(str(z), mode="r")
-                                    activ = None; akey_used = None
-                                    for akey in ("activ", "activations", "A", "X"):
-                                        if akey in root:
-                                            activ = np.array(root[akey]); akey_used = akey
-                                            break
-                                    if activ is None or activ.ndim != 2:
-                                        continue
-                                    keep = percat_units[cat]
-                                    keep = keep[(keep >= 0) & (keep < activ.shape[1])]
-                                    if keep.size == 0:
-                                        continue
-                                    A_sel = activ[:, keep]
-                                    R = _compute_rdm_from_activ(A_sel)
-
-                                    img_names = None
-                                    try:
-                                        attrs = dict(root[akey_used].attrs)
-                                        for nkey in ("image_names", "images", "stimuli", "image_ids", "ids"):
-                                            if nkey in attrs:
-                                                img_names = list(map(str, list(attrs[nkey])))
-                                                break
-                                    except Exception:
-                                        pass
-                                    if not img_names:
-                                        _dbg(f"   [SKIP] missing image names in {z.name}", 2)
-                                        continue
-                                    cats = assign_categories(img_names)
-                                    sel = calc_within_between(R, cats)[cat]["observed_difference"]
-                                    selectivities.append(float(sel))
-                                except Exception as e:
-                                    _dbg(f"   [SKIP] fallback compute failed for {z.name}: {e}", 2)
-                                    continue
-
-                            if selectivities:
-                                mean_sel = float(np.mean(selectivities))
-                                std_sel  = float(np.std(selectivities, ddof=1)) if len(selectivities) > 1 else 0.0
-                                stats    = {"mean": mean_sel, "std": std_sel, "n": len(selectivities),
-                                            "vals": [float(x) for x in selectivities]}
-                                try:
-                                    with open(avg_file, "wb") as f:
-                                        pickle.dump(stats, f)
-                                    _dbg(f"[WRITE] {avg_file.name}: n={stats['n']} mean={mean_sel:.4f} std={std_sel:.4f}", 2)
-                                except Exception as e:
-                                    _dbg(f"[ERROR] failed to write {avg_file}: {e}", 1)
-                                data[(layer, act_key, cat)][frac] = (mean_sel, std_sel, len(selectivities))
-                                raw_points[(layer, act_key, cat)][frac] = list(selectivities)
-                            else:
-                                _dbg(f"[EMPTY] fallback: no usable replicas at {dmg} for cat={cat}", 1)
 
                 # done with selectivity-fraction branch for this act; skip generic branch
                 continue
@@ -1824,7 +1854,6 @@ def categ_corr_lineplot(
                         # ---- IMAGE NET MODE ----
                         if data_type == "imagenet":
                             if is_zarr:
-                                # no zarr reader for imagenet stats
                                 continue
                             content = safe_load_pickle(p)
                             if content is None:
@@ -1846,7 +1875,6 @@ def categ_corr_lineplot(
                         # ---- SELECTIVITY MODE (no fraction) ----
                         elif data_type == "selectivity":
                             if is_zarr:
-                                # no zarr reader for selectivity summaries
                                 continue
                             content = safe_load_pickle(p)
                             if content is None:
@@ -1884,7 +1912,6 @@ def categ_corr_lineplot(
                             for cat_name, val in scores.items():
                                 agg.setdefault(cat_name, []).append(val)
 
-                    # If "total" requested for selectivity but not directly present, synthesize from base categories
                     if data_type == "selectivity" and ("total" in categories) and ("total" not in agg):
                         base_cats = ("animal", "face", "object", "place")
                         total_vals = []
@@ -1912,7 +1939,6 @@ def categ_corr_lineplot(
 
                 # ---------- read cache and populate data ----------
                 agg_content = safe_load_pickle(cache) or {}
-                # synthesize 'total' at read time if still not present
                 if (data_type == "selectivity"
                     and ("total" in categories)
                     and ("total" not in agg_content)):
@@ -1950,15 +1976,6 @@ def categ_corr_lineplot(
     # ------------ 5. optional percentage scaling --------------
     if percentage:
         def _baseline_fraction(frac_keys, dmg_type):
-            """
-            Choose the damage level that will serve as the 100 % reference.
-
-            • For 'groupnorm_scaling' the network is intact at damage == 1.0.
-              If 1.0 is absent, pick the *largest* available fraction.
-
-            • For all other damage types the intact network is at damage == 0.0,
-              or more generally the *smallest* available fraction.
-            """
             fracs = sorted(frac_keys)
             if dmg_type == "groupnorm_scaling":
                 return 1.0 if 1.0 in fracs else fracs[-1]
@@ -1997,7 +2014,7 @@ def categ_corr_lineplot(
         ys = [frac_dict[x][0] for x in xs]
         err= [frac_dict[x][1] for x in xs]
         lbl = f"{layer}-{act_key}-{cat}"
-        # Normalise Imagenet values to get same colour coding
+
         if data_type == "imagenet":
             color_cat = "total"
             color_act = "IT"
