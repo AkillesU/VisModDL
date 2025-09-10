@@ -1353,11 +1353,31 @@ def categ_corr_lineplot(
     selectivity_fraction: float|None = None,
     selection_mode: str = "percentage",
     selectivity_file: str|None   = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
-    flip_x_axis=False  # Used for e.g., gain control plots
+    flip_x_axis=False,  # Used for e.g., gain control plots
+    image_dir="stimuli/",
 ):
     """
     Aggregate replicate files into mean±std curves.
     """
+    def _categories_from(img_names):
+        """
+        Return per-image category labels.
+        Prefer names from the file/zarr. If missing, recover using the stimuli dir.
+        """
+        try:
+            if img_names and len(img_names) > 0:
+                cats = assign_categories(img_names)              # uses existing helper
+            else:
+                # fallback: use canonical stimuli ordering
+                names = get_sorted_filenames(image_dir)         # existing helper
+                cats  = assign_categories(names)
+            # normalize possible 'scene'->'place' naming mismatches (lightweight)
+            if hasattr(cats, "__iter__"):
+                import numpy as _np
+                cats = _np.where(_np.array(cats) == "scene", "place", cats)
+            return cats
+        except Exception:
+            return None
 
     # ------------ debug helper --------------------------------
     def _dbg(msg, level=1):
@@ -1405,17 +1425,16 @@ def categ_corr_lineplot(
 
         if _is_zarr_dir(pathlike):
             try:
-                import zarr, numpy as _np
                 root = zarr.open_group(pathlike, mode="r")
 
                 # direct RDM
                 for k in ("RDM", "rdm", "D", "distance"):
                     if k in root:
-                        R = _np.array(root[k])
+                        R = np.array(root[k])
                         img_names = None
                         for nkey in ("image_names", "images", "stimuli", "image_ids"):
                             if nkey in root:
-                                img_names = list(map(str, _np.array(root[nkey]).tolist()))
+                                img_names = list(map(str, np.array(root[nkey]).tolist()))
                                 break
                         if img_names is None:
                             try:
@@ -1431,7 +1450,7 @@ def categ_corr_lineplot(
                 # from activations
                 for akey in ("activ", "activations", "A", "X"):
                     if akey in root:
-                        A = _np.array(root[akey])
+                        A = np.array(root[akey])
                         R = _compute_rdm_from_activ(A)
                         img_names = None
                         try:
@@ -1508,15 +1527,16 @@ def categ_corr_lineplot(
 
                     # Preferred: precomputed selective RDMs at RDM_{frac}_{mode}/<act>/<cat>_selective
                     cat_dir = rdm_dir / f"{cat}_selective" if rdm_dir.name.startswith("RDM_") else None
+
                     used_precomputed = False
                     if cat_dir and cat_dir.exists() and (
-                        any(cat_dir.rglob("*.pkl")) or any(p.name.endswith(".zarr") for p in cat_dir.rglob(".zarr"))
+                        any(cat_dir.rglob("*.pkl")) or any(p for p in cat_dir.rglob("*.zarr") if p.is_dir())
                     ):
                         used_precomputed = True
                         for dmg in sorted(cat_dir.iterdir()):
                             if not dmg.is_dir():
                                 continue
-                            # parse damage level from dirname
+                            # derive the damage level
                             m = re.search(subdir_regex, dmg.name)
                             dmg_level = m.group(1) if m else dmg.name.split("_")[-1]
 
@@ -1526,27 +1546,43 @@ def categ_corr_lineplot(
                                     stats = pickle.load(f)
                             else:
                                 selectivities = []
-                                # accept both *.pkl and *.zarr
+                                # gather files for this damage level
                                 rdm_paths  = list(sorted(dmg.glob("*.pkl")))
                                 rdm_paths += [p for p in sorted(dmg.iterdir()) if _is_zarr_dir(str(p))]
+
                                 for rdm_path in rdm_paths:
                                     rec = _load_rdm_record(str(rdm_path))
                                     if not rec or "RDM" not in rec:
                                         continue
+
                                     R = rec["RDM"]
-                                    img_names = rec.get("image_names")
-                                    if img_names is None:
-                                        # if missing, skip or attempt a recovery strategy
+                                    # convert distance to correlation if it *looks* like 1 - corr
+                                    if np.allclose(np.diag(R), 0, atol=1e-7):
+                                        C = 1.0 - R
+                                    else:
+                                        C = R
+
+                                    names = rec.get("image_names")
+                                    if not names:
+                                        # TRY to recover from zarr attrs already happened in _load_rdm_record.
+                                        # If still missing, SKIP (or see fix B below to provide a fallback)
                                         continue
-                                    cats = assign_categories(img_names)
-                                    sel  = calc_within_between(R, cats)[cat]["observed_difference"]
+
+                                    cats = assign_categories(names)
+                                    sel  = calc_within_between(C, cats)[cat]["observed_difference"]
                                     selectivities.append(sel)
 
-                                mean_sel = float(np.mean(selectivities)) if selectivities else np.nan
-                                std_sel  = float(np.std(selectivities, ddof=1)) if len(selectivities) > 1 else 0.0
-                                stats    = {"mean": mean_sel, "std": std_sel, "n": len(selectivities), "vals": [float(x) for x in selectivities]}
-                                with open(avg_file, "wb") as f:
-                                    pickle.dump(stats, f)
+                                if selectivities:
+                                    mean_sel = float(np.mean(selectivities))
+                                    std_sel  = float(np.std(selectivities, ddof=1)) if len(selectivities) > 1 else 0.0
+                                    stats    = {"mean": mean_sel, "std": std_sel, "n": len(selectivities),
+                                                "vals": [float(x) for x in selectivities]}
+                                    with open(avg_file, "wb") as f:
+                                        pickle.dump(stats, f)
+
+                                else:
+                                    _dbg(f"[WARN] No valid replicas for {layer}/{act_key}/{cat} dmg={dmg_level}", 1)
+                                    continue   # don't create empty avg files
 
                             data[(layer, act_key, cat)][float(dmg_level)] = (stats["mean"], stats["std"], stats["n"])
                             raw_points[(layer, act_key, cat)][float(dmg_level)] = stats["vals"]
@@ -1571,7 +1607,6 @@ def categ_corr_lineplot(
                         if cat_units is None:
                             # try dataframe with 'layer','unit', and Mann–Whitney cols; pick by 'mw_<cat>'
                             try:
-                                import pandas as _pd
                                 if hasattr(sel_map, "columns"):
                                     df = sel_map
                                 else:
@@ -1633,10 +1668,12 @@ def categ_corr_lineplot(
                                                 break
                                     except Exception:
                                         pass
-                                    img_names = assign_categories(img_names)
 
-                                    sel = calc_within_between(R, img_names)[cat]["observed_difference"]
-                                    selectivities.append(sel)
+                                    cats = _categories_from(img_names)   # <--- NEW: safe fallback via your utils
+                                    if cats is None:
+                                        continue
+
+                                    sel = calc_within_between(R, cats)[cat]["observed_difference"]
                                 except Exception:
                                     continue
 
