@@ -4130,8 +4130,8 @@ def get_top_unit_indices(
 
 
 def generate_category_selective_RDMs(
-    activations_root: str,
-    layer_name: str,
+    activations_root: str | Path,
+    layer_name: str,                     # kept for backward-compat, but **ignored**; see note below
     top_frac: float,
     categories: Sequence[str] = ("faces", "places", "objects", "animals"),
     damage_levels: Sequence[str] | None = None,
@@ -4143,100 +4143,128 @@ def generate_category_selective_RDMs(
     """
     Build category-selective RDMs from per-image activations.
 
-    Inputs (directory structure assumed):
-        <activations_root>/<damage_layer>/activations/<activation_layer>/
-            damaged_*/                           ← one folder per damage level
-                .../*.zarr/**                    ← zarr stores, possibly nested (e.g., .../199/xyz.zarr/activ)
-                .../*.pkl                        ← legacy DataFrame (n_images x n_units)
+    Output one Pickle per (category × damage × replicate/permutation):
+        <activations_root>/<damage_layer>/RDM_<top_frac:0.2f>_<selection_mode>/<activation_layer>/
+            <cat_singular>_selective/<damaged_dir>/<rep_or_perm>.pkl
 
-    Outputs (written here):
-        <activations_root>/<damage_layer>/RDM_<top_frac>_<selection_mode>/<activation_layer>/
-            face_selective/   object_selective/  animal_selective/  place_selective/
-                <damage>/
-                    <repname>.pkl  with {"RDM": <n_images x n_images>, "image_names": [...]}
-
-    Notes:
-    - This function *does not* handle "total" — pass only true base categories (faces/objects/animals/places).
-    - Correlation matrix uses current behavior: R = np.corrcoef(A) where A is (n_images x n_units_selected).
+    IMPORTANT:
+      • Selectivity columns are read from the **activation_layer** (e.g., IT), not the damage_layer.
+      • RDMs are **correlation distance** (1 − corr) across images.
+      • Raises on missing columns / no files / index mismatches.
     """
 
-    # ---------------------- helpers ---------------------- #
-    def _normalize_cat(cat: str) -> str:
-        m = {"faces": "face", "face": "face",
-             "objects": "object", "object": "object",
-             "animals": "animal", "animal": "animal",
-             "places": "place", "place": "place"}
-        return m.get(str(cat).lower(), str(cat).lower())
+    # --- normalize category names and map to selectivity columns ---
+    def _norm_cat(c: str) -> str:
+        c = c.lower().strip()
+        if c in ("face", "faces"):   return "faces"
+        if c in ("object", "objects"): return "objects"
+        if c in ("animal", "animals"): return "animals"
+        if c in ("place", "places"): return "places"
+        if c == "total":
+            # Allow 'total' here but expand to base cats immediately
+            return "total"
+        raise ValueError(f"Unknown category '{c}'")
 
-    def _selectivity_col(sel_df: pd.DataFrame, sing: str) -> str | None:
-        # Try common column names. Special-case "place(s)" as "scene(s)" variants.
-        candidates = []
-        if sing == "place":
-            candidates = ["mw_places", "mw_place", "mw_scenes", "mw_scene"]
-        else:
-            candidates = [f"mw_{sing}s", f"mw_{sing}"]
-        for c in candidates:
-            if c in sel_df.columns:
-                return c
-        return None
+    norm_cats = [ _norm_cat(c) for c in categories ]
+    if "total" in norm_cats:
+        # expand 'total' into the per-category set; plotting code will combine later
+        norm_cats = ["faces", "objects", "animals", "places"]
 
-    def _layer_match_rows(sel_df: pd.DataFrame, layer: str) -> pd.DataFrame:
-        layers = sel_df["layer"].astype(str)
-        rows = sel_df[
-            (layers == f"module.{layer}") |
-            (layers == layer) |
-            (layers.str.endswith(f"/{layer}"))
-        ]
-        return rows
+    col_map = {
+        "faces":   "mw_faces",
+        "objects": "mw_objects",
+        "animals": "mw_animals",
+        "places":  "mw_places",
+    }
 
-    def _img_names_from_attrs(store, ds=None):
-        # Try store attrs first, then dataset attrs
-        def _to_list(v):
-            if isinstance(v, list):
-                return [str(x) for x in v]
-            return [str(x) for x in list(v)]
-        for src in [getattr(store, "attrs", {})] + ([getattr(ds, "attrs", {})] if ds is not None else []):
-            for k in ("image_names", "images", "stimuli", "image_ids", "ids"):
-                try:
-                    if k in src:
-                        return _to_list(src[k])
-                except Exception:
-                    pass
-        return None
-
-    def _write_rdm(A2d: np.ndarray, img_names, out_path: Path):
-        # Keep existing behavior: similarity (not 1 - similarity)
-        R = np.corrcoef(A2d)  # (n_images x n_images), correlation across rows (images)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(out_path, "wb") as f:
-            pickle.dump({"RDM": R, "image_names": img_names}, f)
-
-    # ---------------------- 1) load selectivity table ---------------------- #
+    # --- load selectivity table and filter to activation_layer (IT) ---
     sel_path = Path(selectivity_file)
-    if sel_path.suffix == ".pkl":
+    if sel_path.suffix.lower() == ".pkl":
         sel_df = pd.read_pickle(sel_path)
-    elif sel_path.suffix == ".csv":
+    elif sel_path.suffix.lower() == ".csv":
         sel_df = pd.read_csv(sel_path)
     else:
-        raise ValueError("selectivity_file must be a .pkl or .csv table")
+        raise ValueError("selectivity_file must be .pkl or .csv")
 
-    # ---------------------- 2) pick top units per category ----------------- #
+    required_cols = {"layer", "unit"} | set(col_map.values())
+    missing = [c for c in required_cols if c not in sel_df.columns]
+    if missing:
+        raise ValueError(
+            f"Selectivity file is missing required columns: {missing}. "
+            f"Expected at least: {sorted(required_cols)}"
+        )
+
+    # NOTE: we ignore the 'layer_name' parameter and *always* filter by activation_layer for selectivity
+    layer_key = f"module.{activation_layer}"
+    rows = sel_df[ sel_df["layer"] == layer_key ]
+    if rows.empty:
+        raise ValueError(
+            f"No rows in selectivity file for layer '{layer_key}'. "
+            f"Check activation_layer='{activation_layer}' and the selectivity file."
+        )
+
+    # --- discover activation folders and collect a sample to validate unit count ---
+    activ_root = Path(activations_root) / damage_layer / "activations" / activation_layer
+    if not activ_root.is_dir():
+        raise FileNotFoundError(f"Activation root not found: {activ_root}")
+
+    # damage levels under activ_root are directories like damaged_0.0, damaged_0.2, ...
+    if damage_levels is None:
+        damage_levels = [d.name for d in sorted(activ_root.iterdir()) if d.is_dir() and d.name.startswith("damaged_")]
+    if not damage_levels:
+        raise FileNotFoundError(f"No damaged_* folders under {activ_root}")
+
+    # find *one* activation file to get n_units
+    sample_df = None
+    for dmg in damage_levels:
+        in_dir = activ_root / dmg
+        if not in_dir.is_dir():
+            continue
+        # zarr (preferred)
+        for rep_dir in sorted(in_dir.iterdir()):
+            if not rep_dir.is_dir():
+                continue
+            for zstore in sorted(rep_dir.iterdir()):
+                if zstore.suffix == ".zarr" and zstore.is_dir():
+                    # read first perm from this store
+                    try:
+                        root = zarr.open(zstore, mode="r")
+                        if "activ" not in root:
+                            continue
+                        perms = list(root.attrs.get("perm_indices", range(root["activ"].shape[0])))
+                        if not perms:
+                            continue
+                        sample_df = load_activations_zarr(zstore, perm=perms[0])
+                        break
+                    except Exception:
+                        continue
+            if sample_df is not None:
+                break
+        if sample_df is not None:
+            break
+        # legacy pkl (fallback)
+        for pklf in sorted(in_dir.rglob("*.pkl")):
+            try:
+                df = pd.read_pickle(pklf)
+                if isinstance(df, pd.DataFrame):
+                    sample_df = df
+                    break
+            except Exception:
+                pass
+        if sample_df is not None:
+            break
+
+    if sample_df is None:
+        raise FileNotFoundError(f"Could not locate any activation files under {activ_root} to determine unit count.")
+
+    n_units = sample_df.shape[1]
+
+    # --- pick top unit indices per category for *activation_layer* and validate bounds ---
     idxs_by_cat: dict[str, np.ndarray] = {}
-    for cat in categories:
-        sing = _normalize_cat(cat)
-        col  = _selectivity_col(sel_df, sing)
-        if col is None:
-            raise ValueError(f"No selectivity column for category '{cat}' (tried {sing}).")
-
-        rows = _layer_match_rows(sel_df, layer_name)
-        if rows.empty:
-            raise ValueError(
-                f"No selectivity rows for layer '{layer_name}' "
-                f"(tried 'module.{layer_name}', '{layer_name}', '*/{layer_name}')"
-            )
-
+    for cat in norm_cats:
+        col = col_map[cat]
         if col not in rows.columns:
-            raise ValueError(f"Column '{col}' missing in selectivity file.")
+            raise ValueError(f"Column '{col}' missing in selectivity file for category '{cat}'")
 
         if selection_mode == "percentage":
             k = max(1, int(round(len(rows) * float(top_frac))))
@@ -4247,114 +4275,90 @@ def generate_category_selective_RDMs(
         else:
             raise ValueError("selection_mode must be 'percentage' or 'percentile'")
 
-        idxs = top["unit"].astype(int).to_numpy()
-        if idxs.size == 0:
-            raise ValueError(f"No units selected for category '{cat}' at layer '{layer_name}'.")
-        idxs_by_cat[sing] = idxs
-        print(f"[SELECT] {sing}: picked {idxs.size} units (mode={selection_mode}, frac={top_frac})")
+        idx = top["unit"].astype(int).to_numpy()
+        if idx.size == 0:
+            raise ValueError(f"No units selected for category '{cat}' in layer '{activation_layer}'.")
 
-    # ---------------------- 3) walk damage folders ------------------------ #
-    activ_root = Path(activations_root) / damage_layer / "activations" / activation_layer
-    if not activ_root.exists():
-        raise FileNotFoundError(f"Activations root not found: {activ_root}")
+        max_idx = int(idx.max())
+        if max_idx >= n_units:
+            raise ValueError(
+                f"Selected unit index {max_idx} for '{cat}' exceeds number of units ({n_units}) "
+                f"in activations for {damage_layer}/{activation_layer}. "
+                f"Check that selectivity_file matches activation_layer='{activation_layer}'."
+            )
+        idxs_by_cat[cat] = idx
 
-    if damage_levels is None:
-        damage_levels = sorted([d.name for d in activ_root.iterdir() if d.is_dir()])
+    # --- output root ---
+    out_root = (
+        Path(activations_root)
+        / damage_layer
+        / f"RDM_{top_frac:.2f}_{selection_mode}"
+        / activation_layer
+    )
 
-    out_root = Path(activations_root) / damage_layer / f"RDM_{top_frac:.2f}_{selection_mode}" / activation_layer
-
-    # ---------------------- 4) process each damage level ------------------- #
+    # --- main loop over damages / reps / perms ---
     for dmg in damage_levels:
-        in_dir  = activ_root / dmg
+        in_dir = activ_root / dmg
         if not in_dir.is_dir():
-            print(f"[SKIP] missing damage folder: {in_dir}")
             continue
 
-        # Recursively find zarr dirs and legacy pickles under this damage level
-        zarr_paths = sorted([p for p in in_dir.rglob("*.zarr") if p.is_dir()])
-        pkl_paths  = sorted(in_dir.rglob("*.pkl"))
-
-        # ---- Zarr replicates ----
-        for zpath in zarr_paths:
-            try:
-                root = zarr.open(zpath, mode="r")
-
-                # Preferred path: explicit permutations via your loader (if perm_indices present)
-                perms = None
-                try:
-                    perms = root.attrs.get("perm_indices", None)
-                except Exception:
-                    perms = None
-
-                used_perm_loader = False
-                if perms is not None and len(perms) > 0:
-                    for sing, flat_idx in idxs_by_cat.items():
-                        out_dir = out_root / f"{sing}_selective" / dmg
-                        for perm in perms:
-                            try:
-                                # Expect a DataFrame (n_images x n_units)
-                                df = load_activations_zarr(zpath, perm=perm)
-                                if not hasattr(df, "to_numpy"):
-                                    continue
-                                img_names = list(map(str, getattr(df, "index", []))) or _img_names_from_attrs(root)
-                                A = df.to_numpy()[:, flat_idx]
-                                out_pkl = out_dir / f"{zpath.stem}__perm{perm}.pkl"
-                                _write_rdm(A, img_names, out_pkl)
-                            except Exception as e:
-                                print(f"[WARN] load_activations_zarr failed for {zpath} perm={perm}: {e}")
-                    used_perm_loader = True
-
-                if used_perm_loader:
-                    continue  # this zarr handled by perm loader
-
-                # Fallback path: read arrays directly from the store
-                ds_key = next((k for k in ("activ", "activations", "A", "X") if k in root), None)
-                if ds_key is None:
-                    # If the user passed a dataset path (…/zarr/activ) to rglob, they will be captured
-                    # by the directory "zarr", not the dataset. Here we skip if no known dataset.
-                    print(f"[ZARR] no known dataset in {zpath} (looked for activ/activations/A/X); skipping.")
-                    continue
-
-                ds = root[ds_key]
-                img_names = _img_names_from_attrs(root, ds)
-                arr = np.array(ds)
-
-                # Shapes we handle:
-                # (n_images, n_units)               -> single replicate
-                # (n_reps, n_images, n_units)       -> multiple replicates
-                for sing, flat_idx in idxs_by_cat.items():
-                    out_dir = out_root / f"{sing}_selective" / dmg
-                    if arr.ndim == 2:
-                        A = arr[:, flat_idx]
-                        out_pkl = out_dir / f"{zpath.stem}__rep0.pkl"
-                        _write_rdm(A, img_names, out_pkl)
-                    elif arr.ndim == 3:
-                        for i in range(arr.shape[0]):
-                            A = arr[i, :, :][:, flat_idx]
-                            out_pkl = out_dir / f"{zpath.stem}__rep{i}.pkl"
-                            _write_rdm(A, img_names, out_pkl)
-                    else:
-                        print(f"[ZARR] unexpected array shape {arr.shape} in {zpath}; skipping.")
-
-            except Exception as e:
-                print(f"[ZARR-SKIP] {zpath}: {e}")
+        # iterate replicate subdirs (e.g., .../damaged_x.y/<rep>/)
+        for rep_dir in sorted(in_dir.iterdir()):
+            if not rep_dir.is_dir():
                 continue
 
-        # ---- Legacy pickle replicates ----
-        for pkl_path in pkl_paths:
-            try:
-                df = pd.read_pickle(pkl_path)  # DataFrame (n_images x n_units)
-                img_names = list(map(str, getattr(df, "index", [])))
-                for sing, flat_idx in idxs_by_cat.items():
-                    out_dir = out_root / f"{sing}_selective" / dmg
-                    A = df.to_numpy()[:, flat_idx]
-                    out_pkl = out_dir / f"{pkl_path.stem}.pkl"
-                    _write_rdm(A, img_names, out_pkl)
-            except Exception as e:
-                print(f"[PKL-SKIP] {pkl_path}: {e}")
-                continue
+            # handle zarr stores under replicate dir
+            zarr_stores = [z for z in sorted(rep_dir.iterdir()) if z.suffix == ".zarr" and z.is_dir()]
+            pkl_files   = [p for p in sorted(rep_dir.iterdir()) if p.suffix == ".pkl"]
 
-    print(f"[DONE] Selective RDMs written under: {out_root}")
+            # ---- ZARR path ----
+            for zstore in zarr_stores:
+                root = zarr.open(zstore, mode="r")
+                if "activ" not in root:
+                    raise ValueError(f"Zarr store missing 'activ' dataset: {zstore}")
+                img_names = list(map(str, root.attrs.get("image_names", [])))
+                if not img_names:
+                    raise ValueError(f"Zarr store missing 'image_names' attr: {zstore}")
+
+                perm_ids = list(root.attrs.get("perm_indices", range(root["activ"].shape[0])))
+                if not perm_ids:
+                    raise ValueError(f"No permutations found in {zstore} (perm_indices attr and activ shape are empty).")
+
+                for perm in perm_ids:
+                    df = load_activations_zarr(zstore, perm=perm)  # (n_images x n_units)
+                    A = df.to_numpy(dtype=np.float32)
+
+                    # write one file per category
+                    for cat, idx in idxs_by_cat.items():
+                        out_dir = out_root / f"{cat[:-1]}_selective" / dmg
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        # slice selected units
+                        Asel = A[:, idx]
+                        # RDM = 1 - corr
+                        R = _compute_rdm_from_activ(Asel)
+                        out_pkl = out_dir / f"{perm}.pkl"
+                        with open(out_pkl, "wb") as f:
+                            pickle.dump({"RDM": R, "image_names": img_names}, f)
+
+            # ---- legacy PKL path (single activation table per file) ----
+            for pklf in pkl_files:
+                df = pd.read_pickle(pklf)
+                if not isinstance(df, pd.DataFrame):
+                    raise ValueError(f"Expected a DataFrame in {pklf}, got {type(df)}")
+                img_names = list(map(str, df.index.tolist()))
+                A = df.to_numpy(dtype=np.float32)
+
+                for cat, idx in idxs_by_cat.items():
+                    out_dir = out_root / f"{cat[:-1]}_selective" / dmg
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    Asel = A[:, idx]
+                    R = _compute_rdm_from_activ(Asel)
+                    out_pkl = out_dir / pklf.name
+                    with open(out_pkl, "wb") as f:
+                        pickle.dump({"RDM": R, "image_names": img_names}, f)
+
+    # If we got here, everything succeeded
+    return True
 
 
 def get_all_groupnorm_layers(model, base_path=""):
