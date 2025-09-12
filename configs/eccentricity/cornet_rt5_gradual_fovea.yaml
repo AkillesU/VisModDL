@@ -48,9 +48,9 @@ manipulation_method: "eccentricity_gradual"
 
 eccentricity_layer_path: module._modules.V1._modules.conv_input
 eccentricity_bands:
-  - [0.80, 0.00]  # Reverse direction
-  - [0.50, 0.00]  # Reverse direction
-  - [0.30, 0.00]  # Reverse direction
+  - [0, 0.80]  # Reverse direction
+  - [0, 0.50]  # Reverse direction
+  - [0, 0.30]  # Reverse direction
 
 
 # Graded params
