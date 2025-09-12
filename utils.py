@@ -1674,7 +1674,7 @@ def categ_corr_lineplot(
                             activations_root = Path(main_dir) / damage_type,  # <— root ABOVE damage_layer
                             layer_name       = act,                           # for selectivity table lookup
                             top_frac         = float(selectivity_fraction),
-                            categories       = list(categories),
+                            categories       = categories_rdm,
                             selection_mode   = selection_mode,                # "percentage" or "percentile"
                             selectivity_file = selectivity_file,
                             damage_layer     = layer,
