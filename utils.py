@@ -1860,185 +1860,186 @@ def categ_corr_lineplot(
 
                             data[(layer, act_key, "total")][frac] = (mean_total, std_total, L)
                             raw_points[(layer, act_key, "total")][frac] = per_rep_means
-
-            # =======================================
-            # All other data_type paths (original)  |
-            # =======================================
-            if data_type == "imagenet":
-                layer_path = os.path.join(main_dir, damage_type, layer, "imagenet")
-                out_base   = os.path.join(main_dir, damage_type, layer, "avg_imagenet")
-                act_key    = "imagenet"
+            
             else:
-                layer_path = os.path.join(main_dir, damage_type, layer, data_subfolder, act)
-                out_base   = os.path.join(main_dir, damage_type, layer, f"avg_{data_type}", act)
-                act_key    = act
-            _dbg(f"[PATH] layer={layer} act={act_key}", 1)
-            _dbg(f"[PATH] layer_path={layer_path}", 2)
-            _dbg(f"[PATH] out_base={out_base}", 2)
+                # =======================================
+                # All other data_type paths (original)  |
+                # =======================================
+                if data_type == "imagenet":
+                    layer_path = os.path.join(main_dir, damage_type, layer, "imagenet")
+                    out_base   = os.path.join(main_dir, damage_type, layer, "avg_imagenet")
+                    act_key    = "imagenet"
+                else:
+                    layer_path = os.path.join(main_dir, damage_type, layer, data_subfolder, act)
+                    out_base   = os.path.join(main_dir, damage_type, layer, f"avg_{data_type}", act)
+                    act_key    = act
+                _dbg(f"[PATH] layer={layer} act={act_key}", 1)
+                _dbg(f"[PATH] layer_path={layer_path}", 2)
+                _dbg(f"[PATH] out_base={out_base}", 2)
 
-            if not os.path.isdir(layer_path):
-                _dbg(f"[MISS] layer_path does not exist: {layer_path}", 1)
-                continue
-            os.makedirs(out_base, exist_ok=True)
-
-            # init dict slots
-            for cat in categories:
-                data[(layer, act_key, cat)] = {}
-                raw_points[(layer, act_key, cat)] = {}
-
-            # scan damaged_* subdirs
-            for subdir in os.listdir(layer_path):
-                subdir_path = os.path.join(layer_path, subdir)
-                if not os.path.isdir(subdir_path):
+                if not os.path.isdir(layer_path):
+                    _dbg(f"[MISS] layer_path does not exist: {layer_path}", 1)
                     continue
-                m = re.search(subdir_regex, subdir)
-                if not m:
-                    _dbg(f"[SKIP] regex miss: {subdir}", 2)
-                    continue
-                frac = round(float(m.group(1)), 3)
-                cache = os.path.join(out_base, agg_fname(frac))
-                _dbg(f"[FRACTION] {subdir} -> frac={frac}  cache={'HIT' if os.path.exists(cache) else 'MISS'}", 1)
+                os.makedirs(out_base, exist_ok=True)
 
-                # ---------- build cache if missing ----------
-                if not os.path.exists(cache):
-                    agg = {}                      # cat -> list[values]
-                    _dbg(f"[BUILD] scanning files in {subdir_path}", 2)
-
-                    for fname in os.listdir(subdir_path):
-                        p = os.path.join(subdir_path, fname)
-                        is_pkl  = fname.lower().endswith(".pkl")
-                        is_zarr = fname.lower().endswith(".zarr") and os.path.isdir(p)
-                        if not (is_pkl or is_zarr):
-                            continue
-
-                        # ---- IMAGE NET MODE ----
-                        if data_type == "imagenet":
-                            if is_zarr:
-                                continue
-                            content = safe_load_pickle(p)
-                            if content is None:
-                                try:
-                                    with open(p, "rb") as f:
-                                        content = pickle.load(f)
-                                except Exception:
-                                    continue
-                            for cat in categories:
-                                if str(cat).lower() == "overall":
-                                    val = content["overall"][metric]
-                                elif str(cat).isdigit():
-                                    cls = int(cat)
-                                    val = content["classes"].get(cls, {}).get(metric, np.nan)
-                                else:
-                                    continue
-                                agg.setdefault(cat, []).append(float(val))
-
-                        # ---- SELECTIVITY MODE (no fraction) ----
-                        elif data_type == "selectivity":
-                            if is_zarr:
-                                continue
-                            content = safe_load_pickle(p)
-                            if content is None:
-                                try:
-                                    with open(p, "rb") as f:
-                                        content = pickle.load(f)
-                                except Exception:
-                                    continue
-                            if not isinstance(content, dict):
-                                _dbg(f"[SKIP] not a dict: {fname}", 2)
-                                continue
-                            _dbg(f"[FILE] {fname} keys={list(content.keys())[:6]}", 2)
-
-                            base_cats = ["animal", "face", "object", "place"]
-
-                            if "total" in categories:
-                                if ("total" in content) and (metric in content["total"]):
-                                    agg.setdefault("total", []).append(float(content["total"][metric]))
-                                    _dbg(f"[APPEND] direct 'total' from {fname}: {metric}", 2)
-                                else:
-                                    _dbg(f"[FALLBACK] synthesize total from base cats in {fname}", 2)
-                                    for cat_name, met_dict in content.items():
-                                        if (cat_name in base_cats) and (metric in met_dict):
-                                            agg.setdefault(cat_name, []).append(float(met_dict[metric]))
-                            else:
-                                for cat_name, met_dict in content.items():
-                                    if (cat_name in categories) and (metric in met_dict):
-                                        agg.setdefault(cat_name, []).append(float(met_dict[metric]))
-
-                        # ---- SVM MODE ----
-                        else:   # data_type startswith "svm"
-                            scores = _load_svm_scores(p, categories)
-                            if not scores:
-                                continue
-                            for cat_name, val in scores.items():
-                                agg.setdefault(cat_name, []).append(val)
-
-                    if data_type == "selectivity" and ("total" in categories) and ("total" not in agg):
-                        base_cats = ("animal", "face", "object", "place")
-                        if all(bc in agg for bc in base_cats) and all(len(agg[bc]) for bc in base_cats):
-                            L = min(len(agg[bc]) for bc in base_cats)
-                            per_rep_means = [float(np.nanmean([agg["animal"][i], agg["face"][i], agg["object"][i], agg["place"][i]]))
-                                             for i in range(L)]
-                            _dbg(f"[SYNTH] total from per-replicate means, n={len(per_rep_means)}", 1)
-                            agg["total"] = per_rep_means
-
-                    packed = {
-                        c: {
-                            metric: {
-                                "mean": float(np.mean(v)) if len(v) > 0 else np.nan,
-                                "std":  float(np.std(v, ddof=1)) if len(v) > 1 else 0.0,
-                                "n":    len(v),
-                                "vals": [float(x) for x in v]
-                            }
-                        } for c, v in agg.items()
-                    }
-                    try:
-                        with open(cache, "wb") as f:
-                            pickle.dump(packed, f)
-                    except Exception as e:
-                        _dbg(f"[ERROR] failed to write cache {cache}: {e}", 1)
-
-                # ---------- read cache and populate data ----------
-                agg_content = safe_load_pickle(cache) or {}
-                if (data_type == "selectivity"
-                    and ("total" in categories)
-                    and ("total" not in agg_content)):
-                    base = ("animal","face","object","place")
-                    have_all = all(
-                        (b in agg_content)
-                        and (metric in agg_content[b])
-                        and ("vals" in agg_content[b][metric])
-                        for b in base
-                    )
-                    if have_all:
-                        lists = [list(map(float, agg_content[b][metric]["vals"])) for b in base]
-                        if all(len(lst) for lst in lists):
-                            L = min(len(lst) for lst in lists)
-                            per_rep_means = [float(np.nanmean([lists[0][i], lists[1][i], lists[2][i], lists[3][i]]))
-                                             for i in range(L)]
-                            agg_content["total"] = {
-                                metric: {
-                                    "mean": float(np.nanmean(per_rep_means)),
-                                    "std":  float(np.nanstd(per_rep_means, ddof=1)) if L > 1 else 0.0,
-                                    "n":    L,
-                                    "vals": per_rep_means
-                                }
-                            }
-                            try:
-                                with open(cache, "wb") as f:
-                                    pickle.dump(agg_content, f)
-                            except Exception:
-                                pass
-
+                # init dict slots
                 for cat in categories:
-                    if cat not in agg_content or metric not in agg_content[cat]:
+                    data[(layer, act_key, cat)] = {}
+                    raw_points[(layer, act_key, cat)] = {}
+
+                # scan damaged_* subdirs
+                for subdir in os.listdir(layer_path):
+                    subdir_path = os.path.join(layer_path, subdir)
+                    if not os.path.isdir(subdir_path):
                         continue
-                    rec = agg_content[cat][metric]
-                    mean = rec.get("mean", np.nan)
-                    std  = rec.get("std", 0.0)
-                    n    = rec.get("n", 0)
-                    vals = rec.get("vals", [])
-                    data[(layer, act_key, cat)][frac] = (mean, std, n)
-                    raw_points[(layer, act_key, cat)][frac] = vals
+                    m = re.search(subdir_regex, subdir)
+                    if not m:
+                        _dbg(f"[SKIP] regex miss: {subdir}", 2)
+                        continue
+                    frac = round(float(m.group(1)), 3)
+                    cache = os.path.join(out_base, agg_fname(frac))
+                    _dbg(f"[FRACTION] {subdir} -> frac={frac}  cache={'HIT' if os.path.exists(cache) else 'MISS'}", 1)
+
+                    # ---------- build cache if missing ----------
+                    if not os.path.exists(cache):
+                        agg = {}                      # cat -> list[values]
+                        _dbg(f"[BUILD] scanning files in {subdir_path}", 2)
+
+                        for fname in os.listdir(subdir_path):
+                            p = os.path.join(subdir_path, fname)
+                            is_pkl  = fname.lower().endswith(".pkl")
+                            is_zarr = fname.lower().endswith(".zarr") and os.path.isdir(p)
+                            if not (is_pkl or is_zarr):
+                                continue
+
+                            # ---- IMAGE NET MODE ----
+                            if data_type == "imagenet":
+                                if is_zarr:
+                                    continue
+                                content = safe_load_pickle(p)
+                                if content is None:
+                                    try:
+                                        with open(p, "rb") as f:
+                                            content = pickle.load(f)
+                                    except Exception:
+                                        continue
+                                for cat in categories:
+                                    if str(cat).lower() == "overall":
+                                        val = content["overall"][metric]
+                                    elif str(cat).isdigit():
+                                        cls = int(cat)
+                                        val = content["classes"].get(cls, {}).get(metric, np.nan)
+                                    else:
+                                        continue
+                                    agg.setdefault(cat, []).append(float(val))
+
+                            # ---- SELECTIVITY MODE (no fraction) ----
+                            elif data_type == "selectivity":
+                                if is_zarr:
+                                    continue
+                                content = safe_load_pickle(p)
+                                if content is None:
+                                    try:
+                                        with open(p, "rb") as f:
+                                            content = pickle.load(f)
+                                    except Exception:
+                                        continue
+                                if not isinstance(content, dict):
+                                    _dbg(f"[SKIP] not a dict: {fname}", 2)
+                                    continue
+                                _dbg(f"[FILE] {fname} keys={list(content.keys())[:6]}", 2)
+
+                                base_cats = ["animal", "face", "object", "place"]
+
+                                if "total" in categories:
+                                    if ("total" in content) and (metric in content["total"]):
+                                        agg.setdefault("total", []).append(float(content["total"][metric]))
+                                        _dbg(f"[APPEND] direct 'total' from {fname}: {metric}", 2)
+                                    else:
+                                        _dbg(f"[FALLBACK] synthesize total from base cats in {fname}", 2)
+                                        for cat_name, met_dict in content.items():
+                                            if (cat_name in base_cats) and (metric in met_dict):
+                                                agg.setdefault(cat_name, []).append(float(met_dict[metric]))
+                                else:
+                                    for cat_name, met_dict in content.items():
+                                        if (cat_name in categories) and (metric in met_dict):
+                                            agg.setdefault(cat_name, []).append(float(met_dict[metric]))
+
+                            # ---- SVM MODE ----
+                            else:   # data_type startswith "svm"
+                                scores = _load_svm_scores(p, categories)
+                                if not scores:
+                                    continue
+                                for cat_name, val in scores.items():
+                                    agg.setdefault(cat_name, []).append(val)
+
+                        if data_type == "selectivity" and ("total" in categories) and ("total" not in agg):
+                            base_cats = ("animal", "face", "object", "place")
+                            if all(bc in agg for bc in base_cats) and all(len(agg[bc]) for bc in base_cats):
+                                L = min(len(agg[bc]) for bc in base_cats)
+                                per_rep_means = [float(np.nanmean([agg["animal"][i], agg["face"][i], agg["object"][i], agg["place"][i]]))
+                                                 for i in range(L)]
+                                _dbg(f"[SYNTH] total from per-replicate means, n={len(per_rep_means)}", 1)
+                                agg["total"] = per_rep_means
+
+                        packed = {
+                            c: {
+                                metric: {
+                                    "mean": float(np.mean(v)) if len(v) > 0 else np.nan,
+                                    "std":  float(np.std(v, ddof=1)) if len(v) > 1 else 0.0,
+                                    "n":    len(v),
+                                    "vals": [float(x) for x in v]
+                                }
+                            } for c, v in agg.items()
+                        }
+                        try:
+                            with open(cache, "wb") as f:
+                                pickle.dump(packed, f)
+                        except Exception as e:
+                            _dbg(f"[ERROR] failed to write cache {cache}: {e}", 1)
+
+                    # ---------- read cache and populate data ----------
+                    agg_content = safe_load_pickle(cache) or {}
+                    if (data_type == "selectivity"
+                        and ("total" in categories)
+                        and ("total" not in agg_content)):
+                        base = ("animal","face","object","place")
+                        have_all = all(
+                            (b in agg_content)
+                            and (metric in agg_content[b])
+                            and ("vals" in agg_content[b][metric])
+                            for b in base
+                        )
+                        if have_all:
+                            lists = [list(map(float, agg_content[b][metric]["vals"])) for b in base]
+                            if all(len(lst) for lst in lists):
+                                L = min(len(lst) for lst in lists)
+                                per_rep_means = [float(np.nanmean([lists[0][i], lists[1][i], lists[2][i], lists[3][i]]))
+                                                 for i in range(L)]
+                                agg_content["total"] = {
+                                    metric: {
+                                        "mean": float(np.nanmean(per_rep_means)),
+                                        "std":  float(np.nanstd(per_rep_means, ddof=1)) if L > 1 else 0.0,
+                                        "n":    L,
+                                        "vals": per_rep_means
+                                    }
+                                }
+                                try:
+                                    with open(cache, "wb") as f:
+                                        pickle.dump(agg_content, f)
+                                except Exception:
+                                    pass
+
+                    for cat in categories:
+                        if cat not in agg_content or metric not in agg_content[cat]:
+                            continue
+                        rec = agg_content[cat][metric]
+                        mean = rec.get("mean", np.nan)
+                        std  = rec.get("std", 0.0)
+                        n    = rec.get("n", 0)
+                        vals = rec.get("vals", [])
+                        data[(layer, act_key, cat)][frac] = (mean, std, n)
+                        raw_points[(layer, act_key, cat)][frac] = vals
 
     # ------------ 5. optional percentage scaling --------------
     if percentage:
