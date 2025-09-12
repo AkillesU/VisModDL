@@ -1361,9 +1361,6 @@ def categ_corr_lineplot(
       - If selectivity RDMs are missing at RDM_{fraction}_{selection_mode}/<act>/<cat>_selective/,
         compute them from activation .zarr files on the fly, save to disk, and proceed.
     """
-    import os, re, pickle, numpy as np
-    from pathlib import Path
-    import matplotlib.pyplot as plt
 
     # ------------ debug helper --------------------------------
     def _dbg(msg, level=1):
@@ -1654,7 +1651,7 @@ def categ_corr_lineplot(
             if data_type == "selectivity" and selectivity_fraction is not None:
                 # categories to pull RDMs for (precomputed per-category)
                 if "total" in categories:
-                    categories_rdm = ["face", "object", "animal", "place"]
+                    categories_rdm = ["faces", "objects", "animals", "places"]
                 else:
                     categories_rdm = list(categories)
 
