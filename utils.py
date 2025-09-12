@@ -1463,22 +1463,19 @@ def categ_corr_lineplot(
 
         # DataFrame-like
         try:
-            import pandas as pd
-            if col is not None and (hasattr(sel_obj, "columns") and col in sel_obj.columns):
+            if hasattr(sel_obj, "columns"):
                 df = sel_obj
-                # heuristics to select rows for the right layer/act
-                df_l = df.copy()
-                if "layer" in df_l.columns:
-                    # support exact matches or suffix matches (common pattern: ".../IT")
-                    mask = (df_l["layer"].astype(str) == act) | df_l["layer"].astype(str).str.endswith(f"/{act}")
-                    if mask.any():
-                        df_l = df_l[mask]
-                # sort by category score desc
-                df_l = df_l.sort_values(col, ascending=False)
-                if "unit" not in df_l.columns:
+                # Require an exact match on layer column (or adapt this to your true schema)
+                if "layer" in df.columns:
+                    mask = (df["layer"].astype(str) == layer) | (df["layer"].astype(str).str.endswith(f"/{layer}"))
+                    if not mask.any():
+                        return None  # <- don't proceed with all rows
+                    df = df[mask]
+                if col not in df.columns or "unit" not in df.columns:
                     return None
-                top_n = max(1, int(round(frac * len(df_l)))) if mode == "percentage" else max(1, int(frac))
-                return df_l["unit"].to_numpy()[:top_n].astype(int)
+                df = df.sort_values(col, ascending=False)
+                top_n = max(1, int(round(frac * len(df)))) if mode == "percentage" else max(1, int(frac))
+                return df["unit"].to_numpy()[:top_n].astype(int)
         except Exception:
             pass
 
@@ -1564,7 +1561,7 @@ def categ_corr_lineplot(
         for cat in categories_rdm:
             idx = _get_top_units_from_selectivity(sel_obj, layer, act, cat, selectivity_fraction, selection_mode)
             if idx is None or len(idx) == 0:
-                _dbg(f"[PRECOMPUTE-MISS] No unit indices for cat={cat} (layer={layer}, act={act}).", 1)
+                raise RuntimeError(f"No selective units for {layer}/{act}/{cat} (frac={selectivity_fraction}, mode={selection_mode}). Check selectivity_file and labels.")
                 percat_units[cat] = None
             else:
                 percat_units[cat] = np.asarray(idx, dtype=int)
