@@ -4139,13 +4139,14 @@ def generate_category_selective_RDMs(
     selectivity_file: str = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
     damage_layer: str = "V1",
     activation_layer: str = "IT",
+    verbose: int = 1,
 ):
     """
     Build category-selective RDMs under the SAME damage-type subtree the plotter expects.
 
     Reads:
         <activations_root>/<damage_layer>/activations/<activation_layer>/
-            damaged_*/<rep>/{*.zarr|*.pkl}
+            damaged_*/[<rep>/] {*.zarr|*.pkl}
 
     Writes:
         <activations_root>/<damage_layer>/RDM_<top_frac:0.2f>_<selection_mode>/<activation_layer>/
@@ -4154,8 +4155,13 @@ def generate_category_selective_RDMs(
     RDM = correlation distance across images (1 - corr). Strict errors; no irrelevant fallbacks.
     """
 
-    # ---------- normalize/expand categories ----------
-    def _norm_cat(c: str) -> str:
+    # ---- tiny logger ----
+    def log(lvl: int, msg: str):
+        if verbose >= lvl:
+            print(f"[RDM:{lvl}] {msg}")
+
+    # ---- normalize categories ----
+    def norm_cat(c: str) -> str:
         c = c.lower().strip()
         if c in ("face", "faces"):     return "faces"
         if c in ("object", "objects"): return "objects"
@@ -4163,8 +4169,9 @@ def generate_category_selective_RDMs(
         if c in ("place", "places"):   return "places"
         if c == "total":               return "total"
         raise ValueError(f"Unknown category '{c}'")
-    cats = [_norm_cat(c) for c in categories]
-    if "total" in cats:
+
+    cats = [norm_cat(c) for c in categories]
+    if "total" in cats:  # expand to the four atomic groups
         cats = ["faces", "objects", "animals", "places"]
 
     col_map = {
@@ -4180,7 +4187,15 @@ def generate_category_selective_RDMs(
         "places":  "place_selective",
     }
 
-    # ---------- load & filter selectivity ----------
+    activ_root = Path(activations_root) / damage_layer / "activations" / activation_layer
+    out_root   = Path(activations_root) / damage_layer / f"RDM_{top_frac:.2f}_{selection_mode}" / activation_layer
+    log(1, f"activations_root = {Path(activations_root)}")
+    log(1, f"  activ_root     = {activ_root}")
+    log(1, f"  out_root       = {out_root}")
+    if not activ_root.is_dir():
+        raise FileNotFoundError(f"Activation root not found: {activ_root}")
+
+    # ---- selectivity table ----
     sel_path = Path(selectivity_file)
     if sel_path.suffix.lower() == ".pkl":
         sel_df = pd.read_pickle(sel_path)
@@ -4189,69 +4204,116 @@ def generate_category_selective_RDMs(
     else:
         raise ValueError("selectivity_file must be .pkl or .csv")
 
-    required_cols = {"layer", "unit"} | set(col_map.values())
-    missing = [c for c in required_cols if c not in sel_df.columns]
-    if missing:
-        raise ValueError(f"Selectivity file missing columns: {missing} "
-                         f"(need at least {sorted(required_cols)})")
-
     layer_key = f"module.{activation_layer}"
+    if "layer" not in sel_df.columns or "unit" not in sel_df.columns:
+        raise ValueError("Selectivity file must include 'layer' and 'unit' columns.")
+
+    # Filter to activation layer rows (strict, then a suffix fallback)
     rows = sel_df[sel_df["layer"] == layer_key]
+    if rows.empty and sel_df["layer"].dtype == object:
+        rows = sel_df[sel_df["layer"].astype(str).str.endswith(f"/{activation_layer}")]
     if rows.empty:
-        raise ValueError(f"No rows in selectivity file for layer '{layer_key}'.")
+        raise ValueError(f"No rows in selectivity file for layer '{layer_key}' "
+                         f"(or suffix '/{activation_layer}').")
 
-    # ---------- paths ----------
-    activ_root = Path(activations_root) / damage_layer / "activations" / activation_layer
-    if not activ_root.is_dir():
-        raise FileNotFoundError(f"Activation root not found: {activ_root}")
+    missing_cols = [c for c in col_map.values() if c not in sel_df.columns]
+    if missing_cols:
+        raise ValueError(f"Selectivity file missing columns: {missing_cols}")
 
-    out_root = Path(activations_root) / damage_layer / f"RDM_{top_frac:.2f}_{selection_mode}" / activation_layer
+    log(1, f"selectivity_file = {sel_path}")
+    log(1, f"rows for {layer_key}: n={len(rows)} (total rows={len(sel_df)})")
+    log(2, f"selectivity columns: {list(sel_df.columns)}")
 
-    # discover damage levels
+    # ---- discover damage levels ----
     if damage_levels is None:
         damage_levels = [d.name for d in sorted(activ_root.iterdir())
                          if d.is_dir() and d.name.startswith("damaged_")]
+    log(1, f"found damage_levels: {damage_levels[:6]}{' …' if len(damage_levels)>6 else ''}")
     if not damage_levels:
         raise FileNotFoundError(f"No damaged_* folders under {activ_root}")
 
-    # ---------- determine n_units WITHOUT using perm_indices ----------
+    # ---- helper: find replicates under a damage folder ----
+    def find_reps(dmg_dir: Path) -> Tuple[List[Path], List[Path]]:
+        """
+        Returns (zarr_stores, pkl_files) discovered anywhere under dmg_dir,
+        but ignores anything under an 'RDM_' subfolder (to avoid reading our outputs).
+        """
+        zarrs: List[Path] = []
+        pkls:  List[Path] = []
+        # Prefer shallow first, then deeper
+        # shallow: direct children
+        for p in sorted(dmg_dir.iterdir()):
+            if p.is_dir() and p.suffix == ".zarr":
+                zarrs.append(p)
+            elif p.is_file() and p.suffix == ".pkl":
+                pkls.append(p)
+        # deeper: one or two levels (rep dirs, etc.), excluding RDM_ trees
+        for p in sorted(dmg_dir.rglob("*")):
+            if out_root.name in str(p):    # skip outputs
+                continue
+            if "RDM_" in str(p):
+                continue
+            if p.is_dir() and p.suffix == ".zarr":
+                zarrs.append(p)
+            elif p.is_file() and p.suffix == ".pkl":
+                pkls.append(p)
+        # de-dup while preserving order
+        def dedup(seq):
+            seen=set(); out=[]
+            for x in seq:
+                if x in seen: continue
+                seen.add(x); out.append(x)
+            return out
+        return dedup(zarrs), dedup(pkls)
+
+    # ---- determine n_units (from first usable rep) ----
     n_units = None
-    zarr_seen = False
+    n_images_hint = None
+    first_sample = None
     for dmg in damage_levels:
         in_dir = activ_root / dmg
-        if not in_dir.is_dir():
+        if not in_dir.is_dir(): 
             continue
-        for rep_dir in sorted(in_dir.iterdir()):
-            if not rep_dir.is_dir():
-                continue
-            # try zarr first
-            for zstore in sorted(p for p in rep_dir.iterdir() if p.suffix == ".zarr" and p.is_dir()):
-                try:
-                    root = zarr.open(zstore, mode="r")
-                    if "activ" not in root:
-                        continue
+        zarrs, pkls = find_reps(in_dir)
+        log(2, f"{dmg}: discovered {len(zarrs)} zarr(s), {len(pkls)} pkl(s).")
+        # try zarr first
+        for zstore in zarrs:
+            try:
+                root = zarr.open(zstore, mode="r")
+                if "activ" in root:
                     n_units = int(root["activ"].shape[1])
-                    zarr_seen = True
+                    n_images_hint = int(root["activ"].shape[0])
+                    first_sample = zstore
                     break
-                except Exception:
-                    continue
-            if n_units is not None:
-                break
-            # fallback: legacy pickle DF
-            for pkl_path in sorted(p for p in rep_dir.iterdir() if p.suffix == ".pkl" and p.is_file()):
+            except Exception as e:
+                log(2, f"  zarr open failed {zstore}: {e}")
+        if n_units is None:
+            for pkl_path in pkls:
                 try:
                     df = pd.read_pickle(pkl_path)
                     if isinstance(df, pd.DataFrame) and df.ndim == 2:
                         n_units = int(df.shape[1])
+                        n_images_hint = int(df.shape[0])
+                        first_sample = pkl_path
                         break
-                except Exception:
-                    continue
+                except Exception as e:
+                    log(2, f"  pickle read failed {pkl_path}: {e}")
         if n_units is not None:
             break
-    if n_units is None:
-        raise FileNotFoundError(f"Could not read any activation (zarr or pickle) under {activ_root}")
 
-    # ---------- pick top units per category; validate vs n_units ----------
+    if n_units is None:
+        # Rich context on why we think it's empty
+        children = [p.name for p in activ_root.iterdir()] if activ_root.exists() else []
+        raise FileNotFoundError(
+            "Could not read any activation (zarr or pickle).\n"
+            f"  activ_root: {activ_root}\n"
+            f"  exists: {activ_root.exists()}  children(sample): {children[:10]}\n"
+            "  Reason: no usable '.zarr' with dataset 'activ' or 2-D pickle DataFrames found under any damaged_*."
+        )
+    log(1, f"n_units determined from {'zarr' if isinstance(first_sample, Path) and first_sample.suffix=='.zarr' else 'pickle'}: "
+           f"{n_units} (n_images≈{n_images_hint}) at {first_sample}")
+
+    # ---- pick top units per category; validate vs n_units ----
     idxs_by_cat: dict[str, np.ndarray] = {}
     for cat in cats:
         col = col_map[cat]
@@ -4265,80 +4327,112 @@ def generate_category_selective_RDMs(
             raise ValueError("selection_mode must be 'percentage' or 'percentile'")
         idx = top["unit"].astype(int).to_numpy()
         if idx.size == 0:
-            raise ValueError(f"No units selected for '{cat}' in layer '{activation_layer}'.")
+            raise ValueError(f"No units selected for '{cat}' in layer '{layer_key}'.")
         max_idx = int(idx.max())
+        log(1, f"[SELECT] {cat}: picked {len(idx)} units (top_frac={top_frac}, mode={selection_mode}), "
+               f"max_idx={max_idx}, n_units={n_units}")
         if max_idx >= n_units:
+            # Surface exactly what's wrong and how to check it
             raise ValueError(
-                f"Selected unit index {max_idx} for '{cat}' exceeds number of units ({n_units}). "
-                f"Check that selectivity rows are for '{layer_key}' and that activations are from '{activation_layer}'."
+                f"Selected unit index {max_idx} for '{cat}' exceeds activations' n_units ({n_units}).\n"
+                f"  Hints:\n"
+                f"    • Ensure selectivity file rows are filtered to the same layer: layer == '{layer_key}' "
+                f"(or endswith '/{activation_layer}').\n"
+                f"    • Confirm activations you’re reading are from '{activation_layer}' and not another layer.\n"
+                f"    • First sample used to gauge n_units: {first_sample}"
             )
         idxs_by_cat[cat] = idx
 
-    # ---------- build selective RDMs ----------
+
+
+    # ---- build selective RDMs ----
     built = 0
     for dmg in damage_levels:
         in_dir = activ_root / dmg
         if not in_dir.is_dir():
+            log(1, f"[SKIP] not a dir: {in_dir}")
             continue
 
-        for rep_dir in sorted(in_dir.iterdir()):
-            if not rep_dir.is_dir():
-                continue
+        zarrs, pkls = find_reps(in_dir)
+        log(1, f"{dmg}: will process {len(zarrs)} zarr(s), {len(pkls)} pkl(s)")
 
-            # ZARR replicates (treat each store as one replicate; perm=None)
-            for zstore in sorted(p for p in rep_dir.iterdir() if p.suffix == ".zarr" and p.is_dir()):
-                # image names (group or dataset attrs)
-                root = zarr.open(zstore, mode="r")
-                if "activ" not in root:
-                    raise ValueError(f"Zarr store missing dataset 'activ': {zstore}")
-                activ_ds = root["activ"]
-                img_names = list(map(str, root.attrs.get("image_names", [])))
-                if not img_names and hasattr(activ_ds, "attrs"):
-                    img_names = list(map(str, activ_ds.attrs.get("image_names", [])))
-                if not img_names:
-                    raise ValueError(f"Missing 'image_names' in attrs for {zstore}")
-
-                # load full (n_images x n_units) for this replicate
-                try:
-                    df = load_activations_zarr(zstore, perm=None)
-                except Exception as e:
-                    raise RuntimeError(f"load_activations_zarr failed for {zstore} (perm=None): {e}")
-                if not isinstance(df, pd.DataFrame) or df.ndim != 2:
-                    raise ValueError(f"load_activations_zarr did not return a 2D DataFrame for {zstore}")
-
-                A_full = df.to_numpy(dtype=np.float32)  # (n_images x n_units)
-                for cat, idx in idxs_by_cat.items():
-                    A = A_full[:, idx]
-                    R = np.corrcoef(A)
-                    out_dir = out_root / out_dirname[cat] / dmg
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    out_pkl = out_dir / f"{zstore.stem}.pkl"
-                    with open(out_pkl, "wb") as f:
-                        pickle.dump({"RDM": R, "image_names": img_names}, f)
-                    built += 1
-
-            # Legacy pickle activations (one DF per file)
-            for pkl_path in sorted(p for p in rep_dir.iterdir() if p.suffix == ".pkl" and p.is_file()):
-                df = pd.read_pickle(pkl_path)
-                if not isinstance(df, pd.DataFrame) or df.ndim != 2:
-                    raise ValueError(f"Activation pickle is not a 2-D DataFrame: {pkl_path}")
+        # ZARR replicates (one store == one replicate)
+        for zstore in zarrs:
+            # discover image names early for clear errors
+            root = zarr.open(zstore, mode="r")
+            img_names = list(map(str, root.attrs.get("image_names", [])))
+            if not img_names and "activ" in root and hasattr(root["activ"], "attrs"):
+                img_names = list(map(str, root["activ"].attrs.get("image_names", [])))
+            # load full matrix via helper
+            try:
+                df = load_zarr(zstore, perm=None)
+            except Exception as e:
+                raise RuntimeError(f"load_activations_zarr failed for {zstore} (perm=None): {e}")
+            if not isinstance(df, pd.DataFrame) or df.ndim != 2:
+                raise ValueError(f"Zarr loader did not return 2-D DataFrame for {zstore}")
+            if not img_names:
+                # trust DF index if attrs absent
                 img_names = [str(x) for x in df.index.tolist()]
                 if not img_names:
-                    raise ValueError(f"No image names (DataFrame index) in activation pickle: {pkl_path}")
-                A_full = df.to_numpy(dtype=np.float32)
-                for cat, idx in idxs_by_cat.items():
-                    A = A_full[:, idx]
-                    R = np.corrcoef(A)
-                    out_dir = out_root / out_dirname[cat] / dmg
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    out_pkl = out_dir / f"{pkl_path.stem}.pkl"
-                    with open(out_pkl, "wb") as f:
-                        pickle.dump({"RDM": R, "image_names": img_names}, f)
-                    built += 1
+                    raise ValueError(f"No image names in attrs or DF index for {zstore}")
+
+            A_full = df.to_numpy(dtype=np.float32)  # (n_images x n_units)
+            if A_full.shape[1] != n_units:
+                log(1, f"[WARN] n_units changed at {zstore}: {A_full.shape[1]} (expected {n_units}) — "
+                        "will still proceed if indices fit.")
+
+            for cat, idx in idxs_by_cat.items():
+                A = A_full[:, idx]
+                R = np.corrcoef(A)
+                out_dir = out_root / out_dirname[cat] / dmg
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_pkl = out_dir / f"{zstore.stem}.pkl"
+                with open(out_pkl, "wb") as f:
+                    pickle.dump({"RDM": R, "image_names": img_names}, f)
+                built += 1
+            log(2, f"  wrote {len(idxs_by_cat)} RDM(s) for {zstore}")
+
+        # Legacy pickle replicates
+        for pkl_path in pkls:
+            if pkl_path.name.endswith(".pkl") and "RDM_" in str(pkl_path):
+                continue  # safety
+            df = pd.read_pickle(pkl_path)
+            if not isinstance(df, pd.DataFrame) or df.ndim != 2:
+                raise ValueError(f"Activation pickle is not a 2-D DataFrame: {pkl_path}")
+            img_names = [str(x) for x in df.index.tolist()]
+            if not img_names:
+                raise ValueError(f"No image names (DataFrame index) in activation pickle: {pkl_path}")
+            A_full = df.to_numpy(dtype=np.float32)
+            for cat, idx in idxs_by_cat.items():
+                A = A_full[:, idx]
+                R = np.corrcoef(A)
+                out_dir = out_root / out_dirname[cat] / dmg
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_pkl = out_dir / f"{pkl_path.stem}.pkl"
+                with open(out_pkl, "wb") as f:
+                    pickle.dump({"RDM": R, "image_names": img_names}, f)
+                built += 1
+            log(2, f"  wrote {len(idxs_by_cat)} RDM(s) for {pkl_path}")
 
     if built == 0:
-        raise RuntimeError(f"No selective RDMs were written under {out_root} (no usable activations?).")
+        # dump a quick inventory to explain *why*
+        inv = []
+        for dmg in damage_levels:
+            in_dir = activ_root / dmg
+            if not in_dir.is_dir(): 
+                inv.append((dmg, "MISSING_DIR", 0, 0))
+                continue
+            zarrs, pkls = find_reps(in_dir)
+            inv.append((dmg, "OK_DIR", len(zarrs), len(pkls)))
+        lines = "\n".join(f"    {d}: {flag} — zarrs={nz}, pkls={npk}" for d, flag, nz, npk in inv)
+        raise RuntimeError(
+            f"No selective RDMs were written under {out_root}.\n"
+            f"Inventory:\n{lines}\n"
+            "Check that damaged_* folders actually contain zarr stores (with dataset 'activ') "
+            "or 2-D pickle DataFrames and that selectivity indices fit n_units."
+        )
 
+    log(1, f"Done. Wrote {built} selective RDM file(s) under {out_root}")
     return True
 
 
