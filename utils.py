@@ -4334,8 +4334,8 @@ def generate_category_selective_RDMs(
                         out_dir.mkdir(parents=True, exist_ok=True)
                         # slice selected units
                         Asel = A[:, idx]
-                        # RDM = 1 - corr
-                        R = _compute_rdm_from_activ(Asel)
+                        # RDM
+                        R = np.corrcoef(Asel)
                         out_pkl = out_dir / f"{perm}.pkl"
                         with open(out_pkl, "wb") as f:
                             pickle.dump({"RDM": R, "image_names": img_names}, f)
