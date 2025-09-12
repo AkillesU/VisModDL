@@ -1814,8 +1814,43 @@ def categ_corr_lineplot(
                         data[(layer, act_key, cat)][dmg_level] = (mean_sel, std_sel, len(selectivities))
                         raw_points[(layer, act_key, cat)][dmg_level] = list(selectivities)
 
-                # done with selectivity-fraction branch for this act; skip generic branch
-                continue
+                #synthesize "total" from per-replicate means across base categories
+                if ("total" in categories):
+                    base_cats = ("animal", "face", "object", "place")
+                    have_all = all((layer, act_key, bc) in data for bc in base_cats)
+                    if have_all:
+                        # union of all damage fractions present across cats
+                        all_fracs = set()
+                        for bc in base_cats:
+                            all_fracs |= set(raw_points[(layer, act_key, bc)].keys())
+
+                        # init "total"
+                        data[(layer, act_key, "total")] = {}
+                        raw_points[(layer, act_key, "total")] = {}
+
+                        for frac in sorted(all_fracs):
+                            lists = []
+                            ok = True
+                            for bc in base_cats:
+                                rp = raw_points[(layer, act_key, bc)].get(frac, [])
+                                if not rp:
+                                    ok = False; break
+                                lists.append(list(map(float, rp)))
+                            if not ok:
+                                continue
+
+                            # align on min replicate count
+                            L = min(len(lst) for lst in lists)
+                            if L == 0:
+                                continue
+
+                            per_rep_means = [float(np.nanmean([lists[0][i], lists[1][i], lists[2][i], lists[3][i]]))
+                                             for i in range(L)]
+                            mean_total = float(np.nanmean(per_rep_means))
+                            std_total  = float(np.nanstd(per_rep_means, ddof=1)) if L > 1 else 0.0  # SD of means
+
+                            data[(layer, act_key, "total")][frac] = (mean_total, std_total, L)
+                            raw_points[(layer, act_key, "total")][frac] = per_rep_means
 
             # =======================================
             # All other data_type paths (original)  |
@@ -1930,12 +1965,12 @@ def categ_corr_lineplot(
 
                     if data_type == "selectivity" and ("total" in categories) and ("total" not in agg):
                         base_cats = ("animal", "face", "object", "place")
-                        total_vals = []
-                        for bc in base_cats:
-                            total_vals.extend(agg.get(bc, []))
-                        if total_vals:
-                            _dbg(f"[SYNTH] synthesized 'total' from base cats, n={len(total_vals)}", 1)
-                            agg["total"] = total_vals
+                        if all(bc in agg for bc in base_cats) and all(len(agg[bc]) for bc in base_cats):
+                            L = min(len(agg[bc]) for bc in base_cats)
+                            per_rep_means = [float(np.nanmean([agg["animal"][i], agg["face"][i], agg["object"][i], agg["place"][i]]))
+                                             for i in range(L)]
+                            _dbg(f"[SYNTH] total from per-replicate means, n={len(per_rep_means)}", 1)
+                            agg["total"] = per_rep_means
 
                     packed = {
                         c: {
@@ -1959,17 +1994,24 @@ def categ_corr_lineplot(
                     and ("total" in categories)
                     and ("total" not in agg_content)):
                     base = ("animal","face","object","place")
-                    if all((b in agg_content) and (metric in agg_content[b]) for b in base):
-                        vals = []
-                        for b in base:
-                            vals += [float(x) for x in agg_content[b][metric].get("vals", [])]
-                        if vals:
+                    have_all = all(
+                        (b in agg_content)
+                        and (metric in agg_content[b])
+                        and ("vals" in agg_content[b][metric])
+                        for b in base
+                    )
+                    if have_all:
+                        lists = [list(map(float, agg_content[b][metric]["vals"])) for b in base]
+                        if all(len(lst) for lst in lists):
+                            L = min(len(lst) for lst in lists)
+                            per_rep_means = [float(np.nanmean([lists[0][i], lists[1][i], lists[2][i], lists[3][i]]))
+                                             for i in range(L)]
                             agg_content["total"] = {
                                 metric: {
-                                    "mean": float(np.mean(vals)),
-                                    "std": float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0,
-                                    "n":   len(vals),
-                                    "vals": vals
+                                    "mean": float(np.nanmean(per_rep_means)),
+                                    "std":  float(np.nanstd(per_rep_means, ddof=1)) if L > 1 else 0.0,
+                                    "n":    L,
+                                    "vals": per_rep_means
                                 }
                             }
                             try:
