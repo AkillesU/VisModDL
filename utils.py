@@ -4282,8 +4282,8 @@ def generate_category_selective_RDMs(
             try:
                 root = zarr.open(zstore, mode="r")
                 if "activ" in root:
-                    n_units = int(root["activ"].shape[1])
-                    n_images_hint = int(root["activ"].shape[0])
+                    n_units = int(root["activ"].shape[2])
+                    n_images_hint = int(root["activ"].shape[1])
                     first_sample = zstore
                     break
             except Exception as e:
