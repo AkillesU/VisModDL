@@ -4366,7 +4366,7 @@ def generate_category_selective_RDMs(
                 img_names = list(map(str, root["activ"].attrs.get("image_names", [])))
             # load full matrix via helper
             try:
-                df = load_zarr(zstore, perm=None)
+                df = load_activations_zarr(zstore, perm=None)
             except Exception as e:
                 raise RuntimeError(f"load_activations_zarr failed for {zstore} (perm=None): {e}")
             if not isinstance(df, pd.DataFrame) or df.ndim != 2:
