@@ -12,3 +12,4 @@ batch_size: 8           # how many images to process at once
 device: auto            # "cuda", "cpu", or "auto" to auto-detect
 
 out_dir: unit_selectivity
+metrics: [mannwhitneyu, hedgesg]
