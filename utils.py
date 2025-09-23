@@ -133,6 +133,20 @@ def get_all_conv_layers(model, base_path="", include_bias=False):
     return conv_layers
 
 
+def is_cornet(model_info: dict) -> bool:
+    name = (model_info.get("name") or "").lower()
+    return name.startswith("cornet")
+
+
+def short_module_tag(path: str) -> str:
+    # Uses your existing normalize_module_name if present
+    try:
+        norm = normalize_module_name(path)
+    except NameError:
+        norm = path.replace("._modules.", ".").replace("._modules", ".").strip(".")
+    return norm.replace(".", "_")
+
+
 def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path="", model_time_steps=5):
     """
     Load a specified pretrained model and register a forward hook to capture activations.
@@ -178,9 +192,12 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
 
     elif model_source == "pytorch_hub":
         if model_weights == "":
-            model = torch.hub.load(model_repo, model_name, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
+            model = torch.hub.load(model_repo, model_name)
         else:
-            model = torch.hub.load(model_repo, model_name, weights=model_weights, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
+            model = torch.hub.load(model_repo, model_name, weights=model_weights)
+
+        # Assign model to device
+        model.cuda() if torch.cuda.is_available() else model.cpu()
     else:
         raise ValueError(f"Check model source: {model_source}")
     
@@ -959,17 +976,18 @@ def run_damage(
     # Keep original run_suffix logic
     run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
 
-    # --------------------------
-    # A) Determine the list of damage levels
-    # --------------------------
+    # ------------------------------------------------------------
+    # A) Damage-level list (+ noise SDs if needed) — model-agnostic
+    # ------------------------------------------------------------
     if manipulation_method == "connections":
         damage_levels_list = generate_params_list(fraction_to_mask_params)
         noise_dict = None
     elif manipulation_method == "noise":
         damage_levels_list = generate_params_list(noise_levels_params)
-        model, _ = load_model(model_info, pretrained=pretrained, layer_name="temp",
-                                layer_path="module._modules.V1._modules.output")
-        noise_dict = get_params_sd(model)
+        # Build a model WITHOUT hooks to compute parameter SDs
+        _tmp_model, _ = load_model(model_info, pretrained=pretrained, layer_name="temp", layer_path="")
+        noise_dict = get_params_sd(_tmp_model)                                 # uses generic weight-walker
+        del _tmp_model
     elif manipulation_method == "groupnorm_scaling":
         damage_levels_list = generate_params_list(groupnorm_scaling_params)
         noise_dict = None
@@ -981,33 +999,29 @@ def run_damage(
         noise_dict = None
     else:
         raise ValueError(f"manipulation_method '{manipulation_method}' is not recognized.")
+    # (The old CORnet/VGG block-order heuristic was unused downstream; safely omitted.)  :contentReference[oaicite:1]{index=1}
 
-    # --------------------------
-    # B) Identify earliest damaged block
-    # --------------------------
-    top_level_blocks_in_order = ["V1", "V2", "V4", "IT"]
-    block_order_map = {b: i for i, b in enumerate(top_level_blocks_in_order)}
+    # ------------------------------------------------------------
+    # B) Decide final hooks robustly (lists ok; any model ok)
+    #     1) load once with NO hooks just to inspect structure
+    #     2) compute final_layers_to_hook
+    # ------------------------------------------------------------
+    # Always treat inputs as lists from here on
+    activation_layers_list = _as_list(activation_layers_to_save)
+    damage_layers_list     = _as_list(layer_paths_to_damage)
 
-    damage_indices = []
-    for dmg_path in layer_paths_to_damage:
-        top_block_dmg = dmg_path.split(".")[0]
-        if top_block_dmg in block_order_map:
-            damage_indices.append(block_order_map[top_block_dmg])
+    # Load a no-hook model to build the hierarchy
+    model, _ = load_model(model_info, pretrained=pretrained, layer_path="")
+    # Use your existing helper to select downstream activation hooks
+    final_layers_to_hook = get_final_layers_to_hook(model, activation_layers_list, damage_layers_list)
+    # Fallback: if the filter returns empty, just use requested activation layers
+    if not final_layers_to_hook:
+        final_layers_to_hook = activation_layers_list
+    print("Activations to be saved for ", damage_layers_list, ": ", final_layers_to_hook)
 
-    earliest_damage_idx = min(damage_indices) if damage_indices else 0
-
-    # Load model for final layers to hook
-    if isinstance(activation_layers_to_save, list):
-        model, _ = load_model(model_info, pretrained=pretrained, layer_path=activation_layers_to_save[0])
-    else:
-        model, _ = load_model(model_info, pretrained=pretrained, layer_path=activation_layers_to_save)
-
-    final_layers_to_hook = get_final_layers_to_hook(model, activation_layers_to_save, layer_paths_to_damage)
-    print("Activations to be saved for ", layer_paths_to_damage, ": ", final_layers_to_hook)
-
-    # --------------------------
-    # C) Directory naming
-    # --------------------------
+    # ------------------------------------------------------------
+    # C) Directory naming (unchanged)
+    # ------------------------------------------------------------
     if manipulation_method == "noise":
         dir_tag = "noise"
     elif manipulation_method == "connections":
@@ -1025,52 +1039,46 @@ def run_damage(
     else:
         dir_tag = manipulation_method
 
-    # --------------------------
+    # ------------------------------------------------------------
     # D) Total iterations
-    # --------------------------
+    # ------------------------------------------------------------
     total_iterations = len(damage_levels_list) * mc_permutations * len(eccentricity_bands)
 
-    # --------------------------
-    # E) Run main loops
-    # --------------------------
+    # ------------------------------------------------------------
+    # E) Main loops (reload WITH hooks; apply damage; save)
+    # ------------------------------------------------------------
     with tqdm(total=total_iterations, desc=f"Running {manipulation_method} alteration") as pbar:
         for r_start, r_end in eccentricity_bands:
-            
-            # For graded eccentricity, create clean folder naming
+
+            # Clean folder naming for eccentricity modes (unchanged)
             if manipulation_method == "eccentricity_gradual":
                 sweep_start = damage_levels_list[0]
-
-                # Base folder includes band
                 if sweep_start > 0.0:
                     band_label = f"band{r_start:.2f}-{r_end:.2f}_min_{sweep_start:.2f}"
                 else:
                     band_label = f"band{r_start:.2f}-{r_end:.2f}"
-
                 dir_tag = f"eccentricity_gradual_{band_label}"
-
             elif manipulation_method == "eccentricity":
                 dir_tag = f"eccentricity_{r_start:.2f}-{r_end:.2f}"
 
-            # --------------------------
-            # Damage level loop
-            # --------------------------
+            # ----- damage sweep -----
             for damage_level in damage_levels_list:
                 for permutation_index in range(mc_permutations):
 
-                    # 1) Load fresh model
+                    # 1) Load fresh model WITH ALL hooks at once
                     model, activations = load_model(
                         model_info=model_info,
                         pretrained=pretrained,
                         layer_name=layer_name,
-                        layer_path=final_layers_to_hook
+                        layer_path=final_layers_to_hook     # LIST is okay
                     )
                     model.eval()
 
-                    # 2) Apply chosen damage
+                    # 2) Apply chosen damage to ALL requested target blocks
                     if manipulation_method == "connections":
                         apply_masking(
                             model, fraction_to_mask=damage_level,
-                            layer_paths=layer_paths_to_damage,
+                            layer_paths=damage_layers_list,
                             apply_to_all_layers=apply_to_all_layers,
                             masking_level=masking_level,
                             only_conv=only_conv,
@@ -1081,7 +1089,7 @@ def run_damage(
                         apply_noise(
                             model, noise_level=damage_level,
                             noise_dict=noise_dict,
-                            layer_paths=layer_paths_to_damage,
+                            layer_paths=damage_layers_list,
                             apply_to_all_layers=apply_to_all_layers,
                             only_conv=only_conv,
                             include_bias=include_bias
@@ -1090,7 +1098,7 @@ def run_damage(
                     elif manipulation_method == "groupnorm_scaling":
                         apply_groupnorm_scaling(
                             model, scaling_factor=damage_level,
-                            layer_paths=layer_paths_to_damage,
+                            layer_paths=damage_layers_list,
                             apply_to_all_layers=apply_to_all_layers,
                             include_bias=include_bias,
                             targets=groupnorm_scaling_targets,
@@ -1123,7 +1131,7 @@ def run_damage(
                             reverse=ecc_reverse
                         )
 
-                    # 3) Extract activations for each image
+                    # 3) Extract activations
                     per_layer_data = {lp: [] for lp in final_layers_to_hook}
                     image_files = sorted([
                         f for f in os.listdir(image_dir)
@@ -1133,45 +1141,42 @@ def run_damage(
                     for image_file in image_files:
                         img_path = os.path.join(image_dir, image_file)
                         input_tensor = preprocess_image(img_path)
-
                         with torch.no_grad():
                             model(input_tensor)
-
                         for lp in final_layers_to_hook:
                             out_flat = activations[lp].flatten()
-                            per_layer_data[lp].append(out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat)
+                            per_layer_data[lp].append(
+                                out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat
+                            )
 
-                    # 4) Save outputs
+                    # 4) Save outputs — robust name tags
                     for lp in final_layers_to_hook:
                         arr_2d = np.stack(per_layer_data[lp], axis=0)
                         activations_df = pd.DataFrame(arr_2d, index=image_files)
                         activations_df_sorted = sort_activations_by_numeric_index(activations_df)
 
-                        lp_name = lp.split(".")[2]
+                        # SAFE replacement for lp.split('.')[2]
+                        lp_name = lp.split(".")[2] if is_cornet(model_info) else short_module_tag(lp)
 
-                        # Create directory paths
+                        # Activations
                         activation_dir = (
                             f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
                             f"{dir_tag}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
                         )
                         os.makedirs(activation_dir, exist_ok=True)
-                        activation_dir_path = activation_dir
+                        append_activation_to_zarr(activations_df_sorted.astype(np.float16),
+                                                  activation_dir, perm_idx=permutation_index)
 
-                        # Save activations
-                        reduced_df = activations_df_sorted.astype(np.float16)
-                        append_activation_to_zarr(reduced_df, activation_dir_path, perm_idx=permutation_index)
-
-                        # Correlations
+                        # RDM
                         correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
                         corrmat_dir = (
                             f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
                             f"{dir_tag}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
                         )
                         os.makedirs(corrmat_dir, exist_ok=True)
-                        corrmat_path = corrmat_dir
                         append_activation_to_zarr(
                             pd.DataFrame(correlation_matrix.astype("float32")),
-                            corrmat_path,
+                            corrmat_dir,
                             perm_idx=permutation_index
                         )
 
@@ -1184,8 +1189,7 @@ def run_damage(
                             f"{dir_tag}/{layer_name}/selectivity/{lp_name}/damaged_{round(damage_level,3)}"
                         )
                         os.makedirs(selectivity_dir, exist_ok=True)
-                        selectivity_path = os.path.join(selectivity_dir, f"{permutation_index}.pkl")
-                        with open(selectivity_path, "wb") as f:
+                        with open(os.path.join(selectivity_dir, f"{permutation_index}.pkl"), "wb") as f:
                             pickle.dump(results, f)
 
                     pbar.update(1)
