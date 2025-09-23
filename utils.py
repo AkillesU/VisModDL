@@ -32,25 +32,61 @@ import zarr
 import numcodecs
 
 
-def get_layer_from_path(model, layer_path):
+def get_layer_from_path(model, path: str):
+    """
+    Resolve dotted module paths across models (VGG/ResNet/CORnet/etc).
+    Tolerates:
+      - 'features.0' (Sequential/ModuleList int indexing)
+      - 'features._modules.0' (explicit modules dict)
+      - attribute access (e.g., 'layer1.0.conv1', 'V4', 'IT')
+    """
+    # 1) Normalize away explicit _modules segments
+    try:
+        norm = normalize_module_name(path)
+    except NameError:
+        # fallback if normalize_module_name isn't defined above this function yet
+        norm = path.replace("._modules.", ".").replace("._modules", ".").strip(".")
+
+    steps = [s for s in norm.split(".") if s]  # remove empty tokens
     current = model
-    for step in layer_path.split('.'):
-        # If step is an integer, treat current as a sequence (e.g., nn.Sequential)
+
+    for step in steps:
+        # A) direct attribute?
+        if hasattr(current, step):
+            current = getattr(current, step)
+            continue
+
+        # B) integer index (Sequential/ModuleList)?
         if step.isdigit():
-            current = current[int(step)]
-        else:
-            # First try getattr if current is a module
-            if hasattr(current, step):
-                current = getattr(current, step)
-            # If current is a module and step is in its submodules, access via _modules
-            elif isinstance(current, torch.nn.Module) and step in current._modules:
-                current = current._modules[step]
-            # If current is a dictionary, just index into it
-            elif isinstance(current, dict) and step in current:
-                current = current[step]
-            else:
-                raise AttributeError(f"Cannot find '{step}' in {current}. Make sure the path is correct.")
+            idx = int(step)
+            # try __getitem__(int) first (Sequential/ModuleList)
+            try:
+                current = current[idx]
+                continue
+            except (TypeError, IndexError, KeyError):
+                pass
+            # then try ModuleDict/_modules dict with string key
+            if hasattr(current, "_modules"):
+                moddict = current._modules
+                if str(idx) in moddict:
+                    current = moddict[str(idx)]
+                    continue
+            # finally: plain dict-like with string keys
+            if isinstance(current, dict) and str(idx) in current:
+                current = current[str(idx)]
+                continue
+
+        # C) plain dict-like with string key
+        if isinstance(current, dict) and step in current:
+            current = current[step]
+            continue
+        if hasattr(current, "_modules") and step in current._modules:
+            current = current._modules[step]
+            continue
+
+        raise KeyError(f"Cannot resolve step '{step}' in path '{path}' (normalized='{norm}') at object: {type(current)}")
     return current
+
 
 
 def get_all_weight_layers(model, base_path="", include_bias=False):
