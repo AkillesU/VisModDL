@@ -10,7 +10,7 @@ from tqdm import tqdm
 import numpy as np
 from scipy.stats import mannwhitneyu
 
-def load_model(cfg, device):
+def load_model(cfg):
     src, name, wts = cfg.get("source", "torchvision"), cfg["name"], cfg.get("weights", "pretrained")
     if src == "cornet":
         import cornet
@@ -21,7 +21,8 @@ def load_model(cfg, device):
             "cornet_z": cornet.cornet_z,
         }[nm]
         model = ctor(
-            pretrained=(wts == "pretrained"),
+            pretrained=(wts == "pretrained"), 
+            map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")),
             **({"times": cfg.get("time_steps")} if nm == "cornet_rt" else {}),
         )
     elif src == "timm":
@@ -30,12 +31,12 @@ def load_model(cfg, device):
     else:
         if src == "pytorch_hub":
             # Most torch.hub models expect `pretrained=...`
-            model = torch.hub.load(cfg["repo"], name, pretrained=(wts == "pretrained"))
+            model = torch.hub.load(cfg["repo"], name, pretrained=(wts == "pretrained"), map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
         else:
             import torchvision.models as tvm
             ctor = getattr(tvm, name)
             model = ctor(weights="IMAGENET1K_V1" if wts == "pretrained" else None)
-    return model.to(device).eval()
+    return model.eval()
 
 def build_transform():
     return T.Compose([
@@ -78,13 +79,6 @@ def hedges_g(x: np.ndarray, y: np.ndarray) -> float:
 def main(cfg_path):
     cfg = yaml.safe_load(open(cfg_path, "r", encoding="utf-8-sig"))
 
-    # Prefer an explicit "device" entry in the config. If not present, use CUDA when available else CPU.
-    if "device" in cfg and cfg["device"] is not None:
-        device = torch.device(cfg["device"])
-    else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("device:", device)
-
     # metrics selection (default to Mann–Whitney U) ---
     raw_metrics = cfg.get("metrics", ["mannwhitneyu"])
     if isinstance(raw_metrics, str):
@@ -94,7 +88,7 @@ def main(cfg_path):
     use_mw = "mannwhitneyu" in metrics
     use_hg = "hedgesg" in metrics
 
-    model = load_model(cfg["model"], device)
+    model = load_model(cfg["model"])
     transform = build_transform()
 
     # 1) Find all modules with an 'output' submodule
@@ -126,7 +120,7 @@ def main(cfg_path):
     for cat in categories:
         for img_name, img in tqdm(iter_imgs(root / cat), desc=f"Cat={cat}"):
             current_img_key = f"{cat}/{img_name}"
-            x = transform(img).unsqueeze(0).to(device)
+            x = transform(img).unsqueeze(0).to(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
             with torch.no_grad():
                 model(x)
 
