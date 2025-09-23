@@ -78,7 +78,7 @@ def hedges_g(x: np.ndarray, y: np.ndarray) -> float:
 def main(cfg_path):
     cfg = yaml.safe_load(open(cfg_path, "r", encoding="utf-8-sig"))
     device = torch.device(
-        cfg.get("device") if cfg.get("device") != "auto"
+        cfg.get("device", None) if cfg.get("device") != "auto"
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
     # --- NEW: metrics selection (default to Mann–Whitney U) ---
