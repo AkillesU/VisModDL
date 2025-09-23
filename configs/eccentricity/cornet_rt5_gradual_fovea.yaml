@@ -48,14 +48,12 @@ manipulation_method: "eccentricity_gradual"
 
 eccentricity_layer_path: module._modules.V1._modules.conv_input
 eccentricity_bands:
-  - [0.10, 1.00]
-  - [0.30, 1.00]
-  - [0.50, 1.00]
-  - [0.70, 1.00]
-
+  - [0, 0.80]  # Reverse direction
+  - [0, 0.50]  # Reverse direction
+  - [0, 0.30]  # Reverse direction
 
 
 # Graded params
 ecc_profile: linear
 ecc_mode: dropout
-ecc_reverse: false
+ecc_reverse: true

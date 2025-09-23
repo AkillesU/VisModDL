@@ -11,3 +11,4 @@ data_root: categ_images # folder containing four subfolders (animals, faces, obj
 batch_size: 8           # how many images to process at once
 
 out_dir: unit_selectivity
+metrics: [mannwhitneyu, hedgesg]
