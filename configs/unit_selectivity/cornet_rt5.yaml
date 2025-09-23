@@ -9,6 +9,5 @@ model:
 data_root: categ_images # folder containing four subfolders (animals, faces, objects, places), 20 images each
 
 batch_size: 8           # how many images to process at once
-device: auto            # "cuda", "cpu", or "auto" to auto-detect
 
 out_dir: unit_selectivity
