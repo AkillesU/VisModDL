@@ -4920,3 +4920,11 @@ def _as_list(x):
     if x is None:
         return []
     return x if isinstance(x, (list, tuple)) else [x]
+
+
+def is_conv_like(layer):
+    """
+    Returns True if the given layer is a convolutional layer.
+    Supports 1D, 2D, and 3D convs.
+    """
+    return isinstance(layer, (nn.Conv1d, nn.Conv2d, nn.Conv3d))
