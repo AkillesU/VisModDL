@@ -324,35 +324,31 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
     return activations_df
 
 
-def apply_noise(model, noise_level, noise_dict, layer_paths=None, apply_to_all_layers=False, only_conv=True, include_bias=False):
-    """
-    Add Gaussian noise with std = noise_level to the specified layers' weights.
-    """
-    with torch.no_grad():
-        if apply_to_all_layers:
-            for name, param in model.named_parameters():
-                if 'weight' in name and param.requires_grad:
-                    noise = torch.randn_like(param) * noise_level
-                    param += noise
-        else:
-            for path in layer_paths:
-                target_layer = get_layer_from_path(model, path)
-                if only_conv:
-                    weight_layer_paths = get_all_conv_layers(target_layer, path, include_bias)
-                else:
-                    weight_layer_paths = get_all_weight_layers(target_layer, path, include_bias)
+def apply_noise(model, noise_level, noise_dict, layer_paths, apply_to_all_layers, only_conv=True, include_bias=False):
+    targets = get_all_weight_layers(model, only_conv=only_conv) if apply_to_all_layers else _as_list(layer_paths)
 
-                for w_path in weight_layer_paths:
-                    w_layer = get_layer_from_path(model, w_path)
-                    if hasattr(w_layer, 'weight') and w_layer.weight is not None:
-                        noise = torch.randn_like(w_layer.weight) * noise_dict[f"{w_path}.weight"] * noise_level
-                        w_layer.weight += noise
-                        # include bias
-                        if include_bias and hasattr(w_layer, 'bias') and w_layer.bias is not None:
-                            noise = torch.randn_like(w_layer.bias) * noise_dict[f"{w_path}.bias"] * noise_level
-                            w_layer.bias += noise
-                    else:
-                        raise AttributeError(f"layer {w_path} does not have weights")
+    for w_path in targets:
+        npath = normalize_module_name(w_path)
+        layer = get_layer_from_path(model, npath)
+
+        # respect only_conv
+        if only_conv and not is_conv_like(layer):
+            continue
+
+        # WEIGHT
+        if hasattr(layer, "weight") and layer.weight is not None:
+            key_w = f"{npath}.weight"
+            sd_w = noise_dict[key_w] if key_w in noise_dict else float(layer.weight.detach().std().item())
+            with torch.no_grad():
+                layer.weight.add_(torch.randn_like(layer.weight) * (sd_w * noise_level))
+
+        # BIAS (optional)
+        if include_bias and hasattr(layer, "bias") and layer.bias is not None:
+            key_b = f"{npath}.bias"
+            sd_b = noise_dict[key_b] if key_b in noise_dict else float(layer.bias.detach().std().item())
+            with torch.no_grad():
+                layer.bias.add_(torch.randn_like(layer.bias) * (sd_b * noise_level))
+
 
 def apply_masking(
     model,
@@ -934,38 +930,18 @@ def generate_params_list(params=[0.1,10,0.1]):
     return [start + i * step for i in range(length)]
 
 
-def get_params_sd(model: nn.Module) -> dict:
-    """
-    Utilizes `get_all_weight_layers` to find all modules that have weight/bias.
-    Then computes std dev for each weight/bias (if they exist) and returns a dict:
-        {
-          'some.layer.path.weight': std_val,
-          'some.layer.path.bias':  std_val,
-          ...
-        }
-    """
-    sd_dict = {}
-    
-    # 1. Gather all submodules that might have weight or bias
-    layer_paths = get_all_weight_layers(model, base_path="", include_bias=True)
-    
-    # 2. Iterate over each layer path, retrieve submodule, compute std dev
-    for path in layer_paths:
-        submodule = get_layer_from_path(model, path)
-        
-        # If this submodule has a 'weight' param, compute std dev
+def get_params_sd(model):
+    sds = {}
+    for path in get_all_weight_layers(model):  # your existing enumerator
+        # canonicalize path like 'features.0' (strip any '._modules.' etc.)
+        npath = normalize_module_name(path)
+        submodule = get_layer_from_path(model, npath)
+
         if hasattr(submodule, "weight") and submodule.weight is not None:
-            # if submodule.weight.requires_grad:
-            std_w = submodule.weight.std().item()
-            sd_dict[f"{path}.weight"] = std_w
-        
-        # If this submodule has a 'bias' param, compute std dev
+            sds[f"{npath}.weight"] = float(submodule.weight.detach().std().item())
         if hasattr(submodule, "bias") and submodule.bias is not None:
-            # if submodule.bias.requires_grad:
-            std_b = submodule.bias.std().item()
-            sd_dict[f"{path}.bias"] = std_b
-    
-    return sd_dict
+            sds[f"{npath}.bias"] = float(submodule.bias.detach().std().item())
+    return sds
 
 
 def run_damage(
