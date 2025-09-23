@@ -1,8 +1,8 @@
 image_dir: "stimuli"
 layer_name: "block4"
 layer_path: 
- - "features._modules.23"
- - "features._modules.30"
+ - "features.23"
+ - "features.30"
 model_source: "pytorch_hub"
 model_repo: pytorch/vision
 model_name: "vgg16"
@@ -12,9 +12,9 @@ pretrained: True
 mc_permutations: 200 # How many monte carlo permutations on damage to perform. Use 21 as in Haupt et al., 2024?
 
 layer_paths_to_damage: 
-  - "features._modules.17"
-  - "features._modules.19"
-  - "features._modules.21"
+  - "features.17"
+  - "features.19"
+  - "features.21"
 
 apply_to_all_layers: False
 include_bias: False
