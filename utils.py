@@ -4939,3 +4939,8 @@ def apply_eccentricity_graded(
         return out * _cache[key]
 
     target.register_forward_hook(_hook)
+
+def _as_list(x):
+    if x is None:
+        return []
+    return x if isinstance(x, (list, tuple)) else [x]
