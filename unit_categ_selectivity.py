@@ -83,6 +83,7 @@ def main(cfg_path):
         device = torch.device(cfg["device"])
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("device:", device)
 
     # metrics selection (default to Mann–Whitney U) ---
     raw_metrics = cfg.get("metrics", ["mannwhitneyu"])
