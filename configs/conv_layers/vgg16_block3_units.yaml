@@ -17,7 +17,7 @@ layer_paths_to_damage:
   - "features.14"
 
 apply_to_all_layers: False
-include_bias: False
+include_bias: True
 only_conv: True
 
 # Masking damage parameters
