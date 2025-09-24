@@ -1,0 +1,35 @@
+image_dir: "stimuli"
+layer_name: "block3"
+layer_path: 
+ - "features.23"
+ - "features.30"
+model_source: "pytorch_hub"
+model_repo: pytorch/vision
+model_name: "vgg16"
+model_weights: "DEFAULT" # torch.hub weights (not necesssary for cornet models). Leave empty for untrained.
+pretrained: True
+
+mc_permutations: 200 # How many monte carlo permutations on damage to perform. Use 21 as in Haupt et al., 2024?
+
+layer_paths_to_damage: 
+  - "features.10"
+  - "features.12"
+  - "features.14"
+
+apply_to_all_layers: False
+include_bias: False
+only_conv: True
+
+# Masking damage parameters
+manipulation_method: "masking"
+masking_level: "units"  # "connections" or "units"
+fraction_to_mask: # Start, N (int), interval [start,N*interval]
+  - 0
+  - 21
+  - 0.05
+
+# Noise damage parameters
+noise_levels: # Start, N (int), interval [start, N*interval]
+  - 0
+  - 0
+  - 0.1
