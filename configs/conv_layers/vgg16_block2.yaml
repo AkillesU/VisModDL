@@ -22,12 +22,12 @@ only_conv: True
 manipulation_method: "masking"
 masking_level: "connections"  # "connections" or "units"
 fraction_to_mask: # Start, N (int), interval [start,N*interval]
-  - 0
-  - 21
+  - 0.25
+  - 16
   - 0.05
 
 # Noise damage parameters
 noise_levels: # Start, N (int), interval [start, N*interval]
   - 0
-  - 31
+  - 0
   - 0.1
