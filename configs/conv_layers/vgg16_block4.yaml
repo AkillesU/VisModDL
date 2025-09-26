@@ -30,6 +30,6 @@ fraction_to_mask: # Start, N (int), interval [start,N*interval]
 
 # Noise damage parameters
 noise_levels: # Start, N (int), interval [start, N*interval]
-  - 0
-  - 31
+  - 3.0
+  - 1
   - 0.1
