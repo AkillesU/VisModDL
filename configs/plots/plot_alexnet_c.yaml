@@ -260,7 +260,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: False
-      ylim: [-0.1,0.4]
+      ylim: [-0.05,0.25]
       data_type: "selectivity"
   - function: categ_corr_lineplot
     parameters:
@@ -272,5 +272,5 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: False
-      ylim: [-0.1,0.4]
+      ylim: [-0.05,0.25]
       data_type: "selectivity"
