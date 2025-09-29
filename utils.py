@@ -4228,6 +4228,7 @@ def generate_category_selective_RDMs(
         raise ValueError("selectivity_file must be .pkl or .csv")
 
     print(sel_df.head())
+    print(sel_path)
     layer_key = activation_layer
     if "layer" not in sel_df.columns or "unit" not in sel_df.columns:
         raise ValueError("Selectivity file must include 'layer' and 'unit' columns.")
