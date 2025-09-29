@@ -14,6 +14,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -28,6 +29,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -42,6 +44,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -56,6 +59,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
 
 
   - function: categ_corr_lineplot
@@ -72,6 +76,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -86,6 +91,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -100,6 +106,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -114,6 +121,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
 
 
   - function: categ_corr_lineplot
@@ -130,6 +138,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -144,6 +153,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -158,6 +168,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -172,6 +183,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
 
 
   - function: categ_corr_lineplot
@@ -188,6 +200,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -202,6 +215,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -216,6 +230,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -230,6 +245,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
 
 
   - function: categ_corr_lineplot
@@ -246,6 +262,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -260,6 +277,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -274,6 +292,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -288,6 +307,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
 
 
   - function: categ_corr_lineplot
@@ -304,6 +324,7 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
@@ -318,3 +339,4 @@ tasks:
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
+      model_tag: vgg16
