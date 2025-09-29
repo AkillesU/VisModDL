@@ -249,7 +249,7 @@ def main(cfg_path):
         # Keep legacy filename, now includes hg_* columns when enabled
         all_stats_df.to_csv(out_dir / f"{model_tag}_all_layers_units_mannwhitneyu.csv", index=False)
         all_stats_df.to_pickle(out_dir / f"{model_tag}_all_layers_units_mannwhitneyu.pkl")
-        print(f"Wrote combined stats (mw_* and hg_* if enabled) to {out_dir / {model_tag} /'all_layers_units_mannwhitneyu.csv'}")
+        print(f"Wrote combined stats (mw_* and hg_* if enabled) to {out_dir /f'{model_tag}_all_layers_units_mannwhitneyu.csv'}")
     else:
         print("Skipping combined stats (no data).")
 if __name__ == "__main__":
