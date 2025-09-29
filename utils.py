@@ -1368,7 +1368,8 @@ def categ_corr_lineplot(
     selectivity_fraction: float|None = None,
     selection_mode: str = "percentage",
     selectivity_file: str|None   = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
-    flip_x_axis=False  # Used for e.g., gain control plots
+    flip_x_axis=False,  # Used for e.g., gain control plots
+    model_tag: str | None = None,
 ):
     """
     Aggregate replicate files into mean±std curves.
@@ -1708,6 +1709,7 @@ def categ_corr_lineplot(
                             selectivity_file = selectivity_file,
                             damage_layer     = layer,
                             activation_layer = act,
+                            model_tag        = model_tag
                         )
                     if not _have_selective_rdms(rdm_dir, categories_rdm):
                         raise RuntimeError(f"No selective RDMs built under {rdm_dir} for cats {categories_rdm}")
@@ -4097,7 +4099,8 @@ def get_top_unit_indices(
     category: str,
     layer_name: str,
     top_frac: float,
-    fmap_shape: Tuple[int, int, int]
+    fmap_shape: Tuple[int, int, int],
+    model_tag: str | None = None,
 ) -> List[int]:
     """
     1. Look up the per-unit selectivity file for `category` (try .pkl first, then .csv).
@@ -4106,23 +4109,24 @@ def get_top_unit_indices(
     4. Take the top `top_frac` fraction by 'scaled_activation'.
     5. Given fmap_shape = (C, H, W), convert each (c,y,x) into a flat index.
     """
-    base = os.path.join(selectivity_dir, f"{category}_unit_selectivity_all_units")
-    df = None
+    def _try(basename: str):
+        pkl_path = os.path.join(selectivity_dir, basename + ".pkl")
+        csv_path = os.path.join(selectivity_dir, basename + ".csv")
+        if os.path.isfile(pkl_path): return pd.read_pickle(pkl_path)
+        if os.path.isfile(csv_path): return pd.read_csv(csv_path)
+        return None
 
-    # 1) Try pickle, then CSV
-    pkl_path = base + ".pkl"
-    csv_path = base + ".csv"
-    if os.path.isfile(pkl_path):
-        df = pd.read_pickle(pkl_path)
-    elif os.path.isfile(csv_path):
-        df = pd.read_csv(csv_path)
-    else:
+    df = None
+    if model_tag:
+        df = _try(f"{model_tag}_{category}_unit_selectivity_all_units")
+    if df is None:
+        df = _try(f"{category}_unit_selectivity_all_units")
+    if df is None:
         raise FileNotFoundError(
-            f"No selectivity file found for category '{category}'.\n"
-            f"Expected one of:\n  {pkl_path}\n  {csv_path}"
+            f"No selectivity file for '{category}' in '{selectivity_dir}'. "
+            f"Tried model-tagged and legacy basenames."
         )
 
-    # 2) Filter to the correct layer
     layer_rows = df[df["layer_name"] == layer_name]
     if layer_rows.empty:
         raise ValueError(
@@ -4157,6 +4161,7 @@ def generate_category_selective_RDMs(
     damage_layer: str = "V1",
     activation_layer: str = "IT",
     verbose: int = 1,
+    model_tag: str | None = None,
 ):
     """
     Build category-selective RDMs under the SAME damage-type subtree the plotter expects.
@@ -4213,7 +4218,7 @@ def generate_category_selective_RDMs(
         raise FileNotFoundError(f"Activation root not found: {activ_root}")
 
     # ---- selectivity table ----
-    sel_path = Path(selectivity_file)
+    sel_path = resolve_selectivity_table(selectivity_file, model_tag=model_tag)
     if sel_path.suffix.lower() == ".pkl":
         sel_df = pd.read_pickle(sel_path)
     elif sel_path.suffix.lower() == ".csv":
@@ -4928,3 +4933,46 @@ def is_conv_like(layer):
     Supports 1D, 2D, and 3D convs.
     """
     return isinstance(layer, (nn.Conv1d, nn.Conv2d, nn.Conv3d))
+
+
+def resolve_selectivity_table(path_or_dir: str | Path,
+                              model_tag: str | None = None) -> Path:
+    """
+    Resolve the combined selectivity table path.
+
+    Accepts:
+      • direct file path (.pkl/.csv) -> returned as Path
+      • a directory (e.g. 'unit_selectivity/') -> tries:
+          <model_tag>_all_layers_units_mannwhitneyu.pkl
+          <model_tag>_all_layers_units_mannwhitneyu.csv
+          all_layers_units_mannwhitneyu.pkl
+          all_layers_units_mannwhitneyu.csv
+    Raises FileNotFoundError if nothing is found.
+    """
+    p = Path(path_or_dir)
+
+    # direct file
+    if p.is_file() and p.suffix.lower() in (".pkl", ".csv"):
+        return p
+
+    # directory search
+    if p.is_dir():
+        candidates: list[Path] = []
+        if model_tag:
+            candidates += [p / f"{model_tag}_all_layers_units_mannwhitneyu.pkl",
+                           p / f"{model_tag}_all_layers_units_mannwhitneyu.csv"]
+        candidates += [p / "all_layers_units_mannwhitneyu.pkl",
+                       p / "all_layers_units_mannwhitneyu.csv"]
+        for c in candidates:
+            if c.exists():
+                return c
+
+        raise FileNotFoundError(
+            f"No selectivity table found under '{p}'. "
+            "Tried model-tagged and legacy filenames."
+        )
+
+    # last resort: treat as a path that should exist
+    if p.exists():
+        return p
+    raise FileNotFoundError(f"Selectivity path '{p}' not found.")
