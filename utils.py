@@ -4232,10 +4232,10 @@ def generate_category_selective_RDMs(
 
     # Filter to activation layer rows (strict, then a suffix fallback)
     rows = sel_df[sel_df["layer"] == layer_key]
-    if rows.empty and sel_df["layer"].dtype == object:
+    if rows.empty:
         layer_key = layer_key.replace("_", ".")
         print("trying key: ", layer_key)
-    if rows.empty and sel_df["layer"].dtype == object:
+    if rows.empty:
         layer_key = "module." + activation_layer
         rows = sel_df[sel_df["layer"] == layer_key]
     if rows.empty:
