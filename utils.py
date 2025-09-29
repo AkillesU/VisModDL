@@ -4219,6 +4219,7 @@ def generate_category_selective_RDMs(
 
     # ---- selectivity table ----
     sel_path = resolve_selectivity_table(selectivity_file, model_tag=model_tag)
+
     if sel_path.suffix.lower() == ".pkl":
         sel_df = pd.read_pickle(sel_path)
     elif sel_path.suffix.lower() == ".csv":
@@ -4226,6 +4227,7 @@ def generate_category_selective_RDMs(
     else:
         raise ValueError("selectivity_file must be .pkl or .csv")
 
+    print(sel_df.head())
     layer_key = activation_layer
     if "layer" not in sel_df.columns or "unit" not in sel_df.columns:
         raise ValueError("Selectivity file must include 'layer' and 'unit' columns.")
