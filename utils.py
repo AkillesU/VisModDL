@@ -4235,6 +4235,8 @@ def generate_category_selective_RDMs(
     if rows.empty and sel_df["layer"].dtype == object:
         rows = sel_df[sel_df["layer"].astype(str).str.endswith(f"/{activation_layer}")]
     if rows.empty and sel_df["layer"].dtype == object:
+        layer_key = layer_key.replace("_", ".")
+    if rows.empty and sel_df["layer"].dtype == object:
         layer_key = "module." + activation_layer
         rows = sel_df[sel_df["layer"] == layer_key]
     if rows.empty:
