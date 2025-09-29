@@ -104,7 +104,7 @@ def main(cfg_path):
     transform = build_transform()
 
     # Model tag for filenames
-    model_tag = model_info["model_name"]
+    model_tag = model_info["name"]
 
     # Select layers to process
     block_layers = select_block_layers(model, cfg)
