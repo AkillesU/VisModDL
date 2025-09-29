@@ -1,5 +1,5 @@
 model_source: cornet        # one of: cornet | pytorch_hub
-model_name: cornet_rt       # model name
+model_name: cornet_s       # model name
 model_weights: ""   # 
 model_time_steps: 5         # only needed for CORnet models
 

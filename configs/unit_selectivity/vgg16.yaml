@@ -1,7 +1,10 @@
-model_source: cornet        # one of: cornet | pytorch_hub
-model_name: cornet_rt       # model name
-model_weights: ""   # 
-model_time_steps: 5         # only needed for CORnet models
+model_source: "pytorch_hub"
+model_repo: pytorch/vision
+model_name: "vgg16"
+model_weights: "DEFAULT" # torch.hub weights (not necesssary for cornet models). Leave empty for untrained.
+pretrained: True
+
+
 
 data_root: categ_images # folder containing four subfolders (animals, faces, objects, places), 20 images each
 
