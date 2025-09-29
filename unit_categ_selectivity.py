@@ -9,34 +9,7 @@ import pandas as pd
 from tqdm import tqdm
 import numpy as np
 from scipy.stats import mannwhitneyu
-
-def load_model(cfg):
-    src, name, wts = cfg.get("source", "torchvision"), cfg["name"], cfg.get("weights", "pretrained")
-    if src == "cornet":
-        import cornet
-        nm = name.lower()
-        ctor = {
-            "cornet_rt": cornet.cornet_rt,
-            "cornet_s": cornet.cornet_s,
-            "cornet_z": cornet.cornet_z,
-        }[nm]
-        model = ctor(
-            pretrained=(wts == "pretrained"), 
-            map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")),
-            **({"times": cfg.get("time_steps")} if nm == "cornet_rt" else {}),
-        )
-    elif src == "timm":
-        import timm
-        model = timm.create_model(name, pretrained=(wts == "pretrained"))
-    else:
-        if src == "pytorch_hub":
-            # Most torch.hub models expect `pretrained=...`
-            model = torch.hub.load(cfg["repo"], name, pretrained=(wts == "pretrained"), map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
-        else:
-            import torchvision.models as tvm
-            ctor = getattr(tvm, name)
-            model = ctor(weights="IMAGENET1K_V1" if wts == "pretrained" else None)
-    return model.eval()
+from utils import load_model
 
 
 def get_model_tag(cfg: dict) -> str:
@@ -119,7 +92,20 @@ def main(cfg_path):
     use_mw = "mannwhitneyu" in metrics
     use_hg = "hedgesg" in metrics
 
-    model = load_model(cfg["model"])
+    # Load model
+    model_info = {}
+    model_info["source"] = cfg["model"].get("source", "pytorch_hub")
+    model_info["repo"] = cfg.get("model_repo", "-")
+    model_info["name"] = cfg.get("model_name", "cornet_z")
+    model_info["weights"] = cfg.get("model_weights", "")
+    if "model_time_steps" in cfg:
+        model_info["time_steps"] = cfg["model_time_steps"]
+    pretrained = cfg.get("pretrained", True)
+
+
+    model = load_model(model_info=model_info,
+                       pretrained=pretrained)
+
     transform = build_transform()
 
     # Model tag for filenames
