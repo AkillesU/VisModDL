@@ -20,8 +20,8 @@ def select_block_layers(model: nn.Module, cfg: dict) -> list[str]:
       - cornet_rt/s      -> all modules with an `output` attribute
       - default          -> same as cornet logic (fallback)
     """
-    model_name = cfg["model"]["name"].lower()
-    src = cfg["model"].get("source", "").lower()
+    model_name = cfg["model_name"].lower()
+    src = cfg("model_source", "").lower()
 
     if "alexnet" in model_name:
         return ["features.12"]
