@@ -1706,7 +1706,7 @@ def categ_corr_lineplot(
                             top_frac         = float(selectivity_fraction),
                             categories       = categories_rdm,   # no "total" here
                             selection_mode   = selection_mode,
-                            selectivity_file = "unit_selectivity/",
+                            selectivity_file = f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl",
                             damage_layer     = layer,
                             activation_layer = act,
                             model_tag        = model_tag
