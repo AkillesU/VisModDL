@@ -4226,7 +4226,7 @@ def generate_category_selective_RDMs(
     else:
         raise ValueError("selectivity_file must be .pkl or .csv")
 
-    layer_key = f"module.{activation_layer}"
+    layer_key = activation_layer
     if "layer" not in sel_df.columns or "unit" not in sel_df.columns:
         raise ValueError("Selectivity file must include 'layer' and 'unit' columns.")
 
@@ -4234,6 +4234,9 @@ def generate_category_selective_RDMs(
     rows = sel_df[sel_df["layer"] == layer_key]
     if rows.empty and sel_df["layer"].dtype == object:
         rows = sel_df[sel_df["layer"].astype(str).str.endswith(f"/{activation_layer}")]
+    if rows.empty and sel_df["layer"].dtype == object:
+        layer_key = "module." + activation_layer
+        rows = sel_df[sel_df["layer"] == layer_key]
     if rows.empty:
         raise ValueError(f"No rows in selectivity file for layer '{layer_key}' "
                          f"(or suffix '/{activation_layer}').")
