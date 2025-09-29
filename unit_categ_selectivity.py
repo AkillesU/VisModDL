@@ -12,7 +12,7 @@ from scipy.stats import mannwhitneyu
 from utils import load_model
 
 
-def select_block_layers(model: nn.Module, cfg: dict) -> list[str]:
+def select_block_layers(model,model_tag) -> list[str]:
     """
     Decide which layers to process based on the model:
       - alexnet          -> ["features.12"]
@@ -20,17 +20,15 @@ def select_block_layers(model: nn.Module, cfg: dict) -> list[str]:
       - cornet_rt/s      -> all modules with an `output` attribute
       - default          -> same as cornet logic (fallback)
     """
-    model_name = cfg["model_name"].lower()
-    src = cfg("model_source", "").lower()
 
-    if "alexnet" in model_name:
+    if "alexnet" in model_tag:
         return ["features.12"]
 
-    if "vgg16" in model_name:
+    if "vgg16" in model_tag:
         return ["features.23", "features.30"]
 
     # CORnet family logic
-    if model_name in {"cornet_rt", "cornet_s"} or src == "cornet":
+    if model_tag in {"cornet_rt", "cornet_s"}:
         return [lname for lname, m in model.named_modules() if hasattr(m, "output")]
 
     # Fallback: same as cornet logic
@@ -107,7 +105,7 @@ def main(cfg_path):
     model_tag = model_info["name"]
 
     # Select layers to process
-    block_layers = select_block_layers(model, cfg)
+    block_layers = select_block_layers(model, model_tag)
     print(f"[{model_tag}] Identified block output layers: {block_layers}")
     act_dict = {layer: {} for layer in block_layers}
 
