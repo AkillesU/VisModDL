@@ -1,8 +1,8 @@
 image_dir: "stimuli"
 layer_name: "V2"
 layer_path: 
- - "module._modules.V4._modules.norm3_3"
- - "module._modules.IT._modules.norm3_1"
+ - "module._modules.V4._modules.output"
+ - "module._modules.IT._modules.output"
 model_source: "cornet"
 model_repo: "-"
 model_name: "cornet_s"
