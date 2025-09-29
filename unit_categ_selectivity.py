@@ -89,7 +89,7 @@ def main(cfg_path):
 
     # Load model
     model_info = {}
-    model_info["source"] = cfg["model"].get("source", "pytorch_hub")
+    model_info["source"] = cfg.get("model_source", "pytorch_hub")
     model_info["repo"] = cfg.get("model_repo", "-")
     model_info["name"] = cfg.get("model_name", "cornet_z")
     model_info["weights"] = cfg.get("model_weights", "")
@@ -104,7 +104,7 @@ def main(cfg_path):
     transform = build_transform()
 
     # Model tag for filenames
-    model_tag = model_info["name"]
+    model_tag = model_info["model_name"]
 
     # Select layers to process
     block_layers = select_block_layers(model, cfg)
