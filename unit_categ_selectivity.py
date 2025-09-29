@@ -96,7 +96,7 @@ def main(cfg_path):
     pretrained = cfg.get("pretrained", True)
 
 
-    model = load_model(model_info=model_info,
+    model, _ = load_model(model_info=model_info,
                        pretrained=pretrained)
 
     transform = build_transform()
