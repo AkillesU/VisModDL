@@ -12,11 +12,6 @@ from scipy.stats import mannwhitneyu
 from utils import load_model
 
 
-def get_model_tag(cfg: dict) -> str:
-    """Return a clean, filesystem-safe tag for the model name."""
-    return cfg["model"]["name"].replace("/", "_").replace("-", "_").lower()
-
-
 def select_block_layers(model: nn.Module, cfg: dict) -> list[str]:
     """
     Decide which layers to process based on the model:
@@ -109,7 +104,7 @@ def main(cfg_path):
     transform = build_transform()
 
     # Model tag for filenames
-    model_tag = get_model_tag(cfg)
+    model_tag = model_info["name"]
 
     # Select layers to process
     block_layers = select_block_layers(model, cfg)
