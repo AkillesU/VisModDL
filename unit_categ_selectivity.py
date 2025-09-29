@@ -38,6 +38,37 @@ def load_model(cfg):
             model = ctor(weights="IMAGENET1K_V1" if wts == "pretrained" else None)
     return model.eval()
 
+
+def get_model_tag(cfg: dict) -> str:
+    """Return a clean, filesystem-safe tag for the model name."""
+    return cfg["model"]["name"].replace("/", "_").replace("-", "_").lower()
+
+
+def select_block_layers(model: nn.Module, cfg: dict) -> list[str]:
+    """
+    Decide which layers to process based on the model:
+      - alexnet          -> ["features.12"]
+      - vgg16            -> ["features.23", "features.30"]
+      - cornet_rt/s      -> all modules with an `output` attribute
+      - default          -> same as cornet logic (fallback)
+    """
+    model_name = cfg["model"]["name"].lower()
+    src = cfg["model"].get("source", "").lower()
+
+    if "alexnet" in model_name:
+        return ["features.12"]
+
+    if "vgg16" in model_name:
+        return ["features.23", "features.30"]
+
+    # CORnet family logic
+    if model_name in {"cornet_rt", "cornet_s"} or src == "cornet":
+        return [lname for lname, m in model.named_modules() if hasattr(m, "output")]
+
+    # Fallback: same as cornet logic
+    return [lname for lname, m in model.named_modules() if hasattr(m, "output")]
+
+
 def build_transform():
     return T.Compose([
         T.Resize(256),
@@ -91,10 +122,13 @@ def main(cfg_path):
     model = load_model(cfg["model"])
     transform = build_transform()
 
-    # 1) Find all modules with an 'output' submodule
-    block_layers = [name for name, m in model.named_modules() if hasattr(m, "output")]
-    print("Identified block output layers:", block_layers)
-    act_dict = {layer: {} for layer in block_layers}  # layer -> {img_key: activation}
+    # Model tag for filenames
+    model_tag = get_model_tag(cfg)
+
+    # Select layers to process
+    block_layers = select_block_layers(model, cfg)
+    print(f"[{model_tag}] Identified block output layers: {block_layers}")
+    act_dict = {layer: {} for layer in block_layers}
 
     # 2) Register hooks to capture block outputs
     modules = dict(model.named_modules())
@@ -132,8 +166,9 @@ def main(cfg_path):
         img_keys = sorted(act_dict[layer].keys())
         X = np.stack([act_dict[layer][k] for k in img_keys], axis=0) if img_keys else np.empty((0,0))
         df = pd.DataFrame(X, index=img_keys)
-        df.to_pickle(out_dir / f"{layer}_block_activations.pkl")
-        df.to_csv(out_dir / f"{layer}_block_activations.csv")
+        df.to_pickle(out_dir / f"{model_tag}_{layer}_block_activations.pkl")
+        df.to_csv(out_dir / f"{model_tag}_{layer}_block_activations.csv")
+
         print(f"Wrote activations for {layer}: {df.shape}")
 
     # 5) Compute selectivity metrics for each unit and category
@@ -142,9 +177,9 @@ def main(cfg_path):
     all_unit_cat_stats_hg = []  # HG for combined file
 
     for layer in tqdm(block_layers, desc="Layers"):
-        df = pd.read_pickle(out_dir / f"{layer}_block_activations.pkl")
+        df = pd.read_pickle(out_dir / f"{model_tag}_{layer}_block_activations.pkl")
         if df.empty:
-            print(f"Warning: no activations for layer {layer}")
+            print(f"Warning: no activations for layer {layer} in {model_tag}")
             continue
 
         unit_ids = df.columns
@@ -191,8 +226,8 @@ def main(cfg_path):
 
         # save per-layer file (unchanged)
         res_df = pd.DataFrame(results)
-        res_df.to_csv(out_dir / f"{layer}_block_selectivity_mw.csv", index=False)
-        res_df.to_pickle(out_dir / f"{layer}_block_selectivity_mw.pkl")
+        res_df.to_csv(out_dir / f"{model_tag}_{layer}_block_selectivity_mw.csv", index=False)
+        res_df.to_pickle(out_dir / f"{model_tag}_{layer}_block_selectivity_mw.pkl")
         print(f"Wrote selectivity stats for {layer} ({len(unit_ids)} units)")
 
         if use_mw:
@@ -233,9 +268,9 @@ def main(cfg_path):
 
         all_stats_df = pd.DataFrame(combined_rows)
         # Keep legacy filename, now includes hg_* columns when enabled
-        all_stats_df.to_csv(out_dir / "all_layers_units_mannwhitneyu.csv", index=False)
-        all_stats_df.to_pickle(out_dir / "all_layers_units_mannwhitneyu.pkl")
-        print(f"Wrote combined stats (mw_* and hg_* if enabled) to {out_dir / 'all_layers_units_mannwhitneyu.csv'}")
+        all_stats_df.to_csv(out_dir / f"{model_tag}_all_layers_units_mannwhitneyu.csv", index=False)
+        all_stats_df.to_pickle(out_dir / f"{model_tag}_all_layers_units_mannwhitneyu.pkl")
+        print(f"Wrote combined stats (mw_* and hg_* if enabled) to {out_dir / {model_tag} /'all_layers_units_mannwhitneyu.csv'}")
     else:
         print("Skipping combined stats (no data).")
 if __name__ == "__main__":
