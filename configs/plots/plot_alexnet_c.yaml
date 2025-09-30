@@ -12,7 +12,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -27,7 +27,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -42,7 +42,7 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -57,7 +57,7 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
 
@@ -74,7 +74,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -89,7 +89,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -104,7 +104,7 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -119,7 +119,7 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
 
@@ -136,7 +136,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -151,7 +151,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -166,7 +166,7 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -181,7 +181,7 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
 
@@ -198,7 +198,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -213,7 +213,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -228,7 +228,7 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -243,7 +243,7 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
 
@@ -260,7 +260,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -275,7 +275,7 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -290,7 +290,7 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -305,7 +305,7 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
 
@@ -322,7 +322,7 @@ tasks:
       percentage: False
       ylim: [-0.05,0.25]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
   - function: categ_corr_lineplot
@@ -337,6 +337,6 @@ tasks:
       percentage: False
       ylim: [-0.05,0.25]
       data_type: "selectivity"
-      selectivity_fraction: 0.01
+      selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: alexnet
