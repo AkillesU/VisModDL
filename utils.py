@@ -39,16 +39,23 @@ def get_layer_from_path(model, path: str):
       - 'features.0' (Sequential/ModuleList int indexing)
       - 'features._modules.0' (explicit modules dict)
       - attribute access (e.g., 'layer1.0.conv1', 'V4', 'IT')
+      - leading 'module.' from DataParallel paths (treated as optional)
     """
     # 1) Normalize away explicit _modules segments
     try:
         norm = normalize_module_name(path)
     except NameError:
-        # fallback if normalize_module_name isn't defined above this function yet
         norm = path.replace("._modules.", ".").replace("._modules", ".").strip(".")
 
     steps = [s for s in norm.split(".") if s]  # remove empty tokens
     current = model
+
+    # NEW: tolerate a leading 'module' token regardless of wrapping
+    if steps and steps[0] == "module":
+        if hasattr(current, "module"):
+            current = current.module  # unwrap real DataParallel
+        # drop the token either way
+        steps = steps[1:]
 
     for step in steps:
         # A) direct attribute?
@@ -59,24 +66,21 @@ def get_layer_from_path(model, path: str):
         # B) integer index (Sequential/ModuleList)?
         if step.isdigit():
             idx = int(step)
-            # try __getitem__(int) first (Sequential/ModuleList)
             try:
-                current = current[idx]
+                current = current[idx]       # Sequential/ModuleList
                 continue
             except (TypeError, IndexError, KeyError):
                 pass
-            # then try ModuleDict/_modules dict with string key
             if hasattr(current, "_modules"):
                 moddict = current._modules
                 if str(idx) in moddict:
                     current = moddict[str(idx)]
                     continue
-            # finally: plain dict-like with string keys
             if isinstance(current, dict) and str(idx) in current:
                 current = current[str(idx)]
                 continue
 
-        # C) plain dict-like with string key
+        # C) dict-like or _modules lookup
         if isinstance(current, dict) and step in current:
             current = current[step]
             continue
@@ -84,7 +88,10 @@ def get_layer_from_path(model, path: str):
             current = current._modules[step]
             continue
 
-        raise KeyError(f"Cannot resolve step '{step}' in path '{path}' (normalized='{norm}') at object: {type(current)}")
+        raise KeyError(
+            f"Cannot resolve step '{step}' in path '{path}' (normalized='{norm}') "
+            f"at object: {type(current)}"
+        )
     return current
 
 
@@ -324,63 +331,35 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
     return activations_df
 
 
-def apply_noise(model, noise_level, noise_dict, layer_paths, apply_to_all_layers,
-                only_conv=True, include_bias=False):
-    """
-    Add Gaussian noise to selected parameters.
-    - If apply_to_all_layers=True: walk the whole model and hit either all conv
-      layers (only_conv=True) or all weight-bearing layers.
-    - Otherwise: treat each entry in layer_paths as a *root* and recurse into its
-      children to find the actual target layers.
-    """
-    # unwrap DataParallel for path resolution
-    base = model.module if hasattr(model, "module") else model
-
-    # 1) Build the full list of target MODULE paths (no '.weight' suffixes)
-    target_paths = []
+def apply_noise(model, noise_level, noise_dict, layer_paths, apply_to_all_layers, only_conv=True, include_bias=False):
     if apply_to_all_layers:
-        if only_conv:
-            target_paths = get_all_conv_layers(base, "", include_bias)   # -> module paths
-        else:
-            target_paths = get_all_weight_layers(base, "", include_bias)
+        targets = (
+            get_all_conv_layers(model, "", include_bias)
+            if only_conv else
+            get_all_weight_layers(model, "", include_bias)
+        )
     else:
-        for root in _as_list(layer_paths):
-            # normalize string like '...._modules.V2' → '....V2'
-            root_norm = normalize_module_name(root)
-            root_mod  = get_layer_from_path(base, root_norm)
-            if only_conv:
-                target_paths.extend(get_all_conv_layers(root_mod, root_norm, include_bias))
-            else:
-                target_paths.extend(get_all_weight_layers(root_mod, root_norm, include_bias))
+        targets = _as_list(layer_paths)
 
-    # de-dup and keep stable order
-    seen = set()
-    targets = []
-    for p in target_paths:
-        n = normalize_module_name(p)
-        if n not in seen:
-            seen.add(n)
-            targets.append(n)
+    for w_path in targets:
+        npath = normalize_module_name(w_path)
+        layer = get_layer_from_path(model, npath)
 
-    # 2) Apply noise to each resolved layer
-    for npath in targets:
-        layer = get_layer_from_path(base, npath)
-
-        # If caller asked for conv-only, keep this guard (mostly redundant now).
+        # respect only_conv
         if only_conv and not is_conv_like(layer):
             continue
 
         # WEIGHT
         if hasattr(layer, "weight") and layer.weight is not None:
             key_w = f"{npath}.weight"
-            sd_w = noise_dict.get(key_w, float(layer.weight.detach().std().item()))
+            sd_w = noise_dict[key_w] if key_w in noise_dict else float(layer.weight.detach().std().item())
             with torch.no_grad():
                 layer.weight.add_(torch.randn_like(layer.weight) * (sd_w * noise_level))
 
-        # BIAS
+        # BIAS (optional)
         if include_bias and hasattr(layer, "bias") and layer.bias is not None:
             key_b = f"{npath}.bias"
-            sd_b = noise_dict.get(key_b, float(layer.bias.detach().std().item()))
+            sd_b = noise_dict[key_b] if key_b in noise_dict else float(layer.bias.detach().std().item())
             with torch.no_grad():
                 layer.bias.add_(torch.randn_like(layer.bias) * (sd_b * noise_level))
 
