@@ -29,3 +29,19 @@ noise_levels: # Start, N (int), interval [start, N*interval]
   - 0
   - 31
   - 0.1
+
+
+
+# groupnorm_scaling damage parameters
+groupnorm_scaling: 
+  - 1
+  - 0
+  - -0.05
+groupnorm_scaling_targets: ["conv"]
+gain_control_noise: 0.5
+# Masking damage parameters
+
+ecc_fraction_to_mask:
+  - 0
+  - 0
+  - 0.05
