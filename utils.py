@@ -324,28 +324,63 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
     return activations_df
 
 
-def apply_noise(model, noise_level, noise_dict, layer_paths, apply_to_all_layers, only_conv=True, include_bias=False):
-    targets = get_all_weight_layers(model, only_conv=only_conv) if apply_to_all_layers else _as_list(layer_paths)
+def apply_noise(model, noise_level, noise_dict, layer_paths, apply_to_all_layers,
+                only_conv=True, include_bias=False):
+    """
+    Add Gaussian noise to selected parameters.
+    - If apply_to_all_layers=True: walk the whole model and hit either all conv
+      layers (only_conv=True) or all weight-bearing layers.
+    - Otherwise: treat each entry in layer_paths as a *root* and recurse into its
+      children to find the actual target layers.
+    """
+    # unwrap DataParallel for path resolution
+    base = model.module if hasattr(model, "module") else model
 
-    for w_path in targets:
-        npath = normalize_module_name(w_path)
-        layer = get_layer_from_path(model, npath)
+    # 1) Build the full list of target MODULE paths (no '.weight' suffixes)
+    target_paths = []
+    if apply_to_all_layers:
+        if only_conv:
+            target_paths = get_all_conv_layers(base, "", include_bias)   # -> module paths
+        else:
+            target_paths = get_all_weight_layers(base, "", include_bias)
+    else:
+        for root in _as_list(layer_paths):
+            # normalize string like '...._modules.V2' → '....V2'
+            root_norm = normalize_module_name(root)
+            root_mod  = get_layer_from_path(base, root_norm)
+            if only_conv:
+                target_paths.extend(get_all_conv_layers(root_mod, root_norm, include_bias))
+            else:
+                target_paths.extend(get_all_weight_layers(root_mod, root_norm, include_bias))
 
-        # respect only_conv
+    # de-dup and keep stable order
+    seen = set()
+    targets = []
+    for p in target_paths:
+        n = normalize_module_name(p)
+        if n not in seen:
+            seen.add(n)
+            targets.append(n)
+
+    # 2) Apply noise to each resolved layer
+    for npath in targets:
+        layer = get_layer_from_path(base, npath)
+
+        # If caller asked for conv-only, keep this guard (mostly redundant now).
         if only_conv and not is_conv_like(layer):
             continue
 
         # WEIGHT
         if hasattr(layer, "weight") and layer.weight is not None:
             key_w = f"{npath}.weight"
-            sd_w = noise_dict[key_w] if key_w in noise_dict else float(layer.weight.detach().std().item())
+            sd_w = noise_dict.get(key_w, float(layer.weight.detach().std().item()))
             with torch.no_grad():
                 layer.weight.add_(torch.randn_like(layer.weight) * (sd_w * noise_level))
 
-        # BIAS (optional)
+        # BIAS
         if include_bias and hasattr(layer, "bias") and layer.bias is not None:
             key_b = f"{npath}.bias"
-            sd_b = noise_dict[key_b] if key_b in noise_dict else float(layer.bias.detach().std().item())
+            sd_b = noise_dict.get(key_b, float(layer.bias.detach().std().item()))
             with torch.no_grad():
                 layer.bias.add_(torch.randn_like(layer.bias) * (sd_b * noise_level))
 
