@@ -12,6 +12,9 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -24,6 +27,9 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -36,6 +42,9 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -48,6 +57,9 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
 
 
   - function: categ_corr_lineplot
@@ -62,6 +74,9 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -74,6 +89,9 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -86,6 +104,9 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -98,6 +119,9 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
 
 
   - function: categ_corr_lineplot
@@ -112,6 +136,9 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -124,6 +151,9 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -136,6 +166,9 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -148,6 +181,9 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
 
 
   - function: categ_corr_lineplot
@@ -162,6 +198,9 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -174,6 +213,9 @@ tasks:
       percentage: True
       ylim: [-15,105]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -186,6 +228,9 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -198,6 +243,9 @@ tasks:
       percentage: False
       ylim: [-0.1,1]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
 
 
   - function: categ_corr_lineplot
@@ -212,6 +260,9 @@ tasks:
       percentage: False
       ylim: [-0.05,0.25]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
@@ -224,3 +275,6 @@ tasks:
       percentage: False
       ylim: [-0.05,0.25]
       data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_s
