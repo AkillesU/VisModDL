@@ -138,143 +138,6 @@ tasks:
 
   - function: categ_corr_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
-      damage_layers: ["block1","block2","block3","block4","block5"]
-      activations_layers: ["features_12"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      percentage: False
-      ylim: [-0.05,0.25]
-      data_type: "selectivity"
-      selectivity_fraction: 0.01
-      selection_mode: percentage
-      model_tag: alexnet
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
-      damage_layers: ["block1","block2","block3","block4","block5"]
-      activations_layers: ["features_12"]
-      damage_type: "connections"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      percentage: False
-      ylim: [-0.05,0.25]
-      data_type: "selectivity"
-      selectivity_fraction: 0.01
-      selection_mode: percentage
-      model_tag: alexnet
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/alexnet_c+b/"
-      damage_layers: ["block1","block2","block3","block4","block5"]
-      activations_layers: ["features_12"]
-      damage_type: "units"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      percentage: False
-      ylim: [-0.05,0.25]
-      data_type: "selectivity"
-      selectivity_fraction: 0.01
-      selection_mode: percentage
-      model_tag: alexnet
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
-      damage_layers: ["block1","block2","block3","block4","block5"]
-      activations_layers: ["features_12"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      percentage: False
-      ylim: [-0.05,0.25]
-      data_type: "selectivity"
-      selectivity_fraction: 0.05
-      selection_mode: percentage
-      model_tag: alexnet
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
-      damage_layers: ["block1","block2","block3","block4","block5"]
-      activations_layers: ["features_12"]
-      damage_type: "connections"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      percentage: False
-      ylim: [-0.05,0.25]
-      data_type: "selectivity"
-      selectivity_fraction: 0.05
-      selection_mode: percentage
-      model_tag: alexnet
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/alexnet_c+b/"
-      damage_layers: ["block1","block2","block3","block4","block5"]
-      activations_layers: ["features_12"]
-      damage_type: "units"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      percentage: False
-      ylim: [-0.05,0.25]
-      data_type: "selectivity"
-      selectivity_fraction: 0.05
-      selection_mode: percentage
-      model_tag: alexnet
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
-      damage_layers: ["block1","block2","block3","block4","block5"]
-      activations_layers: ["features_12"]
-      damage_type: "noise"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      percentage: False
-      ylim: [-0.05,0.25]
-      data_type: "selectivity"
-      selectivity_fraction: 1
-      selection_mode: percentage
-      model_tag: alexnet
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
-      damage_layers: ["block1","block2","block3","block4","block5"]
-      activations_layers: ["features_12"]
-      damage_type: "connections"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      percentage: False
-      ylim: [-0.05,0.25]
-      data_type: "selectivity"
-      selectivity_fraction: 1
-      selection_mode: percentage
-      model_tag: alexnet
-  - function: categ_corr_lineplot
-    parameters:
-      main_dir: "data/haupt_stim_activ/damaged/alexnet_c+b/"
-      damage_layers: ["block1","block2","block3","block4","block5"]
-      activations_layers: ["features_12"]
-      damage_type: "units"
-      categories: ["total"]
-      metric: "observed_difference"
-      verbose: 0
-      percentage: False
-      ylim: [-0.05,0.25]
-      data_type: "selectivity"
-      selectivity_fraction: 1
-      selection_mode: percentage
-      model_tag: alexnet
-
-
-  - function: categ_corr_lineplot
-    parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1","V2","V4","IT"]
       activations_layers: ["IT"]
@@ -820,3 +683,141 @@ tasks:
       selectivity_fraction: 1
       selection_mode: percentage
       model_tag: cornet_s
+
+
+
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: alexnet
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: alexnet
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c+b/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: alexnet
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: alexnet
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: alexnet
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c+b/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: alexnet
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 1
+      selection_mode: percentage
+      model_tag: alexnet
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 1
+      selection_mode: percentage
+      model_tag: alexnet
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c+b/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 1
+      selection_mode: percentage
+      model_tag: alexnet
