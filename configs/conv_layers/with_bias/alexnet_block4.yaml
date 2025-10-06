@@ -13,7 +13,7 @@ mc_permutations: 200 # How many monte carlo permutations on damage to perform. U
 layer_paths_to_damage: 
   - "features.8"
 apply_to_all_layers: False
-include_bias: ¨True
+include_bias: True
 only_conv: True
 
 # Masking damage parameters
