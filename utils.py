@@ -364,6 +364,53 @@ def apply_noise(model, noise_level, noise_dict, layer_paths, apply_to_all_layers
                 layer.bias.add_(torch.randn_like(layer.bias) * (sd_b * noise_level))
 
 
+def apply_activation_noise(
+    model,
+    noise_multiplier: float = 1.0,
+    layer_paths=None,
+    apply_to_all_layers=False,
+    only_conv=True,
+):
+    """
+    Adds Gaussian noise to *all* output activations of selected layers at runtime.
+
+    On each forward pass for a hooked layer:
+      • sd = torch.std(output)   (computed on the current output tensor)
+      • noise ~ N(0, (noise_multiplier * sd)^2)   (element-wise)
+      • return output + noise
+
+    Works for Conv (N, C, H, W, ...) and Linear (N, F) outputs.
+    """
+    # Choose target layers
+    if apply_to_all_layers:
+        targets = get_all_conv_layers(model, "", include_bias=False) if only_conv else get_all_weight_layers(model, "", include_bias=False)
+    else:
+        targets = _as_list(layer_paths)
+
+    for w_path in targets:
+        npath = normalize_module_name(w_path)
+        layer = get_layer_from_path(model, npath)
+        if only_conv and not is_conv_like(layer):
+            continue
+
+        def _act_noise_hook(module, _inputs, output, noise_multiplier=noise_multiplier):
+            def _apply(o):
+                if not torch.is_tensor(o) or o.numel() == 0:
+                    return o
+                sd = torch.std(o)
+                sigma = sd * float(noise_multiplier)
+                # Guard against zeros/NaNs/Infs
+                if sigma == 0 or not torch.isfinite(sigma):
+                    return o
+                return o + torch.randn_like(o) * sigma
+
+            if isinstance(output, tuple):
+                return (_apply(output[0]),) + output[1:]
+            return _apply(output)
+
+        layer.register_forward_hook(_act_noise_hook)
+
+
 def apply_masking(
     model,
     fraction_to_mask,
@@ -1014,6 +1061,9 @@ def run_damage(
         _tmp_model, _ = load_model(model_info, pretrained=pretrained, layer_name="temp", layer_path="")
         noise_dict = get_params_sd(_tmp_model)                                 # uses generic weight-walker
         del _tmp_model
+    elif manipulation_method == "noise_activations":
+        damage_levels_list = generate_params_list(noise_levels_params)
+        noise_dict = None
     elif manipulation_method == "groupnorm_scaling":
         damage_levels_list = generate_params_list(groupnorm_scaling_params)
         noise_dict = None
@@ -1050,6 +1100,8 @@ def run_damage(
     # ------------------------------------------------------------
     if manipulation_method == "noise":
         dir_tag = "noise"
+    elif manipulation_method == "noise_activations":
+        dir_tag = "noise_activations"
     elif manipulation_method == "connections":
         if masking_level == "units":
             dir_tag = "units"
@@ -1119,6 +1171,14 @@ def run_damage(
                             apply_to_all_layers=apply_to_all_layers,
                             only_conv=only_conv,
                             include_bias=include_bias
+                        )
+                    elif manipulation_method == "noise_activations":
+                        apply_activation_noise(
+                            model,
+                            noise_multiplier=damage_level,  # from noise_levels_params
+                            layer_paths=damage_layers_list,
+                            apply_to_all_layers=apply_to_all_layers,
+                            only_conv=only_conv,
                         )
 
                     elif manipulation_method == "groupnorm_scaling":

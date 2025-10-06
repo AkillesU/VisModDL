@@ -80,6 +80,9 @@ def main():
     # Noise ---------------------------------------------------------
     run_damage(**common_kwargs, manipulation_method="noise")
 
+    # Activation noise ---------------------------------------------
+    run_damage(**common_kwargs, manipulation_method="noise_activations")
+
     # Connection / unit masking ------------------------------------
     run_damage(**common_kwargs, manipulation_method="connections")
 
