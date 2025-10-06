@@ -78,10 +78,12 @@ def main():
     )
 
     # Noise ---------------------------------------------------------
-    run_damage(**common_kwargs, manipulation_method="noise")
-
-    # Activation noise ---------------------------------------------
-    run_damage(**common_kwargs, manipulation_method="noise_activations")
+    if config.get("noise_activations", False):
+        print("Running activation noise...")
+        run_damage(**common_kwargs, manipulation_method="noise_activations")
+    else:
+        print("Running weight noise...")
+        run_damage(**common_kwargs, manipulation_method="noise")
 
     # Connection / unit masking ------------------------------------
     run_damage(**common_kwargs, manipulation_method="connections")
