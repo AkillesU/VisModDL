@@ -25,7 +25,7 @@ manipulation_method: "masking"
 masking_level: "connections"  # "connections" or "units"
 fraction_to_mask: # Start, N (int), interval [start,N*interval]
   - 0
-  - 0 #21
+  - 21 #21
   - 0.05
 
 # Noise damage parameters
