@@ -1622,131 +1622,45 @@ def categ_corr_lineplot(
     # ===========================================================
     activ_dir = ("activations")  # we only compute from zarr in non-RDM dirs
 
-    def _precompute_selective_rdms_if_missing(layer, act, categories_rdm, rdm_dir):
-        """
-        If rdm_dir/<cat>_selective is missing or empty, try to compute RDMs from activation .zarr
-        and write them under the expected selective RDM tree.
-        """
-        # quick check: if all cats exist and have any files, nothing to do
-        all_exist = True
-        for cat in categories_rdm:
-            cdir = rdm_dir / f"{cat}_selective"
-            if not cdir.exists():
-                all_exist = False; break
-            if not any(cdir.rglob("*.pkl")) and not any(p for p in cdir.rglob("*.zarr") if p.is_dir()):
-                all_exist = False; break
-        if all_exist:
-            _dbg("[PRECOMPUTE] selective RDMs already present — skipping build.", 2)
-            return
-
-        # locate activations
-        layer_root = Path(main_dir) / damage_type / layer
-        activ_roots = []
-        for base in activ_dir:
-            cand = layer_root / base / act
-            if cand.exists():
-                activ_roots.append(cand)
-        # Prefer non-RDM roots for activations
-        activ_roots = [r for r in activ_roots if r.name.lower() != "rdm"] + [r for r in activ_roots if r.name.lower() == "rdm"]
-
-        if not activ_roots:
-            _dbg(f"[PRECOMPUTE-MISS] No activation roots found under {layer_root} for act={act}. "
-                 f"Tried {activ_dir}.", 1)
-            return
-
-        # load selectivity map
-        sel_obj = _safe_load_pickle_file(selectivity_file) if selectivity_file else None
-        if sel_obj is None:
-            _dbg(f"[PRECOMPUTE-MISS] Could not load selectivity_file: {selectivity_file}", 1)
-            return
-
-        # gather top unit idx per category
-        percat_units = {}
-        for cat in categories_rdm:
-            idx = _get_top_units_from_selectivity(sel_obj, layer, act, cat, selectivity_fraction, selection_mode)
-            if idx is None or len(idx) == 0:
-                raise RuntimeError(f"No selective units for {layer}/{act}/{cat} (frac={selectivity_fraction}, mode={selection_mode}). Check selectivity_file and labels.")
-                percat_units[cat] = None
-            else:
-                percat_units[cat] = np.asarray(idx, dtype=int)
-                _dbg(f"[PRECOMPUTE] {cat}: top {len(percat_units[cat])} units", 2)
-
-        # walk damage folders and build RDMs
-        dmg_re = re.compile(subdir_regex)
-        built_any = False
-
-        for aroot in activ_roots:
-            # expect damaged_* subdirs
-            dmg_dirs = [d for d in sorted(aroot.iterdir()) if d.is_dir() and dmg_re.search(d.name)]
-            if not dmg_dirs:
-                _dbg(f"[PRECOMPUTE-MISS] No damaged_* subdirs under {aroot}", 1)
-                continue
-
-            for dmg_dir in dmg_dirs:
-                m = dmg_re.search(dmg_dir.name)
-                dmg_level = m.group(1) if m else dmg_dir.name
-
-                # find zarr replicates
-                zarrs = [z for z in sorted(dmg_dir.iterdir()) if _is_zarr_dir(str(z))]
-                if not zarrs:
-                    _dbg(f"[PRECOMPUTE-MISS] No .zarr replicates under {dmg_dir}", 2)
-                    continue
-
-                for z in zarrs:
-                    try:
-                        import zarr
-                        root = zarr.open(str(z), mode="r")
-                        A = None; akey_used = None
-                        for akey in ("activ", "activations", "A", "X"):
-                            if akey in root:
-                                A = np.array(root[akey]); akey_used = akey
-                                break
-                        if A is None or A.ndim != 2 or A.shape[0] < 2 or A.shape[1] < 1:
-                            _dbg(f"[PRECOMPUTE-SKIP] Bad activ array in {z.name} (shape={None if A is None else A.shape})", 2)
-                            continue
-
-                        # get image names if present
-                        img_names = None
-                        try:
-                            attrs = dict(root[akey_used].attrs)
-                            for nkey in ("image_names", "images", "stimuli", "image_ids", "ids"):
-                                if nkey in attrs:
-                                    img_names = list(map(str, list(attrs[nkey])))
-                                    break
-                        except Exception:
-                            pass
-
-                        # compute & write per-category RDM
-                        for cat in categories_rdm:
-                            keep = percat_units.get(cat, None)
-                            if keep is None or keep.size == 0:
-                                continue
-                            # bounds
-                            keep = keep[(keep >= 0) & (keep < A.shape[1])]
-                            if keep.size == 0:
-                                continue
-
-                            A_sel = A[:, keep]
-                            R = _compute_rdm_from_activ(A_sel)
-
-                            # out path: RDM_{frac}_{mode}/<act>/<cat>_selective/damaged_x.y/rep_*.pkl
-                            out_cat_dmg = rdm_dir / f"{cat}_selective" / dmg_dir.name
-                            out_cat_dmg.mkdir(parents=True, exist_ok=True)
-                            rep_name = Path(z).stem + ".pkl"  # e.g., replicate name
-                            out_path = out_cat_dmg / rep_name
-                            if not out_path.exists():
-                                _write_rdm_pickle(out_path, R, img_names)
-                                built_any = True
-                                _dbg(f"[PRECOMPUTE-WRITE] {out_path}", 2)
-                    except Exception as e:
-                        _dbg(f"[PRECOMPUTE-ERROR] failed on {z}: {e}", 1)
-                        continue
-
-        if not built_any:
-            _dbg("[PRECOMPUTE-EMPTY] No selective RDMs were written (missing zarrs or unit indices?).", 1)
+    # Build/Load selectivity RDMs before looping over everything
+    if data_type == "selectivity" and selectivity_fraction is not None:
+        # categories to pull RDMs for (precomputed per-category)
+        if "total" in categories:
+            categories_rdm = ["face", "object", "animal", "place"]
         else:
-            _dbg("[PRECOMPUTE-DONE] Selective RDMs created.", 1)
+            categories_rdm = list(categories)
 
+        # 1) Discover the selective RDM directory
+        rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
+        _dbg(f"[DISCOVER] layer={layer} act={act}", 1)
+        _dbg(f"[DISCOVER] target RDM dir = {rdm_dir}", 1)
+
+        # Define a sample category subdir to check for existence
+        rdm_cat_dir = rdm_dir / f"{categories_rdm[0]}_selective" / "damaged_0.0"
+
+        # NEW: try to build them if missing
+        if not rdm_dir.exists() or not any(rdm_cat_dir.rglob("*.pkl")):
+            _dbg("[DISCOVER] selective RDMs missing or empty — attempting on-the-fly build from activations.", 1)
+            activ_root = Path(main_dir) / damage_type / layer / "activations" / act
+            _dbg(f"[PRECOMPUTE] activ_root = {activ_root}", 1)
+
+            if not _have_selective_rdms(rdm_dir, categories_rdm):
+                generate_category_selective_RDMs(
+                    activations_root = Path(main_dir) / damage_type,
+                    layer_name       = layer,         # matches selectivity table’s layer label
+                    top_frac         = float(selectivity_fraction),
+                    categories       = categories_rdm,   # no "total" here
+                    selection_mode   = selection_mode,
+                    selectivity_file = f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl",
+                    damage_layer     = layer,
+                    activation_layer = act,
+                    model_tag        = model_tag
+                )
+            if not _have_selective_rdms(rdm_dir, categories_rdm):
+                raise RuntimeError(f"No selective RDMs built under {rdm_dir} for cats {categories_rdm}")
+    
+    # Complile the subdir regex once
+    dmg_re = re.compile(subdir_regex)
     # ------------ 4. crawl the directory tree -----------------
     for layer in damage_layers:
         for act in activations_layers:
@@ -1756,38 +1670,6 @@ def categ_corr_lineplot(
             # SELECTIVITY (fractioned)  |
             # ===========================
             if data_type == "selectivity" and selectivity_fraction is not None:
-                # categories to pull RDMs for (precomputed per-category)
-                if "total" in categories:
-                    categories_rdm = ["face", "object", "animal", "place"]
-                else:
-                    categories_rdm = list(categories)
-
-                # 1) Discover the selective RDM directory
-                rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
-                _dbg(f"[DISCOVER] layer={layer} act={act}", 1)
-                _dbg(f"[DISCOVER] target RDM dir = {rdm_dir}", 1)
-
-                # NEW: try to build them if missing
-                if not rdm_dir.exists() or not any(rdm_dir.rglob("*.pkl")):
-                    _dbg("[DISCOVER] selective RDMs missing or empty — attempting on-the-fly build from activations.", 1)
-                    activ_root = Path(main_dir) / damage_type / layer / "activations" / act
-                    _dbg(f"[PRECOMPUTE] activ_root = {activ_root}", 1)
-
-                    if not _have_selective_rdms(rdm_dir, categories_rdm):
-                        generate_category_selective_RDMs(
-                            activations_root = Path(main_dir) / damage_type,
-                            layer_name       = layer,         # matches selectivity table’s layer label
-                            top_frac         = float(selectivity_fraction),
-                            categories       = categories_rdm,   # no "total" here
-                            selection_mode   = selection_mode,
-                            selectivity_file = f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl",
-                            damage_layer     = layer,
-                            activation_layer = act,
-                            model_tag        = model_tag
-                        )
-                    if not _have_selective_rdms(rdm_dir, categories_rdm):
-                        raise RuntimeError(f"No selective RDMs built under {rdm_dir} for cats {categories_rdm}")
-
                 # 2) Prepare output directory for averages
                 out_base = Path(main_dir) / damage_type / layer / f"avg_selectivity_top{selectivity_fraction:.2f}_{selection_mode}" / act
                 out_base.mkdir(parents=True, exist_ok=True)
@@ -1802,6 +1684,7 @@ def categ_corr_lineplot(
                     cat_dir = rdm_dir / f"{cat}_selective"
                     _dbg(f"[CAT] cat='{cat}' → {cat_dir}", 2)
 
+                    # Scene/place redundancy
                     if not cat_dir.exists():
                         alt = rdm_dir / "scene_selective"
                         alt_exists = alt.exists()
@@ -1816,8 +1699,7 @@ def categ_corr_lineplot(
                         continue
                     _dbg(f"[HAVE] {len(subdirs)} damage subfolders under {cat_dir}: {[d.name for d in subdirs]}", 2)
 
-                    dmg_re = re.compile(subdir_regex)
-
+                    # Iterate damage subdirs
                     for dmg in subdirs:
                         m = dmg_re.search(dmg.name)
                         if not m:
@@ -1917,12 +1799,11 @@ def categ_corr_lineplot(
 
                 #synthesize "total" from per-replicate means across base categories
                 if ("total" in categories):
-                    base_cats = ("animal", "face", "object", "place")
-                    have_all = all((layer, act_key, bc) in data for bc in base_cats)
+                    have_all = all((layer, act_key, bc) in data for bc in categories_rdm)
                     if have_all:
                         # union of all damage fractions present across cats
                         all_fracs = set()
-                        for bc in base_cats:
+                        for bc in categories_rdm:
                             all_fracs |= set(raw_points[(layer, act_key, bc)].keys())
 
                         # init "total"
@@ -1932,7 +1813,7 @@ def categ_corr_lineplot(
                         for frac in sorted(all_fracs):
                             lists = []
                             ok = True
-                            for bc in base_cats:
+                            for bc in categories_rdm:
                                 rp = raw_points[(layer, act_key, bc)].get(frac, [])
                                 if not rp:
                                     ok = False; break
