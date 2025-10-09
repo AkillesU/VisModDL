@@ -80,6 +80,12 @@ def permutation_test(sel_vals, rand_vals, n_permutations=1000, alternative='two-
     return observed, p
 
 # ------------------------------------------------------------------
+def mw_u(a: np.ndarray, b: np.ndarray) -> float:
+    """
+    Mann–Whitney U statistic for the first sample (two-sided test call).
+    Range: 0 .. (len(a)*len(b)). Larger ⇒ sample a tends to be greater than b.
+    """
+    return mannwhitneyu(a, b, alternative='two-sided').statistic
 
 def hedges_g(a: np.ndarray, b: np.ndarray) -> float:
     """
@@ -300,6 +306,11 @@ def main(cfg_path: str | pathlib.Path):
     collapse_method = cfg.get("collapse_method", None)  # None, "mean", or "median"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_random_repeats = cfg.get("n_random_repeats", 100)
+    effect_size = str(cfg.get("effect_size", "hedges_g")).lower()  # "hedges_g" | "cliffs_delta" | "mw_u"
+    allowed_effects = {"hedges_g", "cliffs_delta", "mw_u"}
+    if effect_size not in allowed_effects:
+        raise ValueError(f"effect_size must be one of {allowed_effects}, got {effect_size!r}")
+
     global GLOBAL_DEVICE, GLOBAL_TFM
     GLOBAL_DEVICE = device
     GLOBAL_TFM    = build_transform()        # replaces local tfm
@@ -426,15 +437,25 @@ def main(cfg_path: str | pathlib.Path):
             obs_map = df["mean_diff"].values.reshape(Hf, Wf)
             mean_diff_vec  = obs_map.ravel()  
 
-            # ---- effect‑size map -------------------------------------------------
-            if "cliffs_delta" in df.columns:          # newer files
+            # ---- effect-size map selection (respect config if present) ----
+            delta_map = None
+            if effect_size == "mw_u" and "mw_u" in df.columns:
+                delta_arr = pd.to_numeric(df["mw_u"], errors="coerce").astype(np.float32)
+                delta_map = delta_arr.values.reshape(Hf, Wf)
+            elif effect_size == "cliffs_delta" and "cliffs_delta" in df.columns:
                 delta_arr = pd.to_numeric(df["cliffs_delta"], errors="coerce").astype(np.float32)
                 delta_map = delta_arr.values.reshape(Hf, Wf)
-            elif "hedges_g" in df.columns:            # if stored Hedge's g instead
+            elif effect_size == "hedges_g" and "hedges_g" in df.columns:
                 delta_arr = pd.to_numeric(df["hedges_g"], errors="coerce").astype(np.float32)
                 delta_map = delta_arr.values.reshape(Hf, Wf)
-            else:                                     # legacy files – no effect size
-                delta_map = None
+            else:
+                # backward-compatible fallback: try any known column, priority mw_u > cliffs_delta > hedges_g
+                for col in ("mw_u", "cliffs_delta", "hedges_g"):
+                    if col in df.columns:
+                        delta_arr = pd.to_numeric(df[col], errors="coerce").astype(np.float32)
+                        delta_map = delta_arr.values.reshape(Hf, Wf)
+                        break
+
 
             # ---- significance / p‑value handling -------------------------
             if "fdr_q_value" in df.columns:          # FDR‑corrected p values exist
@@ -497,7 +518,13 @@ def main(cfg_path: str | pathlib.Path):
                 b = rand_flat[:, i]
 
                 mean_diff_vec[i] = a.mean() - b.mean()
-                g_vec[i]   = hedges_g(a, b)                               # effect size
+                if effect_size == "hedges_g":
+                    g_vec[i] = hedges_g(a, b)
+                elif effect_size == "mw_u":
+                    g_vec[i] = mw_u(a, b)
+                else:
+                    # keep parity if someone requests cliffs on parametric path, or raise
+                    g_vec[i] = hedges_g(a, b)
                 _, p_val   = ttest_ind(a, b, equal_var=False, nan_policy='omit') # Welch's t-test
                 p_vec[i]   = p_val
 
@@ -516,7 +543,8 @@ def main(cfg_path: str | pathlib.Path):
                 'fy'            : np.repeat(np.arange(Hf), Wf),
                 'fx'            : np.tile  (np.arange(Wf), Hf),
                 'mean_diff'     : mean_diff_vec,
-                'hedges_g'      : g_vec,            # ← new column
+                'hedges_g'      : g_vec,            # ← new 
+                'mw_u'      : (g_vec if effect_size == "mw_u"      else np.full_like(g_vec, np.nan)),
                 'welch_p_value' : p_vec,            # ← new column name
                 'fdr_q_value'   : q_vec,
                 'significant'   : rej.astype(int)
@@ -605,7 +633,13 @@ def main(cfg_path: str | pathlib.Path):
                 b = rand_flat[:, i]
 
                 mean_diff_vec[i] = a.mean() - b.mean()
-                cliff_vec[i]     = cliffs_delta(a, b)
+                if effect_size == "cliffs_delta":
+                    cliff_vec[i] = cliffs_delta(a, b)
+                elif effect_size == "mw_u":
+                    cliff_vec[i] = mw_u(a, b)
+                else:
+                    # default to cliffs on the NP branch
+                    cliff_vec[i] = cliffs_delta(a, b)
                 p_vec[i]         = mannwhitneyu(a, b, alternative='two-sided').pvalue
 
             # FDR (Benjamini‑Hochberg) correction ------------------------------
@@ -622,7 +656,8 @@ def main(cfg_path: str | pathlib.Path):
                 'fy'               : np.repeat(np.arange(Hf), Wf),
                 'fx'               : np.tile  (np.arange(Wf), Hf),
                 'mean_diff'        : mean_diff_vec,
-                'cliffs_delta'     : cliff_vec,
+                'cliffs_delta' : (cliff_vec if effect_size == "cliffs_delta" else np.full_like(cliff_vec, np.nan)),
+                'mw_u'          : (cliff_vec if effect_size == "mw_u"         else np.full_like(cliff_vec, np.nan)),
                 'mw_p_value'       : p_vec,
                 'fdr_q_value'      : q_vec,
                 'significant_fdr'  : rej.astype(int)
@@ -646,10 +681,13 @@ def main(cfg_path: str | pathlib.Path):
         delta_plot = np.where(sig_mask, delta_map, np.nan)
         plt.figure(figsize=(6,5))
         plt.imshow(delta_plot, cmap="bwr", interpolation='nearest')
-        plt.title("Hedges g")
         plt.axis('off')
-        plt.colorbar(label="Hedges g")
-        plt.savefig(outdir / f"{prefix}_B_cliffs_delta.png", dpi=300)
+        eff_label  = {"hedges_g": "Hedges’ g", "cliffs_delta": "Cliff’s δ", "mw_u": "Mann–Whitney U"}[effect_size]
+        file_suffix = {"hedges_g": "hedges_g", "cliffs_delta": "cliffs_delta", "mw_u": "mw_u"}[effect_size]
+
+        plt.title(eff_label)
+        plt.colorbar(label=eff_label)
+        plt.savefig(outdir / f"{prefix}_B_{file_suffix}.png", dpi=300)
 
         # –log10(q) significance map, same mask
         q = q_map
