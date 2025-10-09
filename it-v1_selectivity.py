@@ -272,6 +272,24 @@ def get_thread_model_and_bufs(cfg):
         _thread_cache.bufs  = bufs
     return _thread_cache.model, _thread_cache.bufs
 
+
+def collapse_random(arr: np.ndarray, method: str | None):
+    """
+    Collapse random repeats along axis 0 if requested.
+    arr shape: [R, N_img, C, H, W]
+    returns (collapsed_arr, collapsed_flag)
+      - if collapsed: shape [N_img, C, H, W]
+      - else: original arr
+    """
+    if method is None:
+        return arr, False
+    m = str(method).lower()
+    if m in {"mean", "avg", "average"}:
+        return arr.mean(axis=0), True
+    if m in {"median", "med"}:
+        return np.median(arr, axis=0), True
+    raise ValueError(f"Unknown collapse_method: {method!r} (use None, 'mean', or 'median')")
+
 # ──────────────────────────────────────────────────────────────────────────────
 #                                 MAIN
 # ──────────────────────────────────────────────────────────────────────────────
@@ -279,6 +297,7 @@ def get_thread_model_and_bufs(cfg):
 def main(cfg_path: str | pathlib.Path):
     random.seed(1234)
     cfg = yaml.safe_load(open(cfg_path, 'r'))
+    collapse_method = cfg.get("collapse_method", None)  # None, "mean", or "median"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_random_repeats = cfg.get("n_random_repeats", 100)
     global GLOBAL_DEVICE, GLOBAL_TFM
@@ -295,7 +314,7 @@ def main(cfg_path: str | pathlib.Path):
     else:
         print("Using CUDA")
 
-    # Figure out which image categories to evaluate (NEW logic) --------------
+    # Figure out which image categories to evaluate --------------
     imgs, cat_tag = gather_images(cfg)
     print(f"Loaded {len(imgs)} images; category‑tag = '{cat_tag}'.")
 
@@ -456,9 +475,17 @@ def main(cfg_path: str | pathlib.Path):
                 lt = (a[:, None] < b).sum()
                 return (gt - lt) / (len(a) * len(b) + 1e-12)
 
-            # ----- flatten sample axes so every voxel is a column -------------
-            sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)      # [M_sel , H*W]
-            rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)      # [M_rand, H*W]
+            # Optionally collapse random repeats so N matches selective
+            all_v1_grads_rand, _rand_collapsed = collapse_random(all_v1_grads_rand, collapse_method)
+            if _rand_collapsed:
+                # Now shapes match: random is [N, C, H, W], same as selective
+                sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)    # [N*C, H*W]
+                rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)   # [N*C, H*W]
+            else:
+                # Keep existing behavior (all repeats count as samples)
+                sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)    # [N*C, H*W]
+                rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)   # [R*N*C, H*W]
+
 
             mean_diff_vec = np.empty(Hf * Wf, dtype=np.float32)
             g_vec         = np.empty(Hf * Wf, dtype=np.float32)      # effect size
@@ -540,6 +567,8 @@ def main(cfg_path: str | pathlib.Path):
             all_v1_grads_rand = np.stack(all_v1_grads_rand)
             print("Mean selective gradient magnitude:", np.mean(all_v1_grads_sel))
             print("Mean random gradient magnitude:", np.mean(all_v1_grads_rand))
+
+            all_v1_grads_rand, _rand_collapsed = collapse_random(all_v1_grads_rand, collapse_method)
             
 
             # ──────────────────────────────────────────────────────────────────
@@ -557,11 +586,15 @@ def main(cfg_path: str | pathlib.Path):
                 lt = (a[:, None] < b).sum()
                 return (gt - lt) / (len(a) * len(b) + 1e-12)
 
-            # ----- flatten sample axes so every voxel is a column -------------
             N, C, Hf, Wf = all_v1_grads_sel.shape
             R = n_random_repeats
-            sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)      # [M_sel , H*W]
-            rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)      # [M_rand, H*W]
+            if _rand_collapsed:
+                sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)    # [N*C, H*W]
+                rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)   # [N*C, H*W]
+            else:
+                sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)    # [N*C, H*W]
+                rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)   # [R*N*C, H*W]
+
 
             mean_diff_vec  = np.empty(Hf * Wf, dtype=np.float32)
             cliff_vec      = np.empty(Hf * Wf, dtype=np.float32)
@@ -645,7 +678,11 @@ def main(cfg_path: str | pathlib.Path):
 
             for (y, x) in coords_to_plot:
                 sel_vals  = all_v1_grads_sel[:, :, y, x].ravel()
-                rand_vals = all_v1_grads_rand[:, :, :, y, x].ravel()
+                if all_v1_grads_rand.ndim == 4:   # collapsed → [N, C, H, W]
+                    rand_vals = all_v1_grads_rand[:, :, y, x].ravel()
+                else:                              # not collapsed → [R, N, C, H, W]
+                    rand_vals = all_v1_grads_rand[:, :, :, y, x].ravel()
+
 
                 eps = 1e-8  # avoid zeros on log‑scale
                 sel_vals += eps
