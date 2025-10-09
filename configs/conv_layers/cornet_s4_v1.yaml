@@ -14,7 +14,6 @@ mc_permutations: 200 # How many monte carlo permutations on damage to perform. U
 layer_paths_to_damage: 
   - "module._modules.V1._modules.conv1"
   - "module._modules.V1._modules.conv2"
-  - "module._modules.V1._modules.conv3"
 
 apply_to_all_layers: False
 include_bias: False
