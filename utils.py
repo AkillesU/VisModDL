@@ -1621,43 +1621,6 @@ def categ_corr_lineplot(
     # Inner: PRECOMPUTE selective RDMs if missing
     # ===========================================================
     activ_dir = ("activations")  # we only compute from zarr in non-RDM dirs
-
-    # Build/Load selectivity RDMs before looping over everything
-    if data_type == "selectivity" and selectivity_fraction is not None:
-        # categories to pull RDMs for (precomputed per-category)
-        if "total" in categories:
-            categories_rdm = ["face", "object", "animal", "place"]
-        else:
-            categories_rdm = list(categories)
-
-        # 1) Discover the selective RDM directory
-        rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
-        _dbg(f"[DISCOVER] layer={layer} act={act}", 1)
-        _dbg(f"[DISCOVER] target RDM dir = {rdm_dir}", 1)
-
-        # Define a sample category subdir to check for existence
-        rdm_cat_dir = rdm_dir / f"{categories_rdm[0]}_selective" / "damaged_0.0"
-
-        # NEW: try to build them if missing
-        if not rdm_dir.exists() or not any(rdm_cat_dir.rglob("*.pkl")):
-            _dbg("[DISCOVER] selective RDMs missing or empty — attempting on-the-fly build from activations.", 1)
-            activ_root = Path(main_dir) / damage_type / layer / "activations" / act
-            _dbg(f"[PRECOMPUTE] activ_root = {activ_root}", 1)
-
-            if not _have_selective_rdms(rdm_dir, categories_rdm):
-                generate_category_selective_RDMs(
-                    activations_root = Path(main_dir) / damage_type,
-                    layer_name       = layer,         # matches selectivity table’s layer label
-                    top_frac         = float(selectivity_fraction),
-                    categories       = categories_rdm,   # no "total" here
-                    selection_mode   = selection_mode,
-                    selectivity_file = f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl",
-                    damage_layer     = layer,
-                    activation_layer = act,
-                    model_tag        = model_tag
-                )
-            if not _have_selective_rdms(rdm_dir, categories_rdm):
-                raise RuntimeError(f"No selective RDMs built under {rdm_dir} for cats {categories_rdm}")
     
     # Complile the subdir regex once
     dmg_re = re.compile(subdir_regex)
@@ -1670,6 +1633,40 @@ def categ_corr_lineplot(
             # SELECTIVITY (fractioned)  |
             # ===========================
             if data_type == "selectivity" and selectivity_fraction is not None:
+                        # categories to pull RDMs for (precomputed per-category)
+                if "total" in categories:
+                    categories_rdm = ["face", "object", "animal", "place"]
+                else:
+                    categories_rdm = list(categories)
+
+                # 1) Discover the selective RDM directory
+                rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
+                _dbg(f"[DISCOVER] layer={layer} act={act}", 1)
+                _dbg(f"[DISCOVER] target RDM dir = {rdm_dir}", 1)
+
+                # Define a sample category subdir to check for existence
+                rdm_cat_dir = rdm_dir / f"{categories_rdm[0]}_selective" / "damaged_0.0"
+
+                # NEW: try to build them if missing
+                if not rdm_dir.exists() or not any(rdm_cat_dir.rglob("*.pkl")):
+                    _dbg("[DISCOVER] selective RDMs missing or empty — attempting on-the-fly build from activations.", 1)
+                    activ_root = Path(main_dir) / damage_type / layer / "activations" / act
+                    _dbg(f"[PRECOMPUTE] activ_root = {activ_root}", 1)
+
+                    if not _have_selective_rdms(rdm_dir, categories_rdm):
+                        generate_category_selective_RDMs(
+                            activations_root = Path(main_dir) / damage_type,
+                            layer_name       = layer,         # matches selectivity table’s layer label
+                            top_frac         = float(selectivity_fraction),
+                            categories       = categories_rdm,   # no "total" here
+                            selection_mode   = selection_mode,
+                            selectivity_file = f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl",
+                            damage_layer     = layer,
+                            activation_layer = act,
+                            model_tag        = model_tag
+                        )
+                    if not _have_selective_rdms(rdm_dir, categories_rdm):
+                        raise RuntimeError(f"No selective RDMs built under {rdm_dir} for cats {categories_rdm}")
                 # 2) Prepare output directory for averages
                 out_base = Path(main_dir) / damage_type / layer / f"avg_selectivity_top{selectivity_fraction:.2f}_{selection_mode}" / act
                 out_base.mkdir(parents=True, exist_ok=True)
