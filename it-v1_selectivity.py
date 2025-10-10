@@ -296,6 +296,216 @@ def collapse_random(arr: np.ndarray, method: str | None):
         return np.median(arr, axis=0), True
     raise ValueError(f"Unknown collapse_method: {method!r} (use None, 'mean', or 'median')")
 
+
+def _resize_map_to_img(eff_map: np.ndarray, target_hw: tuple[int,int]) -> np.ndarray:
+    """Resize a 2D float map to (H, W) using PIL bilinear."""
+    Ht, Wt = target_hw
+    pil = Image.fromarray(eff_map.astype(np.float32), mode="F")
+    pil = pil.resize((Wt, Ht), resample=Image.BILINEAR)
+    return np.array(pil, dtype=np.float32)
+
+def _ensure_uint8_rgb(img: np.ndarray) -> np.ndarray:
+    """Accepts HxW, HxWx1, or HxWx3 in [0..1] or [0..255] → returns HxWx3 uint8."""
+    if img.dtype != np.uint8:
+        if img.max() <= 1.0:
+            img = (np.clip(img, 0, 1) * 255.0).astype(np.uint8)
+        else:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+    if img.ndim == 2:
+        img = np.stack([img]*3, axis=-1)
+    if img.shape[-1] == 1:
+        img = np.repeat(img, 3, axis=-1)
+    return img
+
+def _compute_effect_map_for_image(sel_img: np.ndarray,
+                                  rand_img: np.ndarray,
+                                  effect_size: str) -> np.ndarray:
+    """
+    sel_img: [C, H, W]
+    rand_img: either [C, H, W] (collapsed) or [R, C, H, W] (not collapsed)
+    Returns eff_map: [H, W]
+    """
+    C, H, W = sel_img.shape
+    # Prepare B vectors depending on collapse
+    rand_is_collapsed = (rand_img.ndim == 3)
+    eff_map = np.empty((H, W), dtype=np.float32)
+
+    if rand_is_collapsed:
+        # b has length C
+        for y in range(H):
+            for x in range(W):
+                a = sel_img[:, y, x]
+                b = rand_img[:, y, x]
+                if effect_size == "hedges_g":
+                    eff_map[y, x] = hedges_g(a, b)
+                elif effect_size == "cliffs_delta":
+                    eff_map[y, x] = cliffs_delta(a, b)
+                elif effect_size == "mw_u":
+                    eff_map[y, x] = mw_u(a, b)
+                else:
+                    raise ValueError(f"Unknown effect_size: {effect_size}")
+    else:
+        # rand_img is [R, C, H, W] → flatten repeats × channels
+        R = rand_img.shape[0]
+        for y in range(H):
+            for x in range(W):
+                a = sel_img[:, y, x]                     # length C
+                b = rand_img[:, :, y, x].reshape(-1)      # length R*C
+                if effect_size == "hedges_g":
+                    eff_map[y, x] = hedges_g(a, b)
+                elif effect_size == "cliffs_delta":
+                    eff_map[y, x] = cliffs_delta(a, b)
+                elif effect_size == "mw_u":
+                    eff_map[y, x] = mw_u(a, b)
+                else:
+                    raise ValueError(f"Unknown effect_size: {effect_size}")
+    return eff_map
+
+def _normalise_for_viz(eff_map: np.ndarray,
+                       viz_norm: str,
+                       effect_size: str,
+                       n_a: int | None = None,
+                       n_b: int | None = None,
+                       global_min: float | None = None,
+                       global_max: float | None = None) -> tuple[np.ndarray, dict]:
+    """
+    Returns (map_for_plot, norm_kwargs) where norm_kwargs can hold vmin/vmax.
+    """
+    if viz_norm == "u_unit" and effect_size == "mw_u" and n_a and n_b:
+        denom = float(n_a * n_b)
+        mapped = eff_map / max(denom, 1.0)
+        return mapped, dict(vmin=0.0, vmax=1.0)
+    if viz_norm == "global" and global_min is not None and global_max is not None:
+        return eff_map, dict(vmin=float(global_min), vmax=float(global_max))
+    if viz_norm == "per_image":
+        return eff_map, dict(vmin=float(np.nanmin(eff_map)), vmax=float(np.nanmax(eff_map)))
+    # viz_norm == "none"
+    return eff_map, {}
+
+
+def cliffs_delta(a: np.ndarray, b: np.ndarray) -> float:
+    """
+    Cliff’s δ for two 1‑D vectors (uses pairwise compare, still fast for <10⁴ items).
+    Range −1‥+1.  Positive ⇒ selective > random.
+    """
+    a = a.ravel();  b = b.ravel()
+    gt = (a[:, None] > b).sum()
+    lt = (a[:, None] < b).sum()
+    return (gt - lt) / (len(a) * len(b) + 1e-12)
+
+
+def run_per_image_overlays(
+    all_v1_grads_sel: np.ndarray,             # [N, C, H, W]
+    all_v1_grads_rand: np.ndarray,            # [R, N, C, H, W] or [N, C, H, W] if collapsed
+    effect_size: str,                         # "hedges_g" | "cliffs_delta" | "mw_u"
+    per_img_cfg: dict,
+    outdir: Path,
+    get_preprocessed_image=None,              # callable: idx -> np.ndarray (H,W,3) in 0..1 or 0..255
+):
+    """
+    Computes per-image effect maps and overlays them onto the corresponding preprocessed images.
+    """
+    indices = per_img_cfg.get("indices", [])
+    if not indices:
+        return
+
+    alpha      = float(per_img_cfg.get("alpha", 0.45))
+    cmap       = str(per_img_cfg.get("cmap", "magma"))
+    viz_norm   = str(per_img_cfg.get("viz_norm", "per_image")).lower()
+    save_raw   = bool(per_img_cfg.get("save_raw_maps", True))
+    subdir     = str(per_img_cfg.get("out_subdir", "overlays"))
+
+    overlay_dir = outdir / subdir
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+
+    N, C, H, W = all_v1_grads_sel.shape
+    rand_collapsed = (all_v1_grads_rand.ndim == 4)  # [N, C, H, W]
+    if not rand_collapsed:
+        R = all_v1_grads_rand.shape[0]
+    else:
+        R = 1  # semantically “one random sample set” for bookkeeping
+
+    # ---------- Pass 1: compute global min/max if requested ----------
+    global_min = None
+    global_max = None
+    if viz_norm == "global":
+        mins = []
+        maxs = []
+        for idx in indices:
+            if not (0 <= idx < N):
+                continue
+            sel_img  = all_v1_grads_sel[idx]                        # [C,H,W]
+            rand_img = all_v1_grads_rand[idx] if rand_collapsed else all_v1_grads_rand[:, idx]  # [C,H,W] or [R,C,H,W]
+            eff_map  = _compute_effect_map_for_image(sel_img, rand_img, effect_size)
+            mins.append(np.nanmin(eff_map))
+            maxs.append(np.nanmax(eff_map))
+        if mins and maxs:
+            global_min = float(np.nanmin(mins))
+            global_max = float(np.nanmax(maxs))
+
+    # ---------- Pass 2: render overlays ----------
+    for idx in indices:
+        if not (0 <= idx < N):
+            print(f"[per_image_overlay] Skipping idx {idx} (out of range 0..{N-1})")
+            continue
+
+        # compute effect map (H x W)
+        sel_img  = all_v1_grads_sel[idx]                        # [C,H,W]
+        rand_img = all_v1_grads_rand[idx] if rand_collapsed else all_v1_grads_rand[:, idx]
+        eff_map  = _compute_effect_map_for_image(sel_img, rand_img, effect_size)
+
+        # save raw per-image map (before any visual scaling)
+        if save_raw:
+            np.save(overlay_dir / f"img{idx:05d}_{effect_size}_map.npy", eff_map)
+
+        # figure out sample sizes (for U normalisation if chosen)
+        if rand_collapsed:
+            n_a, n_b = sel_img.shape[0], rand_img.shape[0]          # C, C
+        else:
+            n_a, n_b = sel_img.shape[0], rand_img.shape[0] * rand_img.shape[1]  # C, R*C
+
+        # get the preprocessed image (must align with the gradients)
+        if get_preprocessed_image is not None:
+            base_img = get_preprocessed_image(idx)                  # expected HxWx3 in 0..1 or 0..255
+        else:
+            # ---- TODO: Replace with your project’s image-fetch logic ----
+            # For example, if you keep preprocessed tensors in memory:
+            #   base_img = (preprocessed_imgs[idx].permute(1,2,0).cpu().numpy())  # HxWx3 in [0..1]
+            raise RuntimeError(
+                "Please provide `get_preprocessed_image` to `run_per_image_overlays` "
+                "so we can overlay on the correctly preprocessed (aligned) image."
+            )
+
+        base_img = _ensure_uint8_rgb(np.asarray(base_img))
+        H_img, W_img = base_img.shape[:2]
+
+        # visual normalisation (optional)
+        eff_viz, norm_kwargs = _normalise_for_viz(
+            eff_map, viz_norm=viz_norm, effect_size=effect_size,
+            n_a=n_a, n_b=n_b, global_min=global_min, global_max=global_max
+        )
+
+        # resize effect map to the image dimensions
+        eff_up = _resize_map_to_img(eff_viz, (H_img, W_img))
+
+        # plot overlay
+        fig = plt.figure(figsize=(6, 6))
+        plt.imshow(base_img)
+        im = plt.imshow(eff_up, cmap=cmap, alpha=alpha, interpolation="bilinear", **norm_kwargs)
+        cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
+        cbar.set_label(_effect_label(effect_size, viz_norm))
+        plt.axis("off")
+
+        out_png = overlay_dir / f"img{idx:05d}_{effect_size}_overlay.png"
+        plt.savefig(out_png, dpi=300, bbox_inches="tight", pad_inches=0)
+        plt.close(fig)
+
+        # also store globally scaled map if requested and viz_norm==global/u_unit
+        if save_raw and (viz_norm in {"global", "u_unit"}):
+            np.save(overlay_dir / f"img{idx:05d}_{effect_size}_map_vizscaled.npy", eff_viz)
+
+        print(f"[per_image_overlay] Saved {out_png}")
+
 # ──────────────────────────────────────────────────────────────────────────────
 #                                 MAIN
 # ──────────────────────────────────────────────────────────────────────────────
@@ -485,16 +695,6 @@ def main(cfg_path: str | pathlib.Path):
             all_v1_grads_rand = np.stack(all_v1_grads_rand)
             N, C, Hf, Wf = all_v1_grads_sel.shape
             R = n_random_repeats
-
-            def cliffs_delta(a: np.ndarray, b: np.ndarray) -> float:
-                """
-                Cliff’s δ for two 1‑D vectors (uses pairwise compare, still fast for <10⁴ items).
-                Range −1‥+1.  Positive ⇒ selective > random.
-                """
-                a = a.ravel();  b = b.ravel()
-                gt = (a[:, None] > b).sum()
-                lt = (a[:, None] < b).sum()
-                return (gt - lt) / (len(a) * len(b) + 1e-12)
 
             # Optionally collapse random repeats so N matches selective
             all_v1_grads_rand, _rand_collapsed = collapse_random(all_v1_grads_rand, collapse_method)
@@ -746,6 +946,55 @@ def main(cfg_path: str | pathlib.Path):
                 plt.close()
 
             print(f"Saved {num_voxels_to_plot} voxel histograms ➜ {outdir}")
+
+
+                # ─────────────── PER-IMAGE EFFECT OVERLAYS (optional) ───────────────
+        per_img_cfg = cfg.get("per_image_overlay", {})
+        if per_img_cfg.get("enabled", False) and per_img_cfg.get("indices"):
+            # Ensure we have the raw gradient arrays in memory (load if needed)
+            if ("all_v1_grads_sel" not in locals()) or ("all_v1_grads_rand" not in locals()):
+                if activ_dir.exists():
+                    all_v1_grads_sel = np.load(activ_dir / "grads_selective.npy")
+                    all_v1_grads_rand = np.stack([
+                        np.load(activ_dir / f"grads_random_{rep}.npy")
+                        for rep in range(n_random_repeats)
+                    ])
+                else:
+                    raise RuntimeError(
+                        "Per-image overlays requested but activation gradients not found. "
+                        f"Expected arrays under {activ_dir}."
+                    )
+
+            # Apply the same collapse policy as the main analysis
+            all_v1_grads_rand, _ = collapse_random(all_v1_grads_rand, collapse_method)
+
+            # Provide a preprocessed-image getter that matches the exact transform
+            def get_preprocessed_image(idx: int) -> np.ndarray:
+                """
+                Return the *preprocessed* image that aligns with the V1 maps for image idx.
+                Output: HxWx3 in [0..1] float (uint8 also OK).
+                """
+                pil_img = imgs[idx]  # imgs is the list used for the analysis above
+                # Use the *exact* transform used during forward pass (GLOBAL_TFM),
+                # then de-normalize back to display space so colors look right.
+                x = GLOBAL_TFM(pil_img)  # [3,224,224] normalized
+                # De-normalize (ImageNet stats)
+                mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+                std  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+                x = (x * std + mean).clamp(0, 1)  # back to [0..1]
+                x = x.permute(1, 2, 0).cpu().numpy()  # HxWx3
+                return x
+
+            # Run the overlay generator
+            run_per_image_overlays(
+                all_v1_grads_sel=all_v1_grads_sel,            # [N,C,H,W]
+                all_v1_grads_rand=all_v1_grads_rand,          # [R,N,C,H,W] or [N,C,H,W] if collapsed
+                effect_size=effect_size,                      # "hedges_g" | "cliffs_delta" | "mw_u"
+                per_img_cfg=per_img_cfg,
+                outdir=outdir,
+                get_preprocessed_image=get_preprocessed_image,
+            )
+
 
 
        

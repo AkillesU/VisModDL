@@ -7,7 +7,7 @@ n_random_repeats: 100
 collapse_method: median
 effect_size: mw_u
 category_images: categ_images_testset/places
-image_categories: [faces, animals, objects]
+image_categories: [places]
 max_images: 64
 pixels_per_degree: None
 output_dir: it2v1_analysis
@@ -18,3 +18,15 @@ model:
   weights: pretrained
   time_steps: 5
   device: auto
+
+
+per_image_overlay:
+  enabled: true
+  indices: [0, 7, 15]      # image indices from your already-selected imageset
+  alpha: 0.45              # overlay transparency
+  cmap: "magma"            # e.g., "magma", "viridis"
+  upsample: "bilinear"     # kept for clarity; PIL uses bilinear below
+  viz_norm: "per_image"    # "per_image" | "global" | "none" | "u_unit"
+  save_raw_maps: false
+  out_subdir: "overlays"
+
