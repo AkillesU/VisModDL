@@ -453,6 +453,7 @@ def run_per_image_overlays(
     outdir: Path,
     get_preprocessed_image=None,              # callable: idx -> np.ndarray (H,W,3) in 0..1 or 0..255
     cat_tag="faces",
+    selectivity_frac=1,
 ):
     """
     Computes per-image effect maps and overlays them onto the corresponding preprocessed images.
@@ -555,7 +556,8 @@ def run_per_image_overlays(
         cbar.set_label(effect_size)
         plt.axis("off")
 
-        out_png = overlay_dir / f"{cat_tag}_img{idx:05d}_{effect_size}_overlay.png"
+        selectivity_frac_str = str(selectivity_frac)
+        out_png = overlay_dir / f"{cat_tag}_img{idx:05d}_{effect_size}_overlay_{selectivity_frac_str}-sel.png"
         plt.savefig(out_png, dpi=300, bbox_inches="tight", pad_inches=0)
         plt.close(fig)
 
@@ -1052,7 +1054,8 @@ def main(cfg_path: str | pathlib.Path):
                 per_img_cfg=per_img_cfg,
                 outdir=outdir,
                 get_preprocessed_image=get_preprocessed_image,
-                cat_tag=cat_tag
+                cat_tag=cat_tag,
+                selectivity_frac=top_frac,
             )
 
 
