@@ -104,6 +104,32 @@ def hedges_g(a: np.ndarray, b: np.ndarray) -> float:
 # Model & image helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+
+def _slice_rand_for_index(rand_all: np.ndarray, idx: int) -> np.ndarray:
+    """
+    Return a per-image random tensor for index idx in one of the supported shapes:
+      [R,C,H,W]  or  [C,H,W]  or  [H,W]
+    """
+    if rand_all.ndim == 5:            # [R, N, C, H, W]
+        return rand_all[:, idx]       # [R, C, H, W]
+    if rand_all.ndim == 4:
+        # Either [N,C,H,W]   → per-image [C,H,W]
+        # or    [R,H,W,N]    (unlikely, but guard)
+        if rand_all.shape[0] == all_v1_grads_sel.shape[0]:   # N
+            return rand_all[idx]       # [C,H,W]
+        elif rand_all.shape[-1] == all_v1_grads_sel.shape[0]:
+            return rand_all[:, :, :, idx]  # [R,H,W]  → will be handled in 2-D branch below after flatten
+        else:
+            return rand_all[idx]       # best effort
+    if rand_all.ndim == 3:
+        # Could be [N,H,W] or [C,H,W]; prefer per-image first
+        if rand_all.shape[0] == all_v1_grads_sel.shape[0]:   # N
+            return rand_all[idx]       # [H,W]
+        else:
+            return rand_all            # [C,H,W] assumed
+    return rand_all  # pass through (will be validated downstream)
+
+
 def load_model(mcfg, device):
     import cornet
     ctor = {
@@ -317,49 +343,74 @@ def _ensure_uint8_rgb(img: np.ndarray) -> np.ndarray:
         img = np.repeat(img, 3, axis=-1)
     return img
 
+
 def _compute_effect_map_for_image(sel_img: np.ndarray,
                                   rand_img: np.ndarray,
                                   effect_size: str) -> np.ndarray:
     """
-    sel_img: [C, H, W]
-    rand_img: either [C, H, W] (collapsed) or [R, C, H, W] (not collapsed)
+    sel_img:  [C, H, W]
+    rand_img: [R, C, H, W]  (not collapsed)
+              [C, H, W]     (collapsed across repeats)
+              [H, W]        (fully collapsed across repeats and channels)  ← defensive support
     Returns eff_map: [H, W]
     """
+    # --- shapes ---
+    if sel_img.ndim != 3:
+        raise ValueError(f"Expected sel_img as [C,H,W], got shape {sel_img.shape}")
     C, H, W = sel_img.shape
-    # Prepare B vectors depending on collapse
-    rand_is_collapsed = (rand_img.ndim == 3)
+
+    # build a function to compute the effect between two 1-D vectors
+    def _eff(a: np.ndarray, b: np.ndarray) -> float:
+        if effect_size == "hedges_g":
+            return hedges_g(a, b)
+        elif effect_size == "cliffs_delta":
+            return cliffs_delta(a, b)
+        elif effect_size == "mw_u":
+            return mw_u(a, b)
+        else:
+            raise ValueError(f"Unknown effect_size: {effect_size}")
+
     eff_map = np.empty((H, W), dtype=np.float32)
 
-    if rand_is_collapsed:
-        # b has length C
+    if rand_img.ndim == 4:
+        # [R, C, H, W] → flatten repeats×channels per voxel
         for y in range(H):
             for x in range(W):
-                a = sel_img[:, y, x]
-                b = rand_img[:, y, x]
-                if effect_size == "hedges_g":
-                    eff_map[y, x] = hedges_g(a, b)
-                elif effect_size == "cliffs_delta":
-                    eff_map[y, x] = cliffs_delta(a, b)
-                elif effect_size == "mw_u":
-                    eff_map[y, x] = mw_u(a, b)
-                else:
-                    raise ValueError(f"Unknown effect_size: {effect_size}")
+                a = sel_img[:, y, x]                      # len = C
+                b = rand_img[:, :, y, x].reshape(-1)      # len = R*C
+                eff_map[y, x] = _eff(a, b)
+
+    elif rand_img.ndim == 3:
+        # [C, H, W] → channel-wise comparison per voxel
+        if rand_img.shape[0] != C:
+            raise ValueError(f"rand_img first dim (C={rand_img.shape[0]}) "
+                             f"does not match sel_img C={C}")
+        for y in range(H):
+            for x in range(W):
+                a = sel_img[:, y, x]          # len = C
+                b = rand_img[:, y, x]         # len = C
+                eff_map[y, x] = _eff(a, b)
+
+    elif rand_img.ndim == 2:
+        # [H, W] → fully collapsed random map. We can only compare each voxel’s
+        # scalar to the selective channel distribution by repeating that scalar.
+        # This preserves directionality for Hedges g & MW U; Cliff’s δ is defined
+        # between two samples and still works with a constant sample for b.
+        import warnings
+        warnings.warn("[per_image_overlay] rand_img is 2-D [H,W]; "
+                      "random repeats & channels appear fully collapsed. "
+                      "Using per-voxel scalar as the 'b' sample (repeated).")
+        for y in range(H):
+            for x in range(W):
+                a = sel_img[:, y, x]                 # len = C
+                b0 = float(rand_img[y, x])
+                b = np.full_like(a, b0, dtype=np.float32)  # len = C (constant)
+                eff_map[y, x] = _eff(a, b)
     else:
-        # rand_img is [R, C, H, W] → flatten repeats × channels
-        R = rand_img.shape[0]
-        for y in range(H):
-            for x in range(W):
-                a = sel_img[:, y, x]                     # length C
-                b = rand_img[:, :, y, x].reshape(-1)      # length R*C
-                if effect_size == "hedges_g":
-                    eff_map[y, x] = hedges_g(a, b)
-                elif effect_size == "cliffs_delta":
-                    eff_map[y, x] = cliffs_delta(a, b)
-                elif effect_size == "mw_u":
-                    eff_map[y, x] = mw_u(a, b)
-                else:
-                    raise ValueError(f"Unknown effect_size: {effect_size}")
+        raise ValueError(f"Unexpected rand_img ndim={rand_img.ndim} shape={rand_img.shape}")
+
     return eff_map
+
 
 def _normalise_for_viz(eff_map: np.ndarray,
                        viz_norm: str,
@@ -435,7 +486,8 @@ def run_per_image_overlays(
             if not (0 <= idx < N):
                 continue
             sel_img  = all_v1_grads_sel[idx]                        # [C,H,W]
-            rand_img = all_v1_grads_rand[idx] if rand_collapsed else all_v1_grads_rand[:, idx]  # [C,H,W] or [R,C,H,W]
+            rand_img = _slice_rand_for_index(all_v1_grads_rand, idx)
+            print(f"[overlay] idx={idx}  sel_img={sel_img.shape}  rand_img={np.shape(rand_img)}")
             eff_map  = _compute_effect_map_for_image(sel_img, rand_img, effect_size)
             mins.append(np.nanmin(eff_map))
             maxs.append(np.nanmax(eff_map))
