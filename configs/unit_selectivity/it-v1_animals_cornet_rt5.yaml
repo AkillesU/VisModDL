@@ -23,8 +23,8 @@ model:
 per_image_overlay:
   enabled: true
   indices: [0, 7, 15]      # image indices from your already-selected imageset
-  alpha: 0.45              # overlay transparency
-  cmap: "magma"            # e.g., "magma", "viridis"
+  alpha: 0.65              # overlay transparency
+  cmap: "winter"            # e.g., "magma", "viridis"
   upsample: "bilinear"     # kept for clarity; PIL uses bilinear below
   viz_norm: "per_image"    # "per_image" | "global" | "none" | "u_unit"
   save_raw_maps: false
