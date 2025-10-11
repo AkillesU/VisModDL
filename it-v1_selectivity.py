@@ -545,7 +545,7 @@ def run_per_image_overlays(
         plt.imshow(base_img)
         im = plt.imshow(eff_up, cmap=cmap, alpha=alpha, interpolation="bilinear", **norm_kwargs)
         cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
-        cbar.set_label(_effect_label(effect_size, viz_norm))
+        cbar.set_label(effect_size)
         plt.axis("off")
 
         out_png = overlay_dir / f"img{idx:05d}_{effect_size}_overlay.png"
