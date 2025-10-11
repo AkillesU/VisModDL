@@ -532,6 +532,12 @@ def run_per_image_overlays(
         base_img = _ensure_uint8_rgb(np.asarray(base_img))
         H_img, W_img = base_img.shape[:2]
 
+        # Optionally convert base image to greyscale before overlay
+        if bool(per_img_cfg.get("make_greyscale", False)):
+            base_img = np.dot(base_img[..., :3], [0.2989, 0.5870, 0.1140])  # luminance weighting
+            base_img = np.stack([base_img] * 3, axis=-1).astype(np.uint8)
+
+
         # visual normalisation (optional)
         eff_viz, norm_kwargs = _normalise_for_viz(
             eff_map, viz_norm=viz_norm, effect_size=effect_size,
