@@ -29,3 +29,4 @@ per_image_overlay:
   viz_norm: "per_image"    # "per_image" | "global" | "none" | "u_unit"
   save_raw_maps: false
   out_subdir: "overlays"
+  make_greyscale: true 
