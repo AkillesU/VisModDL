@@ -472,7 +472,20 @@ def run_per_image_overlays(
     overlay_dir.mkdir(parents=True, exist_ok=True)
 
     N, C, H, W = all_v1_grads_sel.shape
-    rand_collapsed = (all_v1_grads_rand.ndim == 4)  # [N, C, H, W]
+    overlay_collapse_method = per_img_cfg.get("collapse_method", "mean")  # "mean" | "median" | None
+    rand_local = all_v1_grads_rand
+    if rand_local.ndim == 5 and overlay_collapse_method is not None:
+        m = str(overlay_collapse_method).lower()
+        if m in {"mean", "avg", "average"}:
+            rand_local = rand_local.mean(axis=0)           # [N,C,H,W]
+        elif m in {"median", "med"}:
+            rand_local = np.median(rand_local, axis=0)     # [N,C,H,W]
+        else:
+            raise ValueError(f"Unknown per-image collapse_method: {overlay_collapse_method!r}")
+    else:
+        # Keep as-is: [N,C,H,W] or [R,N,C,H,W]
+        pass
+    rand_collapsed = (rand_local.ndim == 4)   # [N, C, H, W]
     if not rand_collapsed:
         R = all_v1_grads_rand.shape[0]
     else:
@@ -488,7 +501,7 @@ def run_per_image_overlays(
             if not (0 <= idx < N):
                 continue
             sel_img  = all_v1_grads_sel[idx]                        # [C,H,W]
-            rand_img = _slice_rand_for_index(all_v1_grads_rand, idx)
+            rand_img = _slice_rand_for_index(rand_local, idx)
             print(f"[overlay] idx={idx}  sel_img={sel_img.shape}  rand_img={np.shape(rand_img)}")
             eff_map  = _compute_effect_map_for_image(sel_img, rand_img, effect_size)
             mins.append(np.nanmin(eff_map))
@@ -505,7 +518,7 @@ def run_per_image_overlays(
 
         # compute effect map (H x W)
         sel_img  = all_v1_grads_sel[idx]                        # [C,H,W]
-        rand_img = all_v1_grads_rand[idx] if rand_collapsed else all_v1_grads_rand[:, idx]
+        rand_img = _slice_rand_for_index(rand_local, idx)
         eff_map  = _compute_effect_map_for_image(sel_img, rand_img, effect_size)
 
         # save raw per-image map (before any visual scaling)
@@ -513,10 +526,13 @@ def run_per_image_overlays(
             np.save(overlay_dir / f"img{idx:05d}_{effect_size}_map.npy", eff_map)
 
         # figure out sample sizes (for U normalisation if chosen)
-        if rand_collapsed:
-            n_a, n_b = sel_img.shape[0], rand_img.shape[0]          # C, C
+        n_a = sel_img.shape[0]  # C
+        if rand_img.ndim == 4:          # [R, C, H, W]
+            n_b = rand_img.shape[0] * rand_img.shape[1]  # R*C
+        elif rand_img.ndim == 3:        # [C, H, W]
+            n_b = rand_img.shape[0]                      # C
         else:
-            n_a, n_b = sel_img.shape[0], rand_img.shape[0] * rand_img.shape[1]  # C, R*C
+            raise ValueError(f"rand_img must be [R,C,H,W] or [C,H,W], got {rand_img.shape}")
 
         # get the preprocessed image (must align with the gradients)
         if get_preprocessed_image is not None:
@@ -754,6 +770,16 @@ def main(cfg_path: str | pathlib.Path):
             all_v1_grads_rand = [np.load(activ_dir / f"grads_random_{rep}.npy") for rep in range(n_random_repeats)]
             print(f"Loaded {len(all_v1_grads_rand)} random repeats.")
             all_v1_grads_rand = np.stack(all_v1_grads_rand)
+            if (activ_dir / "grads_random_stacked.npy").exists():
+                all_v1_grads_rand_base = np.load(activ_dir / "grads_random_stacked.npy", mmap_mode="r")
+            else:
+                # Fall back to per-rep files
+                all_v1_grads_rand_base = np.stack([
+                    np.load(activ_dir / f"grads_random_{rep}.npy")
+                    for rep in range(n_random_repeats)
+                ])  # [R, N, C, H, W]
+                # Save for future runs
+                np.save(activ_dir / "grads_random_stacked.npy", all_v1_grads_rand_base)
             N, C, Hf, Wf = all_v1_grads_sel.shape
             R = n_random_repeats
 
@@ -854,6 +880,9 @@ def main(cfg_path: str | pathlib.Path):
             all_v1_grads_rand = [np.load(activ_dir / f"grads_random_{rep}.npy") for rep in range(n_random_repeats)]
             print(f"Loaded {len(all_v1_grads_rand)} random repeats.")
             all_v1_grads_rand = np.stack(all_v1_grads_rand)
+            all_v1_grads_rand_base = all_v1_grads_rand.copy()
+            np.save(activ_dir / "grads_random_stacked.npy", all_v1_grads_rand_base)
+
             print("Mean selective gradient magnitude:", np.mean(all_v1_grads_sel))
             print("Mean random gradient magnitude:", np.mean(all_v1_grads_rand))
 
@@ -1026,9 +1055,6 @@ def main(cfg_path: str | pathlib.Path):
                         f"Expected arrays under {activ_dir}."
                     )
 
-            # Apply the same collapse policy as the main analysis
-            all_v1_grads_rand, _ = collapse_random(all_v1_grads_rand, collapse_method)
-
             # Provide a preprocessed-image getter that matches the exact transform
             def get_preprocessed_image(idx: int) -> np.ndarray:
                 """
@@ -1046,17 +1072,28 @@ def main(cfg_path: str | pathlib.Path):
                 x = x.permute(1, 2, 0).cpu().numpy()  # HxWx3
                 return x
 
-            # Run the overlay generator
+            # Always use the preserved base random tensor for overlays (channels intact)
+            if (activ_dir / "grads_random_stacked.npy").exists():
+                all_v1_grads_rand_base = np.load(activ_dir / "grads_random_stacked.npy", mmap_mode="r")
+            else:
+                # Fallback: rebuild from per-rep files (keeps [R,N,C,H,W])
+                all_v1_grads_rand_base = np.stack([
+                    np.load(activ_dir / f"grads_random_{rep}.npy")
+                    for rep in range(n_random_repeats)
+                ])
+
+            # Run the overlay generator (it will handle optional repeat collapse locally)
             run_per_image_overlays(
                 all_v1_grads_sel=all_v1_grads_sel,            # [N,C,H,W]
-                all_v1_grads_rand=all_v1_grads_rand,          # [R,N,C,H,W] or [N,C,H,W] if collapsed
-                effect_size=effect_size,                      # "hedges_g" | "cliffs_delta" | "mw_u"
+                all_v1_grads_rand=all_v1_grads_rand_base,     # [R,N,C,H,W] ← the preserved master
+                effect_size=effect_size,
                 per_img_cfg=per_img_cfg,
                 outdir=outdir,
                 get_preprocessed_image=get_preprocessed_image,
                 cat_tag=cat_tag,
                 selectivity_frac=top_frac,
             )
+
 
 
 
