@@ -1131,6 +1131,9 @@ def main(cfg_path: str | pathlib.Path):
                     np.load(activ_dir / f"grads_random_{rep}.npy")
                     for rep in range(n_random_repeats)
                 ])
+                np.save(activ_dir / "grads_random_stacked.npy", all_v1_grads_rand_base)
+                print("[TRACE-RAND] Saved stacked random grads (overlay path):",
+                      (activ_dir / "grads_random_stacked.npy"), all_v1_grads_rand_base.shape)
 
             # Run the overlay generator (it will handle optional repeat collapse locally)
             run_per_image_overlays(
