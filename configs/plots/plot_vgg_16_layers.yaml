@@ -1,0 +1,41 @@
+subdir: "vgg16_c/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
+      damage_layers: ["conv1","conv4","conv7","conv10","conv13"]
+      activations_layers: ["features_30"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      model_tag: vgg16
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
+      damage_layers: ["conv1","conv4","conv7","conv10","conv13"]
+      activations_layers: ["features_30"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      model_tag: vgg16
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/vgg16_c+b/"
+      damage_layers: ["conv1","conv4","conv7","conv10","conv13"]
+      activations_layers: ["features_30"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      selection_mode: percentage
+      model_tag: vgg16
