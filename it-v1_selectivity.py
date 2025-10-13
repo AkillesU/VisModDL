@@ -105,29 +105,45 @@ def hedges_g(a: np.ndarray, b: np.ndarray) -> float:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _slice_rand_for_index(rand_all: np.ndarray, idx: int) -> np.ndarray:
+def _slice_rand_for_index(rand_all: np.ndarray, idx: int, N_expected: int | None) -> np.ndarray:
     """
-    Return a per-image random tensor for index idx in one of the supported shapes:
-      [R,C,H,W]  or  [C,H,W]  or  [H,W]
+    Return the per-image random tensor for index `idx` from a container that may be:
+      [R, N, C, H, W]  → returns [R, C, H, W]
+      [N, C, H, W]     → returns [C, H, W]
+      [R, H, W, N]     → returns [R, H, W]   (discouraged but handled)
+      [N, H, W]        → returns [H, W]      (fully channel-collapsed; caller should guard)
+      [C, H, W]        → returns [C, H, W]   (already per-image)
+    We prefer to use `N_expected` (from the selective array shape) to disambiguate.
     """
-    if rand_all.ndim == 5:            # [R, N, C, H, W]
-        return rand_all[:, idx]       # [R, C, H, W]
-    if rand_all.ndim == 4:
-        # Either [N,C,H,W]   → per-image [C,H,W]
-        # or    [R,H,W,N]    (unlikely, but guard)
-        if rand_all.shape[0] == all_v1_grads_sel.shape[0]:   # N
-            return rand_all[idx]       # [C,H,W]
-        elif rand_all.shape[-1] == all_v1_grads_sel.shape[0]:
-            return rand_all[:, :, :, idx]  # [R,H,W]  → will be handled in 2-D branch below after flatten
-        else:
-            return rand_all[idx]       # best effort
-    if rand_all.ndim == 3:
-        # Could be [N,H,W] or [C,H,W]; prefer per-image first
-        if rand_all.shape[0] == all_v1_grads_sel.shape[0]:   # N
-            return rand_all[idx]       # [H,W]
-        else:
-            return rand_all            # [C,H,W] assumed
-    return rand_all  # pass through (will be validated downstream)
+    nd = rand_all.ndim
+
+    if nd == 5:
+        # [R, N, C, H, W]
+        return rand_all[:, idx]
+
+    if nd == 4:
+        # Either [N, C, H, W] or [R, H, W, N]
+        if N_expected is not None:
+            if rand_all.shape[0] == N_expected:   # [N, C, H, W]
+                return rand_all[idx]
+            if rand_all.shape[-1] == N_expected:  # [R, H, W, N]
+                return rand_all[..., idx]
+        # Fallback: assume [N, C, H, W] if possible
+        if idx < rand_all.shape[0]:
+            return rand_all[idx]
+        # else assume trailing N
+        return rand_all[..., idx]
+
+    if nd == 3:
+        # Could be [N, H, W] (bad for overlays) or [C, H, W] (already per-image)
+        if N_expected is not None and rand_all.shape[0] == N_expected:
+            # [N, H, W] → returns [H, W] (caller may reject)
+            return rand_all[idx]
+        # Assume [C, H, W]
+        return rand_all
+
+    # Any other shape: pass through (caller will validate / error)
+    return rand_all
 
 
 def load_model(mcfg, device):
@@ -501,7 +517,7 @@ def run_per_image_overlays(
             if not (0 <= idx < N):
                 continue
             sel_img  = all_v1_grads_sel[idx]                        # [C,H,W]
-            rand_img = _slice_rand_for_index(rand_local, idx)
+            rand_img = _slice_rand_for_index(rand_local, idx, N_expected=N)
             print(f"[overlay] idx={idx}  sel_img={sel_img.shape}  rand_img={np.shape(rand_img)}")
             eff_map  = _compute_effect_map_for_image(sel_img, rand_img, effect_size)
             mins.append(np.nanmin(eff_map))
@@ -518,7 +534,7 @@ def run_per_image_overlays(
 
         # compute effect map (H x W)
         sel_img  = all_v1_grads_sel[idx]                        # [C,H,W]
-        rand_img = _slice_rand_for_index(rand_local, idx)
+        rand_img = _slice_rand_for_index(rand_local, idx, N_expected=N)
         eff_map  = _compute_effect_map_for_image(sel_img, rand_img, effect_size)
 
         # save raw per-image map (before any visual scaling)
@@ -533,6 +549,7 @@ def run_per_image_overlays(
             n_b = rand_img.shape[0]                      # C
         else:
             raise ValueError(f"rand_img must be [R,C,H,W] or [C,H,W], got {rand_img.shape}")
+
 
         # get the preprocessed image (must align with the gradients)
         if get_preprocessed_image is not None:
