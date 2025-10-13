@@ -490,6 +490,11 @@ def run_per_image_overlays(
     N, C, H, W = all_v1_grads_sel.shape
     overlay_collapse_method = per_img_cfg.get("collapse_method", "mean")  # "mean" | "median" | None
     rand_local = all_v1_grads_rand
+    print("\n[TRACE-RAND] ---- Enter run_per_image_overlays ----")
+    print("   rand_local shape :", np.shape(rand_local))
+    print("   selective shape  :", np.shape(all_v1_grads_sel))
+    print("   overlay collapse_method:", overlay_collapse_method)
+
     if rand_local.ndim == 5 and overlay_collapse_method is not None:
         m = str(overlay_collapse_method).lower()
         if m in {"mean", "avg", "average"}:
@@ -535,6 +540,9 @@ def run_per_image_overlays(
         # compute effect map (H x W)
         sel_img  = all_v1_grads_sel[idx]                        # [C,H,W]
         rand_img = _slice_rand_for_index(rand_local, idx, N_expected=N)
+        print(f"[TRACE-RAND] idx={idx} | rand_img shape={np.shape(rand_img)} "
+          f"| sel_img shape={np.shape(sel_img)}")
+
         eff_map  = _compute_effect_map_for_image(sel_img, rand_img, effect_size)
 
         # save raw per-image map (before any visual scaling)
@@ -787,21 +795,32 @@ def main(cfg_path: str | pathlib.Path):
             all_v1_grads_rand = [np.load(activ_dir / f"grads_random_{rep}.npy") for rep in range(n_random_repeats)]
             print(f"Loaded {len(all_v1_grads_rand)} random repeats.")
             all_v1_grads_rand = np.stack(all_v1_grads_rand)
+            
+            print("\n[TRACE-RAND] Initial random gradients shape loaded/stacked:",
+                np.shape(all_v1_grads_rand))
+
             if (activ_dir / "grads_random_stacked.npy").exists():
                 all_v1_grads_rand_base = np.load(activ_dir / "grads_random_stacked.npy", mmap_mode="r")
+                print("[TRACE-RAND] Loaded preserved grads_random_stacked.npy, shape:",
+                np.shape(np.load(activ_dir / "grads_random_stacked.npy", mmap_mode='r')))
             else:
                 # Fall back to per-rep files
+                print("No random stacked file found; stacking from individual repeats.")
                 all_v1_grads_rand_base = np.stack([
                     np.load(activ_dir / f"grads_random_{rep}.npy")
                     for rep in range(n_random_repeats)
                 ])  # [R, N, C, H, W]
                 # Save for future runs
                 np.save(activ_dir / "grads_random_stacked.npy", all_v1_grads_rand_base)
+
             N, C, Hf, Wf = all_v1_grads_sel.shape
             R = n_random_repeats
 
             # Optionally collapse random repeats so N matches selective
             all_v1_grads_rand, _rand_collapsed = collapse_random(all_v1_grads_rand, collapse_method)
+            print("[TRACE-RAND] After collapse_random →", np.shape(all_v1_grads_rand),
+              "| collapse_method:", collapse_method)
+
             if _rand_collapsed:
                 # Now shapes match: random is [N, C, H, W], same as selective
                 sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)    # [N*C, H*W]
@@ -897,13 +916,27 @@ def main(cfg_path: str | pathlib.Path):
             all_v1_grads_rand = [np.load(activ_dir / f"grads_random_{rep}.npy") for rep in range(n_random_repeats)]
             print(f"Loaded {len(all_v1_grads_rand)} random repeats.")
             all_v1_grads_rand = np.stack(all_v1_grads_rand)
+
+            print("\n[TRACE-RAND] Initial random gradients shape loaded/stacked:",
+                np.shape(all_v1_grads_rand))
+
             all_v1_grads_rand_base = all_v1_grads_rand.copy()
             np.save(activ_dir / "grads_random_stacked.npy", all_v1_grads_rand_base)
+
+            if (activ_dir / "grads_random_stacked.npy").exists():
+                print("[TRACE-RAND] Loaded preserved grads_random_stacked.npy, shape:",
+                      np.shape(np.load(activ_dir / "grads_random_stacked.npy", mmap_mode='r')))
+            else:
+                print("[TRACE-RAND] No pre-stacked random gradients file found.")
+
 
             print("Mean selective gradient magnitude:", np.mean(all_v1_grads_sel))
             print("Mean random gradient magnitude:", np.mean(all_v1_grads_rand))
 
             all_v1_grads_rand, _rand_collapsed = collapse_random(all_v1_grads_rand, collapse_method)
+            print("[TRACE-RAND] After collapse_random →", np.shape(all_v1_grads_rand),
+              "| collapse_method:", collapse_method)
+
             
 
             # ──────────────────────────────────────────────────────────────────
