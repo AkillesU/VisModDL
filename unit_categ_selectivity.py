@@ -102,7 +102,10 @@ def main(cfg_path):
     transform = build_transform()
 
     # Model tag for filenames
-    model_tag = model_info["name"]
+    if pretrained:
+        model_tag = model_info["name"]
+    else:
+                model_tag = f"{model_info['name']}_ut"
 
     # Select layers to process
     block_layers = select_block_layers(model, model_tag)
