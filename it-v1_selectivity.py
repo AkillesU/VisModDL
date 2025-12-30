@@ -153,10 +153,16 @@ def load_model(mcfg, device):
         "cornet_s" : cornet.cornet_s,
         "cornet_z" : cornet.cornet_z
     }[mcfg["name"].lower()]
-    kwargs = {"pretrained": True}
+    
+    # Map "pretrained" string to True, everything else to False
+    is_pretrained = (mcfg.get("weights", "pretrained").lower() == "pretrained")
+    
+    kwargs = {"pretrained": is_pretrained}
     kwargs["map_location"] = (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+    
     if mcfg["name"].lower() == "cornet_rt":
         kwargs["times"] = mcfg.get("time_steps", 5)
+    
     return ctor(**kwargs).to(device).eval()
 
 
@@ -637,6 +643,11 @@ def main(cfg_path: str | pathlib.Path):
     else:
         print("Using CUDA")
 
+    # Detect weight status for naming
+    model_name = cfg["model"].get("name", "cornet_rt").lower()
+    is_pretrained = (cfg["model"].get("weights", "pretrained").lower() == "pretrained")
+    ut_suffix = "_ut" if not is_pretrained else ""
+
     # Figure out which image categories to evaluate --------------
     imgs, cat_tag = gather_images(cfg)
     print(f"Loaded {len(imgs)} images; category‑tag = '{cat_tag}'.")
@@ -656,13 +667,16 @@ def main(cfg_path: str | pathlib.Path):
     for top_frac in top_frac_list:
         mode = cfg.get("top_unit_selection", "percentage").lower()
         cat = cfg["category"].lower()
-        prefix = f"{cat}_{cat_tag}_{mode}_{top_frac}"
+        # Add model_suffix to the prefix to differentiate folders and CSVs
+        prefix = f"{cat}_{cat_tag}_{mode}_{top_frac}{ut_suffix}"
         activ_dir = outdir / f"activations_{prefix}_grad"
         diff_csv_path = outdir / f"{prefix}_v1_featuremap_selective_vs_random_grad.csv"
 
         print(f"\n=== Processing top_frac={top_frac} ===")
         
-        sel_path = pathlib.Path(cfg["selectivity_csv_dir"]) / "all_layers_units_mannwhitneyu.pkl"
+        # Load selectivity file using the suffix if untrained
+        sel_filename = f"{model_name}{ut_suffix}_all_layers_units_mannwhitneyu.pkl"
+        sel_path = pathlib.Path(cfg["selectivity_csv_dir"]) / sel_filename
         sel      = pd.read_pickle(sel_path)
         mw_col   = f"mw_{cat}"
         if mw_col not in sel.columns:
