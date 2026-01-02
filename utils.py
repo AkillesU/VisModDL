@@ -208,6 +208,10 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
     model_source = model_info["source"]
     model_repo = model_info["repo"]
     model_name = model_info["name"]
+    # Tag untrained models explicitly
+    if not pretrained and not str(model_name).endswith("_ut"):
+        model_name = f"{model_name}_ut"
+        model_info["name"] = model_name
     model_weights = model_info["weights"]
     if "time_steps" in model_info:
         model_time_steps = model_info["time_steps"]
@@ -1123,10 +1127,13 @@ def run_damage(
     # Determine time_steps for saving
     if "time_steps" in model_info:
         time_steps = str(model_info['time_steps'])
-    elif model_info['name'] == "cornet_rt":
+    elif str(model_info['name']).startswith("cornet_rt"):
         time_steps = "5"
     else:
         time_steps = ""
+    # Tag untrained models explicitly
+    if not pretrained and not str(model_info.get('name','')).endswith('_ut'):
+        model_info['name'] = f"{model_info['name']}_ut"
 
     # Keep original run_suffix logic
     run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
@@ -3714,6 +3721,9 @@ def run_damage_imagenet(
         del tmp_model
     else:
         raise ValueError("manipulation_method must be 'connections' or 'noise'.")
+    # Tag untrained models explicitly
+    if not pretrained and not str(model_info.get('name','')).endswith('_ut'):
+        model_info['name'] = f"{model_info['name']}_ut"
 
     # 2) naming pieces ----------------------------------------------------
     dir_tag = ("units" if manipulation_method == "connections" and masking_level == "units"
