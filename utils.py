@@ -549,7 +549,7 @@ def apply_masking(
                 k = int(fraction_to_mask * num_units)
                 if k <= 0:
                     # nothing to mask for this layer at this damage level
-                    continue
+                    return None
                 flat_idx = torch.randperm(num_units, device=o_tensor.device)[:k]
                 state["flat_idx"] = flat_idx
                 state["shape_tail"] = tail
