@@ -1,0 +1,34 @@
+image_dir: "stimuli"
+layer_name: "IT"
+layer_path: 
+ - "module._modules.V1._modules.output"
+ - "module._modules.V2._modules.output"
+ - "module._modules.V4._modules.output"
+ - "module._modules.IT._modules.output"
+model_source: "cornet"
+model_repo: "-"
+model_name: "cornet_rt"
+model_weights: "" # torch.hub weights (not necesssary for cornet models). Leave empty for untrained.
+pretrained: True
+model_time_steps: 5
+mc_permutations: 200 # How many monte carlo permutations on damage to perform. Use 21 as in Haupt et al., 2024?
+
+layer_paths_to_damage: 
+  - "module._modules.IT"
+apply_to_all_layers: False
+include_bias: False
+only_conv: True
+
+# Masking damage parameters
+manipulation_method: "masking"
+masking_level: "unit_activations_spatial"  # "connections" or "units"
+fraction_to_mask: # Start, N (int), interval [start,N*interval]
+  - 0
+  - 21
+  - 0.05
+
+# Noise damage parameters
+noise_levels: # Start, N (int), interval [start, N*interval]
+  - 0
+  - 0 #31
+  - 0.1
