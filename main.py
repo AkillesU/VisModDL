@@ -39,7 +39,7 @@ def main():
     fraction_to_mask_params = config.get("fraction_to_mask", [0.05, 10, 0.05])
     layer_paths_to_damage = config.get("layer_paths_to_damage", [])
     apply_to_all_layers = config.get("apply_to_all_layers", False)
-    masking_level = config.get("masking_level", "connections")
+    masking_level = config.get("masking_level", "connections")  # supports: connections, units, unit_activations, unit_activations_spatial
     mc_permutations = config.get("mc_permutations", 100)
     noise_levels_params = config.get("noise_levels", [0.1, 0, 0.1])
     include_bias = config.get("include_bias", False)

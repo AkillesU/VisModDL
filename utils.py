@@ -502,7 +502,89 @@ def apply_masking(
         # Done: hooks are registered; nothing else to do for this mode.
         return
 
-    # Build the mask tensors
+    
+
+    # Activation-level *spatial* unit masking (mask individual activation elements, not whole channels)
+    if masking_level == "unit_activations_spatial":
+        # Enumerate target layers similarly to unit_activations
+        target_paths = []
+        if apply_to_all_layers:
+            # apply to all conv/weight layers: mirror the unit_activations behavior by expanding from top-level blocks
+            for name, _ in model.named_parameters():
+                # handled below by collecting from model modules; here we just fall back to layer_paths semantics
+                pass
+
+        if layer_paths is None and not apply_to_all_layers:
+            raise ValueError("layer_paths must be provided unless apply_to_all_layers=True")
+
+        # If apply_to_all_layers=True, we treat the whole model as the base
+        if apply_to_all_layers:
+            # Expand from the model root
+            if only_conv:
+                target_paths.extend(get_all_conv_layers(model, ""))  # path prefix empty
+            else:
+                target_paths.extend(get_all_weight_layers(model, ""))
+        else:
+            for path in layer_paths:
+                base = get_layer_from_path(model, path)
+                if only_conv:
+                    target_paths.extend(get_all_conv_layers(base, path))
+                else:
+                    target_paths.extend(get_all_weight_layers(base, path))
+
+        # Register forward hooks that zero individual activation elements within each layer's output.
+        # We sample a fixed set of element indices per layer (per permutation) and apply the same mask across the batch.
+        for w_path in target_paths:
+            layer = get_layer_from_path(model, w_path)
+
+            # We choose indices lazily on first forward so we know the output spatial size.
+            state = {"flat_idx": None, "shape_tail": None, "k": None}
+
+            def _make_spatial_mask(o_tensor: torch.Tensor):
+                # o_tensor is expected to be [N, ...]; we mask over the per-sample tail dims
+                tail = tuple(o_tensor.shape[1:])
+                num_units = int(torch.tensor(tail).prod().item()) if len(tail) > 0 else 0
+                if num_units <= 0:
+                    return None
+                k = int(fraction_to_mask * num_units)
+                if k <= 0:
+                    # nothing to mask for this layer at this damage level
+                    continue
+                flat_idx = torch.randperm(num_units, device=o_tensor.device)[:k]
+                state["flat_idx"] = flat_idx
+                state["shape_tail"] = tail
+                state["k"] = k
+                return flat_idx, tail
+
+            def _apply(o_tensor: torch.Tensor):
+                if not torch.is_tensor(o_tensor):
+                    return o_tensor
+                if state["flat_idx"] is None or state["shape_tail"] != tuple(o_tensor.shape[1:]):
+                    made = _make_spatial_mask(o_tensor)
+                    if made is None:
+                        return o_tensor
+                flat_idx = state["flat_idx"]
+                tail = state["shape_tail"]
+                # Build mask of shape [1, *tail] and broadcast across batch
+                m = torch.ones(int(torch.tensor(tail).prod().item()), device=o_tensor.device, dtype=o_tensor.dtype)
+                m[flat_idx] = 0
+                m = m.view((1,) + tail)
+                return o_tensor * m
+
+            def _act_spatial_mask_hook(_module, _inp, output):
+                # Support tuple outputs (e.g., recurrent blocks returning (x, state))
+                if isinstance(output, tuple) and len(output) > 0 and torch.is_tensor(output[0]):
+                    new_first = _apply(output[0])
+                    return (new_first,) + output[1:]
+                else:
+                    return _apply(output)
+
+            layer.register_forward_hook(_act_spatial_mask_hook)
+
+        return
+
+
+# Build the mask tensors
     with torch.no_grad():
         if apply_to_all_layers:
             for name, param in model.named_parameters():
@@ -1107,6 +1189,8 @@ def run_damage(
             dir_tag = "units"
         elif masking_level == "unit_activations":
             dir_tag = "unit_activations"
+        elif masking_level == "unit_activations_spatial":
+            dir_tag = "unit_activations_spatial"
         else:
             dir_tag = "connections"
     elif manipulation_method == "groupnorm_scaling":
