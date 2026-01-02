@@ -1,0 +1,32 @@
+subdir: "cornet_rt5_c/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.4]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt_ut
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.4]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt_ut
