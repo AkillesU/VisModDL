@@ -2511,10 +2511,20 @@ def plot_avg_corr_mat(
             plt.tight_layout()
             # ---- dynamic output filename ----
             # --- model name (same logic as categ_corr_lineplot) ---
-            try:
-                model_name = Path(main_dir).parts[-2]
-            except Exception:
-                model_name = "model"
+            def _model_name_from_main_dir(main_dir: str) -> str:
+                p = Path(main_dir)
+                parts = p.parts
+
+                # Common layout: .../damaged/<MODEL_NAME>/...
+                if "damaged" in parts:
+                    i = parts.index("damaged")
+                    if i + 1 < len(parts):
+                        return parts[i + 1]
+
+                # Fallback: last path component
+                return p.name or "model"
+
+            model_name = _model_name_from_main_dir(main_dir)
             def _fmt_levels(lvls):
                 lvls = sorted(set(float(x) for x in lvls))
                 if len(lvls) == 1:
