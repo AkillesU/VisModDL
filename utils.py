@@ -2222,109 +2222,334 @@ def categ_corr_lineplot(
 
 
 def plot_avg_corr_mat(
-    main_dir,
+    # --- match categ_corr_lineplot style ---
     damage_layers=None,
-    layers=None,                      # legacy alias
     activations_layers=None,
     damage_type=None,
-    damage_levels=None,
-    subdir_regex=None,
-    plot_dir=None,
-    image_dir=None,
-    vmax=None,
+    main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
+    categories=("overall",),
+    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",
+    plot_dir="plots/",
+    data_type="selectivity",
     verbose=0,
-    **kwargs,                         # swallow unused lineplot args safely
+    selectivity_fraction: float | None = None,
+    selection_mode: str = "percentage",
+    selectivity_file: str | None = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
+    model_tag: str | None = None,
+
+    # --- legacy / old plot_avg_corr_mat args ---
+    layers=None,                            # legacy alias for damage_layers
+    output_dir="average_RDMs",              # unused, kept for backwards compatibility
+    damage_levels=None,
+    image_dir="stimuli/",
+    vmax=1.0,
+
+    # --- swallow any extra kwargs from YAML ---
+    **kwargs,
 ):
     """
-    Plot average correlation matrices (RDMs) across damage levels.
+    Plot average correlation matrices.
 
-    This function is intentionally permissive in its signature so it can be
-    called with the same config structure as categ_corr_lineplot.
+    Supports:
+      - data_type="selectivity": reads category-selective RDMs from:
+            <main_dir>/<damage_type>/<damage_layer>/RDM_{frac}_{selection_mode}/<act>/<cat>_selective/damaged_*/...
+        If missing, attempts to build them on-the-fly via generate_category_selective_RDMs().
+      - data_type!="selectivity": uses the older behavior:
+            <main_dir>/<damage_type>/<damage_layer>/<damaged_x>/... correlation stores
+
+    Accepts extra arguments (metric/ylim/etc.) for config parity with categ_corr_lineplot.
     """
 
-    import os
-    import re
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import zarr
-
-    # --- layer handling ----------------------------------------------------
+    # --------- resolve layers ----------
     if damage_layers is None:
         damage_layers = layers
     if damage_layers is None:
-        raise ValueError("plot_avg_corr_mat requires `damage_layers` or `layers`")
-
+        raise ValueError("plot_avg_corr_mat requires `damage_layers` (or legacy `layers`).")
     if activations_layers is None:
-        raise ValueError("plot_avg_corr_mat requires `activations_layers`")
+        raise ValueError("plot_avg_corr_mat requires `activations_layers`.")
+    if damage_type is None:
+        raise ValueError("plot_avg_corr_mat requires `damage_type`.")
 
-    # --- discover damage levels -------------------------------------------
-    if damage_levels is None:
-        dmg_root = os.path.join(main_dir, damage_type)
-        damage_levels = set()
+    # --------- helpers from your utils.py ----------
+    # These are already in your codebase per existing plot_avg_corr_mat + categ_corr_lineplot.
+    # We intentionally call them if present; if not, you'll get a clear error.
+    def _need(name: str):
+        if name not in globals():
+            raise RuntimeError(f"Required helper `{name}` not found in utils.py.")
+        return globals()[name]
 
-        if subdir_regex is None:
-            subdir_regex = r"damaged_([\d\.]+)"
+    load_all_corr_mats = _need("load_all_corr_mats")
+    safe_load_pickle = _need("safe_load_pickle")
+    extract_string_numeric_parts = _need("extract_string_numeric_parts")
 
-        pattern = re.compile(subdir_regex)
+    # Only needed for selectivity path:
+    generate_category_selective_RDMs = globals().get("generate_category_selective_RDMs", None)
 
-        for root, dirs, _ in os.walk(dmg_root):
-            for d in dirs:
-                m = pattern.search(d)
-                if m:
-                    damage_levels.add(float(m.group(1)))
+    # --------- determine categories for selective RDMs ----------
+    base_cats = ["animal", "face", "object", "place"]
 
-        damage_levels = sorted(damage_levels)
+    # If user passes ("total",) we’ll plot a synthesized "total" = mean over base_cats
+    want_total = "total" in categories
+    cats_no_total = [c for c in categories if c != "total"]
 
-    if verbose:
-        print("Damage levels:", damage_levels)
+    # If they pass nothing useful, default to base cats
+    if len(cats_no_total) == 0:
+        cats_no_total = base_cats
 
-    # --- plotting ----------------------------------------------------------
-    for act_layer in activations_layers:
-        fig, axes = plt.subplots(
-            nrows=len(damage_layers),
-            ncols=len(damage_levels),
-            figsize=(4 * len(damage_levels), 4 * len(damage_layers)),
-            squeeze=False,
-        )
+    # For selectivity RDM generation, you cannot generate "total" directly
+    categories_rdm = [c for c in cats_no_total if c in base_cats] or base_cats
 
-        for i, dmg_layer in enumerate(damage_layers):
-            for j, lvl in enumerate(damage_levels):
-                ax = axes[i, j]
+    # --------- discover damage levels (if not provided) ----------
+    def _discover_levels(root: Path):
+        levels = set()
+        pat = re.compile(subdir_regex)
+        if not root.exists():
+            return []
+        for p in root.rglob("damaged_*"):
+            if not p.is_dir():
+                continue
+            m = pat.search(p.name)
+            if not m:
+                continue
+            try:
+                levels.add(float(m.group(1)))
+            except Exception:
+                pass
+        return sorted(levels)
 
-                zarr_path = os.path.join(
-                    main_dir,
-                    damage_type,
-                    dmg_layer,
-                    "activations",
-                    act_layer,
-                    f"damaged_{lvl}",
-                    "rdm.zarr",
+    # --------- selectivity RDM existence check ----------
+    def _have_selective_rdms(rdm_dir: Path, cats: list[str]) -> bool:
+        for c in cats:
+            cdir = rdm_dir / f"{c}_selective"
+            if not cdir.exists():
+                return False
+            ok = False
+            for d in cdir.glob("damaged_*"):
+                if d.is_dir() and any(d.rglob("*.pkl")):
+                    ok = True
+                    break
+            if not ok:
+                return False
+        return True
+
+    # --------- collect avg mats ----------
+    # maps: (damage_layer, act_layer, category, frac) -> avg_mat
+    avg = {}
+
+    # Ensure plot dir
+    plot_dir_p = Path(plot_dir)
+    plot_dir_p.mkdir(parents=True, exist_ok=True)
+
+    # Main loop
+    for dmg_layer in damage_layers:
+        for act in activations_layers:
+            if data_type == "selectivity":
+                if selectivity_fraction is None:
+                    raise ValueError("data_type='selectivity' requires `selectivity_fraction`.")
+
+                frac_tag = f"{selectivity_fraction:.2f}"
+                rdm_dir = (
+                    Path(main_dir)
+                    / damage_type
+                    / dmg_layer
+                    / f"RDM_{frac_tag}_{selection_mode}"
+                    / act
                 )
 
-                if not os.path.exists(zarr_path):
-                    ax.axis("off")
-                    continue
+                # If missing, try to build them like categ_corr_lineplot does
+                if (not rdm_dir.exists()) or (not _have_selective_rdms(rdm_dir, categories_rdm)):
+                    if generate_category_selective_RDMs is None:
+                        raise RuntimeError(
+                            f"Selective RDMs missing under {rdm_dir}, and "
+                            "generate_category_selective_RDMs() is not available in utils.py."
+                        )
 
-                rdm = zarr.open(zarr_path, mode="r")[:]
-                im = ax.imshow(rdm, vmin=-1, vmax=vmax)
+                    # model_tag is required to find the right selectivity table in your existing pipeline
+                    if model_tag is None:
+                        raise ValueError("For selectivity RDM auto-build, please pass `model_tag` in config.")
 
-                if i == 0:
-                    ax.set_title(f"{lvl}")
-                if j == 0:
-                    ax.set_ylabel(dmg_layer)
+                    # In your existing code, you often use:
+                    # unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl
+                    # We respect selectivity_file if provided; otherwise we build the common default.
+                    sel_file = selectivity_file
+                    if sel_file is None:
+                        sel_file = f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl"
+                    else:
+                        # if they gave a relative path without model_tag baked in, leave as-is
+                        sel_file = sel_file
 
-                ax.set_xticks([])
-                ax.set_yticks([])
+                    generate_category_selective_RDMs(
+                        activations_root=Path(main_dir) / damage_type,
+                        layer_name=dmg_layer,
+                        top_frac=float(selectivity_fraction),
+                        categories=categories_rdm,
+                        selection_mode=selection_mode,
+                        selectivity_file=sel_file,
+                        damage_layer=dmg_layer,
+                        activation_layer=act,
+                        model_tag=model_tag,
+                    )
 
-        fig.suptitle(f"Avg corr matrix – {act_layer}", fontsize=16)
-        plt.tight_layout()
+                    if not _have_selective_rdms(rdm_dir, categories_rdm):
+                        raise RuntimeError(f"Failed to build selective RDMs under {rdm_dir} for {categories_rdm}.")
 
-        if plot_dir is not None:
-            os.makedirs(plot_dir, exist_ok=True)
-            out = os.path.join(plot_dir, f"avg_corr_mat_{act_layer}.png")
-            plt.savefig(out, dpi=300)
+                # Determine damage levels from selective RDM folder if not specified
+                if damage_levels is None:
+                    # use the first category folder to discover levels
+                    sample_cat_dir = rdm_dir / f"{categories_rdm[0]}_selective"
+                    lvls = _discover_levels(sample_cat_dir)
+                else:
+                    lvls = list(damage_levels)
 
-        plt.close(fig)
+                if verbose:
+                    print(f"[plot_avg_corr_mat] selectivity: dmg_layer={dmg_layer} act={act} levels={lvls}")
+
+                # For each category, compute avg matrix per damage level
+                for cat in cats_no_total:
+                    if cat not in base_cats:
+                        # skip unknown categories for matrix plotting
+                        continue
+                    cat_dir = rdm_dir / f"{cat}_selective"
+                    for lvl in lvls:
+                        ddir = cat_dir / f"damaged_{lvl}"
+                        if not ddir.exists():
+                            continue
+
+                        mats = []
+                        for item in ddir.iterdir():
+                            if item.suffix.lower() in (".pkl", ".zarr"):
+                                try:
+                                    mats.extend(load_all_corr_mats(item))
+                                except Exception:
+                                    continue
+                        if not mats:
+                            continue
+                        avg[(dmg_layer, act, cat, float(lvl))] = np.mean(mats, axis=0).astype(np.float32)
+
+                # Synthesize "total" if requested: mean across base cats that exist
+                if want_total:
+                    for lvl in lvls:
+                        mats_here = []
+                        for c in base_cats:
+                            k = (dmg_layer, act, c, float(lvl))
+                            if k in avg:
+                                mats_here.append(avg[k])
+                        if mats_here:
+                            avg[(dmg_layer, act, "total", float(lvl))] = np.mean(mats_here, axis=0).astype(np.float32)
+
+            else:
+                # -------- non-selectivity path (legacy-ish) --------
+                root = Path(main_dir) / damage_type / dmg_layer / "activations" / act
+                if damage_levels is None:
+                    lvls = _discover_levels(root)
+                else:
+                    lvls = list(damage_levels)
+
+                if verbose:
+                    print(f"[plot_avg_corr_mat] non-selectivity: dmg_layer={dmg_layer} act={act} levels={lvls}")
+
+                for lvl in lvls:
+                    # try a couple common layouts; you can extend if your tree differs
+                    candidates = [
+                        root / f"damaged_{lvl}",
+                        Path(main_dir) / damage_type / dmg_layer / f"damaged_{lvl}",
+                    ]
+                    ddir = next((c for c in candidates if c.exists()), None)
+                    if ddir is None:
+                        continue
+
+                    mats = []
+                    for item in ddir.iterdir():
+                        if item.suffix.lower() in (".pkl", ".zarr"):
+                            try:
+                                mats.extend(load_all_corr_mats(item))
+                            except Exception:
+                                continue
+                    if not mats:
+                        continue
+                    avg[(dmg_layer, act, "overall", float(lvl))] = np.mean(mats, axis=0).astype(np.float32)
+
+    # --------- plot ----------
+    # We plot one figure per activation layer + category (so configs like categories:["total"] behave nicely)
+    # Layout: rows = damage_layers, cols = damage levels
+    all_keys = list(avg.keys())
+    if not all_keys:
+        raise RuntimeError("No correlation matrices found to plot (avg dict is empty).")
+
+    # Determine plotted categories and levels present
+    cats_present = sorted({k[2] for k in all_keys})
+    lvls_present = sorted({k[3] for k in all_keys})
+
+    for act in activations_layers:
+        for cat in cats_present:
+            # Build grid
+            fig, axes = plt.subplots(
+                nrows=len(damage_layers),
+                ncols=len(lvls_present),
+                figsize=(4 * len(lvls_present), 4 * len(damage_layers)),
+                squeeze=False,
+            )
+
+            # Determine image labels if possible (optional)
+            sorted_image_names = None
+            n_img = None
+            try:
+                # reuse existing helper if you already have it
+                if "get_stimulus_filenames" in globals() and image_dir is not None:
+                    sorted_image_names = globals()["get_stimulus_filenames"](image_dir)
+            except Exception:
+                sorted_image_names = None
+
+            for i, dmg_layer in enumerate(damage_layers):
+                for j, lvl in enumerate(lvls_present):
+                    ax = axes[i, j]
+                    k = (dmg_layer, act, cat, float(lvl))
+                    if k not in avg:
+                        ax.axis("off")
+                        continue
+
+                    R = avg[k]
+                    im = ax.imshow(R, vmin=0, vmax=vmax, cmap="viridis")
+
+                    if i == 0:
+                        ax.set_title(f"dmg={lvl}")
+                    if j == 0:
+                        ax.set_ylabel(dmg_layer)
+
+                    if sorted_image_names is not None:
+                        n_img = len(sorted_image_names)
+                        ax.set_xticks(range(n_img))
+                        ax.set_yticks(range(n_img))
+                        ax.set_xticklabels(sorted_image_names, rotation=90, fontsize=4)
+                        ax.set_yticklabels(sorted_image_names, fontsize=4)
+                    else:
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+
+                    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+            fig.suptitle(f"{damage_type} | act={act} | cat={cat} | data_type={data_type}", fontsize=14)
+            plt.tight_layout()
+
+            # filename
+            model_name = Path(main_dir).parts[-2] if len(Path(main_dir).parts) >= 2 else "model"
+            tag_layers = "_".join(damage_layers)
+            tag_lvls = f"{len(lvls_present)}-levels"
+            tag_sel = ""
+            if data_type == "selectivity":
+                tag_sel = f"_sel{selectivity_fraction:.2f}_{selection_mode}"
+
+            out_png = plot_dir_p / f"{model_name}_RDM_{damage_type}_{tag_layers}_{cat}_{act}{tag_sel}_{tag_lvls}.png"
+
+            if verbose == 1:
+                if input(f"Save plot to {out_png}? [Y/n] ").strip().lower() in ("", "y"):
+                    plt.savefig(out_png, dpi=500)
+                plt.show()
+            elif verbose == 0:
+                plt.savefig(out_png, dpi=500)
+                plt.close(fig)
+            else:
+                raise ValueError("verbose must be 0 or 1")
 
 
 def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):

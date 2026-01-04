@@ -32,25 +32,43 @@ tasks:
       model_tag: cornet_rt_ut
   - function: plot_avg_corr_mat
     parameters:
-      # keep it aligned with the lineplot config:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_ut5_c/"
-      damage_layers: ["V1","V2","V4","IT"]
+      damage_layers: ["V1", "V2", "V4", "IT"]
       activations_layers: ["IT"]
       damage_type: "connections"
 
-      # RDM-specific options:
-      image_dir: "stimuli/"
+      # selectivity (same as above)
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      categories: ["total"]
+
+      # required for selective RDM auto-generation
+      model_tag: "cornet_rt_ut"
+
+      # matrix-plot-specific
       vmax: 1.0
+      image_dir: "stimuli/"
+
       verbose: 0
   - function: plot_avg_corr_mat
     parameters:
-      # keep it aligned with the lineplot config:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt_ut5_c+b/"
-      damage_layers: ["V1","V2","V4","IT"]
+      damage_layers: ["V1", "V2", "V4", "IT"]
       activations_layers: ["IT"]
       damage_type: "units"
 
-      # RDM-specific options:
+      # selectivity (same as above)
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      categories: ["total"]
+
+      # required for selective RDM auto-generation
+      model_tag: "cornet_rt_ut"
+
+      # matrix-plot-specific
+      vmax: 1.0
       image_dir: "stimuli/"
-      vmax: 1
+
       verbose: 0
