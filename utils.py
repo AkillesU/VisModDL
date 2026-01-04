@@ -2520,7 +2520,7 @@ def plot_avg_corr_mat(
             sel_tag = ""
             if data_type == "selectivity":
                 frac = f"{float(selectivity_fraction):.2f}"
-                used = "-".join(selectivity_categories_used)
+                used = "-".join(used_sel)
                 sel_tag = f"_sel{frac}_{selection_mode}_{selectivity_mode}_{used}"
 
             layer_tag = "-".join(damage_layers)
