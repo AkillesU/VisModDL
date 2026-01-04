@@ -122,4 +122,40 @@ tasks:
       vmin: -0.5
       vmax: 1.0
       verbose: 0
-      damage_levels: 0.10     
+      damage_levels: 0.10
+  - function: plot_avg_corr_mat
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      categories: ["total"]
+
+      selectivity_mode: "smart_mean"
+      selectivity_categories_used: ["animals", "faces", "objects", "places"]
+
+      vmin: -0.5
+      vmax: 1.0
+      verbose: 0
+      damage_levels: 0.10
+  - function: plot_avg_corr_mat
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      categories: ["total"]
+
+      selectivity_mode: "panel"
+      selectivity_categories_used: ["animals", "faces", "objects", "places"]
+
+      vmin: -0.5
+      vmax: 1.0
+      verbose: 0
+      damage_levels: 0.10
