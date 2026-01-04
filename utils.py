@@ -2222,334 +2222,291 @@ def categ_corr_lineplot(
 
 
 def plot_avg_corr_mat(
-    # --- match categ_corr_lineplot style ---
+    main_dir,
     damage_layers=None,
+    layers=None,  # legacy alias
     activations_layers=None,
     damage_type=None,
-    main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
-    categories=("overall",),
-    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",
-    plot_dir="plots/",
-    data_type="selectivity",
-    verbose=0,
-    selectivity_fraction: float | None = None,
-    selection_mode: str = "percentage",
-    selectivity_file: str | None = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
-    model_tag: str | None = None,
 
-    # --- legacy / old plot_avg_corr_mat args ---
-    layers=None,                            # legacy alias for damage_layers
-    output_dir="average_RDMs",              # unused, kept for backwards compatibility
-    damage_levels=None,
-    image_dir="stimuli/",
+    data_type="selectivity",
+    selectivity_fraction=None,
+    selection_mode="percentage",
+    categories=("total",),
+
+    # NEW
+    selectivity_categories_used=None,   # e.g. ["animals","faces"]
+    selectivity_mode="smart_mean",      # "smart_mean" or "panel"
+    vmin=None,                          # NEW
     vmax=1.0,
 
-    # --- swallow any extra kwargs from YAML ---
+    plot_dir="plots/",
+    verbose=0,
+
+    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",
+    damage_levels=None,
+
     **kwargs,
 ):
-    """
-    Plot average correlation matrices.
+    import re
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from pathlib import Path
 
-    Supports:
-      - data_type="selectivity": reads category-selective RDMs from:
-            <main_dir>/<damage_type>/<damage_layer>/RDM_{frac}_{selection_mode}/<act>/<cat>_selective/damaged_*/...
-        If missing, attempts to build them on-the-fly via generate_category_selective_RDMs().
-      - data_type!="selectivity": uses the older behavior:
-            <main_dir>/<damage_type>/<damage_layer>/<damaged_x>/... correlation stores
-
-    Accepts extra arguments (metric/ylim/etc.) for config parity with categ_corr_lineplot.
-    """
-
-    # --------- resolve layers ----------
     if damage_layers is None:
         damage_layers = layers
     if damage_layers is None:
-        raise ValueError("plot_avg_corr_mat requires `damage_layers` (or legacy `layers`).")
+        raise ValueError("plot_avg_corr_mat requires `damage_layers` (or `layers`).")
     if activations_layers is None:
         raise ValueError("plot_avg_corr_mat requires `activations_layers`.")
     if damage_type is None:
         raise ValueError("plot_avg_corr_mat requires `damage_type`.")
 
-    # --------- helpers from your utils.py ----------
-    # These are already in your codebase per existing plot_avg_corr_mat + categ_corr_lineplot.
-    # We intentionally call them if present; if not, you'll get a clear error.
-    def _need(name: str):
-        if name not in globals():
-            raise RuntimeError(f"Required helper `{name}` not found in utils.py.")
-        return globals()[name]
+    if "load_all_corr_mats" not in globals():
+        raise RuntimeError("plot_avg_corr_mat requires load_all_corr_mats() in utils.py.")
+    _load = globals()["load_all_corr_mats"]
 
-    load_all_corr_mats = _need("load_all_corr_mats")
-    safe_load_pickle = _need("safe_load_pickle")
-    extract_string_numeric_parts = _need("extract_string_numeric_parts")
+    # ---- normalize category names ----
+    base = ["animal", "face", "object", "place"]
+    alias = {
+        "animals": "animal", "animal": "animal",
+        "faces": "face", "face": "face",
+        "objects": "object", "object": "object",
+        "places": "place", "place": "place",
+    }
 
-    # Only needed for selectivity path:
-    generate_category_selective_RDMs = globals().get("generate_category_selective_RDMs", None)
+    if selectivity_categories_used is None:
+        used_sel = base.copy()
+    else:
+        used_sel = []
+        for c in selectivity_categories_used:
+            k = str(c).strip().lower()
+            if k not in alias:
+                raise ValueError(f"Unknown selectivity category '{c}'. Use animals/faces/objects/places.")
+            used_sel.append(alias[k])
+        # de-dup preserve order
+        seen = set()
+        used_sel = [x for x in used_sel if not (x in seen or seen.add(x))]
 
-    # --------- determine categories for selective RDMs ----------
-    base_cats = ["animal", "face", "object", "place"]
-
-    # If user passes ("total",) we’ll plot a synthesized "total" = mean over base_cats
-    want_total = "total" in categories
-    cats_no_total = [c for c in categories if c != "total"]
-
-    # If they pass nothing useful, default to base cats
-    if len(cats_no_total) == 0:
-        cats_no_total = base_cats
-
-    # For selectivity RDM generation, you cannot generate "total" directly
-    categories_rdm = [c for c in cats_no_total if c in base_cats] or base_cats
-
-    # --------- discover damage levels (if not provided) ----------
-    def _discover_levels(root: Path):
-        levels = set()
+    # ---- helpers ----
+    def _discover_levels(root: Path) -> list[float]:
         pat = re.compile(subdir_regex)
+        lvls = set()
         if not root.exists():
             return []
         for p in root.rglob("damaged_*"):
-            if not p.is_dir():
-                continue
-            m = pat.search(p.name)
-            if not m:
-                continue
-            try:
-                levels.add(float(m.group(1)))
-            except Exception:
-                pass
-        return sorted(levels)
+            if p.is_dir():
+                m = pat.search(p.name)
+                if m:
+                    try:
+                        lvls.add(float(m.group(1)))
+                    except Exception:
+                        pass
+        return sorted(lvls)
 
-    # --------- selectivity RDM existence check ----------
-    def _have_selective_rdms(rdm_dir: Path, cats: list[str]) -> bool:
-        for c in cats:
-            cdir = rdm_dir / f"{c}_selective"
-            if not cdir.exists():
-                return False
-            ok = False
-            for d in cdir.glob("damaged_*"):
-                if d.is_dir() and any(d.rglob("*.pkl")):
-                    ok = True
-                    break
-            if not ok:
-                return False
-        return True
+    def _selective_root(dmg_layer: str, act_layer: str) -> Path:
+        if selectivity_fraction is None:
+            raise ValueError("data_type='selectivity' requires selectivity_fraction.")
+        frac_tag = f"{float(selectivity_fraction):.2f}"
+        return Path(main_dir) / damage_type / dmg_layer / f"RDM_{frac_tag}_{selection_mode}" / act_layer
 
-    # --------- collect avg mats ----------
-    # maps: (damage_layer, act_layer, category, frac) -> avg_mat
-    avg = {}
+    def _infer_stim_cat(name: str) -> str | None:
+        """
+        Best-effort category inference from filenames/paths.
+        Works with e.g. 'animal1.jpg', 'faces/xxx.png', etc.
+        """
+        s = str(name).lower()
+        # path component checks
+        for key in ["animal", "face", "object", "place"]:
+            if f"/{key}" in s or f"\\{key}" in s:
+                return key
+        # prefix checks
+        for key in ["animal", "face", "object", "place"]:
+            if s.startswith(key):
+                return key
+        # contains checks (fallback)
+        for key in ["animal", "face", "object", "place"]:
+            if key in s:
+                return key
+        return None
 
-    # Ensure plot dir
-    plot_dir_p = Path(plot_dir)
-    plot_dir_p.mkdir(parents=True, exist_ok=True)
+    def _load_one_sel_matrix(sel_root: Path, sel_cat: str, lvl: float) -> tuple[np.ndarray, list[str] | None]:
+        """
+        Load and average all permutations within one selectivity category folder for a given damage level.
+        Returns (avg_matrix, image_names_if_available).
+        """
+        ddir = sel_root / f"{sel_cat}_selective" / f"damaged_{lvl}"
+        if not ddir.exists():
+            raise FileNotFoundError(ddir)
 
-    # Main loop
+        mats = []
+        image_names = None
+
+        for item in ddir.iterdir():
+            if item.suffix.lower() == ".pkl":
+                # try to extract image_names if present
+                try:
+                    import pickle
+                    with open(item, "rb") as f:
+                        obj = pickle.load(f)
+                    if isinstance(obj, dict) and image_names is None and "image_names" in obj:
+                        image_names = obj["image_names"]
+                except Exception:
+                    pass
+
+                mats.extend(_load(item))
+
+            elif item.suffix.lower() == ".zarr" and item.is_dir():
+                mats.extend(_load(item))
+
+        if not mats:
+            raise RuntimeError(f"No matrices found in {ddir}")
+
+        avg_mat = np.mean(np.stack(mats, axis=0), axis=0).astype(np.float32, copy=False)
+        return avg_mat, image_names
+
+    # ---- collect final matrices ----
+    # final[(dmg_layer, act_layer, cat, lvl, maybe_panel)] = matrix
+    final = {}
+
     for dmg_layer in damage_layers:
         for act in activations_layers:
-            if data_type == "selectivity":
-                if selectivity_fraction is None:
-                    raise ValueError("data_type='selectivity' requires `selectivity_fraction`.")
+            if data_type != "selectivity":
+                raise NotImplementedError("This update focuses on selectivity mode; keep your old non-selectivity path if needed.")
 
-                frac_tag = f"{selectivity_fraction:.2f}"
-                rdm_dir = (
-                    Path(main_dir)
-                    / damage_type
-                    / dmg_layer
-                    / f"RDM_{frac_tag}_{selection_mode}"
-                    / act
-                )
+            sel_root = _selective_root(dmg_layer, act)
 
-                # If missing, try to build them like categ_corr_lineplot does
-                if (not rdm_dir.exists()) or (not _have_selective_rdms(rdm_dir, categories_rdm)):
-                    if generate_category_selective_RDMs is None:
-                        raise RuntimeError(
-                            f"Selective RDMs missing under {rdm_dir}, and "
-                            "generate_category_selective_RDMs() is not available in utils.py."
-                        )
+            lvls = (
+                list(map(float, damage_levels))
+                if damage_levels is not None
+                else _discover_levels(sel_root / f"{used_sel[0]}_selective")
+            )
+            if verbose:
+                print(f"[plot_avg_corr_mat] dmg={dmg_layer} act={act} lvls={lvls} used_sel={used_sel} mode={selectivity_mode}")
 
-                    # model_tag is required to find the right selectivity table in your existing pipeline
-                    if model_tag is None:
-                        raise ValueError("For selectivity RDM auto-build, please pass `model_tag` in config.")
+            for lvl in lvls:
+                # load per-selectivity-category averaged matrices
+                sel_mats = {}
+                image_names = None
+                for sel_cat in used_sel:
+                    M, names = _load_one_sel_matrix(sel_root, sel_cat, lvl)
+                    sel_mats[sel_cat] = M
+                    if image_names is None and names is not None:
+                        image_names = names
 
-                    # In your existing code, you often use:
-                    # unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl
-                    # We respect selectivity_file if provided; otherwise we build the common default.
-                    sel_file = selectivity_file
-                    if sel_file is None:
-                        sel_file = f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl"
-                    else:
-                        # if they gave a relative path without model_tag baked in, leave as-is
-                        sel_file = sel_file
+                # PANEL MODE: store each sel_cat separately
+                if selectivity_mode == "panel":
+                    for sel_cat, M in sel_mats.items():
+                        final[(dmg_layer, act, sel_cat, float(lvl), "panel")] = M
+                    continue
 
-                    generate_category_selective_RDMs(
-                        activations_root=Path(main_dir) / damage_type,
-                        layer_name=dmg_layer,
-                        top_frac=float(selectivity_fraction),
-                        categories=categories_rdm,
-                        selection_mode=selection_mode,
-                        selectivity_file=sel_file,
-                        damage_layer=dmg_layer,
-                        activation_layer=act,
-                        model_tag=model_tag,
+                # SMART MEAN: build one matrix by choosing relevant sel_mats per entry
+                if selectivity_mode != "smart_mean":
+                    raise ValueError("selectivity_mode must be 'smart_mean' or 'panel'.")
+
+                # Need stimulus categories to apply smart mean.
+                # If no image_names available, we cannot do entrywise category logic.
+                if image_names is None:
+                    raise RuntimeError(
+                        "smart_mean requires image_names in the RDM pickles to infer stimulus categories. "
+                        "Your pickles should be dicts with {'RDM':..., 'image_names':...}."
                     )
 
-                    if not _have_selective_rdms(rdm_dir, categories_rdm):
-                        raise RuntimeError(f"Failed to build selective RDMs under {rdm_dir} for {categories_rdm}.")
+                stim_cats = [_infer_stim_cat(n) for n in image_names]
+                if any(c is None for c in stim_cats):
+                    missing = sum(c is None for c in stim_cats)
+                    raise RuntimeError(f"Could not infer category for {missing} stimuli from image_names. Check naming convention.")
 
-                # Determine damage levels from selective RDM folder if not specified
-                if damage_levels is None:
-                    # use the first category folder to discover levels
-                    sample_cat_dir = rdm_dir / f"{categories_rdm[0]}_selective"
-                    lvls = _discover_levels(sample_cat_dir)
-                else:
-                    lvls = list(damage_levels)
+                N = next(iter(sel_mats.values())).shape[0]
+                out = np.empty((N, N), dtype=np.float32)
 
-                if verbose:
-                    print(f"[plot_avg_corr_mat] selectivity: dmg_layer={dmg_layer} act={act} levels={lvls}")
+                # Build entrywise:
+                # same category => use that category's selective matrix
+                # different categories => average the two category-selective matrices (if both in used_sel)
+                for i in range(N):
+                    ci = stim_cats[i]
+                    for j in range(N):
+                        cj = stim_cats[j]
+                        if ci == cj:
+                            if ci not in sel_mats:
+                                # if user excluded this category, fall back to mean over all available
+                                out[i, j] = np.mean([m[i, j] for m in sel_mats.values()], dtype=np.float32)
+                            else:
+                                out[i, j] = sel_mats[ci][i, j]
+                        else:
+                            # use both if available; otherwise use whatever exists
+                            chosen = []
+                            if ci in sel_mats:
+                                chosen.append(sel_mats[ci][i, j])
+                            if cj in sel_mats and cj != ci:
+                                chosen.append(sel_mats[cj][i, j])
+                            if not chosen:
+                                chosen = [m[i, j] for m in sel_mats.values()]
+                            out[i, j] = float(np.mean(chosen))
 
-                # For each category, compute avg matrix per damage level
-                for cat in cats_no_total:
-                    if cat not in base_cats:
-                        # skip unknown categories for matrix plotting
-                        continue
-                    cat_dir = rdm_dir / f"{cat}_selective"
-                    for lvl in lvls:
-                        ddir = cat_dir / f"damaged_{lvl}"
-                        if not ddir.exists():
-                            continue
+                # Respect categories=("total",) by naming this "total"
+                # (If you pass other plot categories, you can extend this later.)
+                cat_name = "total" if "total" in categories else "smart_mean"
+                final[(dmg_layer, act, cat_name, float(lvl), "smart_mean")] = out
 
-                        mats = []
-                        for item in ddir.iterdir():
-                            if item.suffix.lower() in (".pkl", ".zarr"):
-                                try:
-                                    mats.extend(load_all_corr_mats(item))
-                                except Exception:
-                                    continue
-                        if not mats:
-                            continue
-                        avg[(dmg_layer, act, cat, float(lvl))] = np.mean(mats, axis=0).astype(np.float32)
+    # ---- plot ----
+    plot_dir = Path(plot_dir)
+    plot_dir.mkdir(parents=True, exist_ok=True)
 
-                # Synthesize "total" if requested: mean across base cats that exist
-                if want_total:
-                    for lvl in lvls:
-                        mats_here = []
-                        for c in base_cats:
-                            k = (dmg_layer, act, c, float(lvl))
-                            if k in avg:
-                                mats_here.append(avg[k])
-                        if mats_here:
-                            avg[(dmg_layer, act, "total", float(lvl))] = np.mean(mats_here, axis=0).astype(np.float32)
-
-            else:
-                # -------- non-selectivity path (legacy-ish) --------
-                root = Path(main_dir) / damage_type / dmg_layer / "activations" / act
-                if damage_levels is None:
-                    lvls = _discover_levels(root)
-                else:
-                    lvls = list(damage_levels)
-
-                if verbose:
-                    print(f"[plot_avg_corr_mat] non-selectivity: dmg_layer={dmg_layer} act={act} levels={lvls}")
-
-                for lvl in lvls:
-                    # try a couple common layouts; you can extend if your tree differs
-                    candidates = [
-                        root / f"damaged_{lvl}",
-                        Path(main_dir) / damage_type / dmg_layer / f"damaged_{lvl}",
-                    ]
-                    ddir = next((c for c in candidates if c.exists()), None)
-                    if ddir is None:
-                        continue
-
-                    mats = []
-                    for item in ddir.iterdir():
-                        if item.suffix.lower() in (".pkl", ".zarr"):
-                            try:
-                                mats.extend(load_all_corr_mats(item))
-                            except Exception:
-                                continue
-                    if not mats:
-                        continue
-                    avg[(dmg_layer, act, "overall", float(lvl))] = np.mean(mats, axis=0).astype(np.float32)
-
-    # --------- plot ----------
-    # We plot one figure per activation layer + category (so configs like categories:["total"] behave nicely)
-    # Layout: rows = damage_layers, cols = damage levels
-    all_keys = list(avg.keys())
-    if not all_keys:
-        raise RuntimeError("No correlation matrices found to plot (avg dict is empty).")
-
-    # Determine plotted categories and levels present
-    cats_present = sorted({k[2] for k in all_keys})
-    lvls_present = sorted({k[3] for k in all_keys})
+    # determine levels and cats/panels present
+    lvls_present = sorted({k[3] for k in final.keys()})
+    # In panel mode, "cat" is actually sel_cat panels; in smart_mean it's 'total'/etc.
+    cats_present = sorted({k[2] for k in final.keys()})
+    modes_present = sorted({k[4] for k in final.keys()})
 
     for act in activations_layers:
-        for cat in cats_present:
-            # Build grid
+        for mode in modes_present:
+            # For "panel", cats_present are panels; for smart_mean, cats_present likely just ["total"]
+            fig_cols = len(lvls_present) * (len(cats_present) if mode == "panel" else 1)
             fig, axes = plt.subplots(
                 nrows=len(damage_layers),
-                ncols=len(lvls_present),
-                figsize=(4 * len(lvls_present), 4 * len(damage_layers)),
+                ncols=fig_cols,
+                figsize=(4 * fig_cols, 4 * len(damage_layers)),
                 squeeze=False,
             )
 
-            # Determine image labels if possible (optional)
-            sorted_image_names = None
-            n_img = None
-            try:
-                # reuse existing helper if you already have it
-                if "get_stimulus_filenames" in globals() and image_dir is not None:
-                    sorted_image_names = globals()["get_stimulus_filenames"](image_dir)
-            except Exception:
-                sorted_image_names = None
-
             for i, dmg_layer in enumerate(damage_layers):
-                for j, lvl in enumerate(lvls_present):
-                    ax = axes[i, j]
-                    k = (dmg_layer, act, cat, float(lvl))
-                    if k not in avg:
-                        ax.axis("off")
-                        continue
-
-                    R = avg[k]
-                    im = ax.imshow(R, vmin=0, vmax=vmax, cmap="viridis")
-
-                    if i == 0:
-                        ax.set_title(f"dmg={lvl}")
-                    if j == 0:
-                        ax.set_ylabel(dmg_layer)
-
-                    if sorted_image_names is not None:
-                        n_img = len(sorted_image_names)
-                        ax.set_xticks(range(n_img))
-                        ax.set_yticks(range(n_img))
-                        ax.set_xticklabels(sorted_image_names, rotation=90, fontsize=4)
-                        ax.set_yticklabels(sorted_image_names, fontsize=4)
+                col = 0
+                for lvl in lvls_present:
+                    if mode == "panel":
+                        for panel_cat in cats_present:
+                            ax = axes[i, col]
+                            key = (dmg_layer, act, panel_cat, float(lvl), "panel")
+                            if key not in final:
+                                ax.axis("off")
+                            else:
+                                M = final[key]
+                                im = ax.imshow(M, vmin=vmin, vmax=vmax)
+                                ax.set_title(f"{panel_cat} | dmg={lvl}")
+                                ax.set_xticks([]); ax.set_yticks([])
+                                plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                            if col == 0:
+                                ax.set_ylabel(dmg_layer)
+                            col += 1
                     else:
-                        ax.set_xticks([])
-                        ax.set_yticks([])
+                        ax = axes[i, col]
+                        # pick whichever cat exists for smart_mean (usually total)
+                        key = next((k for k in final.keys() if k[0]==dmg_layer and k[1]==act and k[3]==float(lvl) and k[4]==mode), None)
+                        if key is None:
+                            ax.axis("off")
+                        else:
+                            M = final[key]
+                            im = ax.imshow(M, vmin=vmin, vmax=vmax)
+                            ax.set_title(f"{key[2]} | dmg={lvl}")
+                            ax.set_xticks([]); ax.set_yticks([])
+                            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                        if col == 0:
+                            ax.set_ylabel(dmg_layer)
+                        col += 1
 
-                    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-
-            fig.suptitle(f"{damage_type} | act={act} | cat={cat} | data_type={data_type}", fontsize=14)
             plt.tight_layout()
-
-            # filename
-            model_name = Path(main_dir).parts[-2] if len(Path(main_dir).parts) >= 2 else "model"
-            tag_layers = "_".join(damage_layers)
-            tag_lvls = f"{len(lvls_present)}-levels"
-            tag_sel = ""
-            if data_type == "selectivity":
-                tag_sel = f"_sel{selectivity_fraction:.2f}_{selection_mode}"
-
-            out_png = plot_dir_p / f"{model_name}_RDM_{damage_type}_{tag_layers}_{cat}_{act}{tag_sel}_{tag_lvls}.png"
-
-            if verbose == 1:
-                if input(f"Save plot to {out_png}? [Y/n] ").strip().lower() in ("", "y"):
-                    plt.savefig(out_png, dpi=500)
-                plt.show()
-            elif verbose == 0:
-                plt.savefig(out_png, dpi=500)
-                plt.close(fig)
-            else:
-                raise ValueError("verbose must be 0 or 1")
+            out = plot_dir / f"avg_corr_mat_{damage_type}_{act}_{data_type}_{selectivity_mode}.png"
+            plt.savefig(out, dpi=300)
+            plt.close(fig)
 
 
 def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):
@@ -4909,24 +4866,59 @@ def load_matrix_zarr(path: str | Path, perm: int = 0) -> np.ndarray:
 
 def load_all_corr_mats(item: str | Path) -> list[np.ndarray]:
     """
-    Yield **all permutations** found in *item*.
+    Load correlation / RDM matrices from supported file formats.
 
-    • If *item* is  *.zarr  ➜ read root['activ'] → (P, N, N) and split.  
-    • If *item* is  *.pkl   ➜ single matrix → length‑1 list.
+    Supports .pkl files that are:
+      - raw ndarray (N,N)
+      - dict with {"RDM": ndarray, "image_names": [...]}
+      - dict with {"rdm": ndarray, ...}
+      - dict with {"activ": ndarray} where activ may be (P,N,N) or (N,N)
 
-    Returned matrices are float32.
+    Supports .zarr directories that store 'activ' (P,N,N).
     """
     p = Path(item)
+
+    # ---- Zarr directory ----
     if p.suffix.lower() == ".zarr" and p.is_dir():
+        import zarr  # local import to avoid hard dependency when unused
         root = zarr.open(p, mode="r")
-        perms = root["activ"][:]                    # (P, N, N)
-        return [m.astype(np.float32, copy=False) for m in perms]
-    elif p.suffix.lower() == ".pkl":
+        if "activ" not in root:
+            raise ValueError(f"{p} is a .zarr but has no 'activ' array.")
+        arr = root["activ"][:]
+        arr = np.asarray(arr)
+        if arr.ndim == 2:
+            return [arr.astype(np.float32, copy=False)]
+        if arr.ndim == 3:
+            return [arr[i].astype(np.float32, copy=False) for i in range(arr.shape[0])]
+        raise ValueError(f"Unsupported 'activ' shape in {p}: {arr.shape}")
+
+    # ---- Pickle file ----
+    if p.suffix.lower() == ".pkl" and p.is_file():
         with open(p, "rb") as f:
-            mat = pickle.load(f)
-        return [np.asarray(mat, dtype=np.float32)]
-    else:
-        raise ValueError(f"Unsupported correlation file: {p}")
+            obj = pickle.load(f)
+
+        # structured dict (your 0.pkl case)
+        if isinstance(obj, dict):
+            if "RDM" in obj:
+                obj = obj["RDM"]
+            elif "rdm" in obj:
+                obj = obj["rdm"]
+            elif "activ" in obj:
+                arr = np.asarray(obj["activ"])
+                if arr.ndim == 2:
+                    return [arr.astype(np.float32, copy=False)]
+                if arr.ndim == 3:
+                    return [arr[i].astype(np.float32, copy=False) for i in range(arr.shape[0])]
+                raise ValueError(f"Unsupported activ shape in {p}: {arr.shape}")
+            else:
+                raise ValueError(f"Unsupported pickle dict keys in {p}: {list(obj.keys())[:20]}")
+
+        arr = np.asarray(obj)
+        if arr.ndim != 2:
+            raise ValueError(f"Expected 2D matrix in {p}, got shape {arr.shape}.")
+        return [arr.astype(np.float32, copy=False)]
+
+    raise ValueError(f"Unsupported correlation file: {p}")
 
 
 def _coerce_to_2d(arr_like: Any) -> np.ndarray:
