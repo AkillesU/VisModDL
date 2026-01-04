@@ -125,10 +125,10 @@ tasks:
       damage_levels: 0.10
   - function: plot_avg_corr_mat
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1","V2","V4","IT"]
       activations_layers: ["IT"]
-      damage_type: "units"
+      damage_type: "connections"
       data_type: "selectivity"
       selectivity_fraction: 0.05
       selection_mode: "percentage"
@@ -143,10 +143,10 @@ tasks:
       damage_levels: 0.10
   - function: plot_avg_corr_mat
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
       damage_layers: ["V1","V2","V4","IT"]
       activations_layers: ["IT"]
-      damage_type: "units"
+      damage_type: "connections"
       data_type: "selectivity"
       selectivity_fraction: 0.05
       selection_mode: "percentage"
