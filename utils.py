@@ -2509,7 +2509,32 @@ def plot_avg_corr_mat(
                         col += 1
 
             plt.tight_layout()
-            out = plot_dir / f"avg_corr_mat_{damage_type}_{act}_{data_type}_{selectivity_mode}.png"
+            # ---- dynamic output filename ----
+            def _fmt_levels(lvls):
+                if len(lvls) == 1:
+                    return f"dmg{lvls[0]:.2f}"
+                return f"dmg{len(lvls)}lvls"
+
+            lvl_tag = _fmt_levels(lvls_present)
+
+            sel_tag = ""
+            if data_type == "selectivity":
+                frac = f"{float(selectivity_fraction):.2f}"
+                used = "-".join(selectivity_categories_used_norm)
+                sel_tag = f"_sel{frac}_{selection_mode}_{selectivity_mode}_{used}"
+
+            layer_tag = "-".join(damage_layers)
+            act_tag = "-".join(activations_layers)
+
+            out = plot_dir / (
+                f"avg_corr_mat_"
+                f"{damage_type}_"
+                f"{act_tag}_"
+                f"{layer_tag}_"
+                f"{lvl_tag}"
+                f"{sel_tag}.png"
+            )
+
             plt.savefig(out, dpi=300)
             plt.close(fig)
 
