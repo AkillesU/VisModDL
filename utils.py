@@ -2222,110 +2222,109 @@ def categ_corr_lineplot(
 
 
 def plot_avg_corr_mat(
-    layers,
-    damage_type,
-    *,
-    image_dir="stimuli/",
-    output_dir="average_RDMs",
-    subdir_regex=r"damaged_([\d\.]+)$",
+    main_dir,
+    damage_layers=None,
+    layers=None,                      # legacy alias
+    activations_layers=None,
+    damage_type=None,
     damage_levels=None,
-    main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
-    vmax=1.0,
-    plot_dir="plots/",
+    subdir_regex=None,
+    plot_dir=None,
+    image_dir=None,
+    vmax=None,
     verbose=0,
+    **kwargs,                         # swallow unused lineplot args safely
 ):
     """
-    Build & plot average RDMs using **all permutations** in every file.
-    Works with both *.pkl* and *.zarr* correlation stores.
+    Plot average correlation matrices (RDMs) across damage levels.
+
+    This function is intentionally permissive in its signature so it can be
+    called with the same config structure as categ_corr_lineplot.
     """
-    fraction_to_matrix: dict[tuple[float, str], np.ndarray] = {}
-    sorted_image_names = get_sorted_filenames(image_dir)
-    n_img = len(sorted_image_names)
 
-    for layer in layers:
-        rdm_root   = Path(main_dir) / damage_type / layer / "RDM"
-        cache_root = Path(main_dir) / damage_type / layer / output_dir
-        cache_root.mkdir(parents=True, exist_ok=True)
-        if not rdm_root.exists():
-            print(f"[warn] missing {rdm_root}")
-            continue
+    import os
+    import re
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import zarr
 
-        for sub in rdm_root.iterdir():
-            if not sub.is_dir():
-                continue
-            if damage_levels:
-                if not any(sub.name.endswith(f"damaged_{lvl}") for lvl in damage_levels):
+    # --- layer handling ----------------------------------------------------
+    if damage_layers is None:
+        damage_layers = layers
+    if damage_layers is None:
+        raise ValueError("plot_avg_corr_mat requires `damage_layers` or `layers`")
+
+    if activations_layers is None:
+        raise ValueError("plot_avg_corr_mat requires `activations_layers`")
+
+    # --- discover damage levels -------------------------------------------
+    if damage_levels is None:
+        dmg_root = os.path.join(main_dir, damage_type)
+        damage_levels = set()
+
+        if subdir_regex is None:
+            subdir_regex = r"damaged_([\d\.]+)"
+
+        pattern = re.compile(subdir_regex)
+
+        for root, dirs, _ in os.walk(dmg_root):
+            for d in dirs:
+                m = pattern.search(d)
+                if m:
+                    damage_levels.add(float(m.group(1)))
+
+        damage_levels = sorted(damage_levels)
+
+    if verbose:
+        print("Damage levels:", damage_levels)
+
+    # --- plotting ----------------------------------------------------------
+    for act_layer in activations_layers:
+        fig, axes = plt.subplots(
+            nrows=len(damage_layers),
+            ncols=len(damage_levels),
+            figsize=(4 * len(damage_levels), 4 * len(damage_layers)),
+            squeeze=False,
+        )
+
+        for i, dmg_layer in enumerate(damage_layers):
+            for j, lvl in enumerate(damage_levels):
+                ax = axes[i, j]
+
+                zarr_path = os.path.join(
+                    main_dir,
+                    damage_type,
+                    dmg_layer,
+                    "activations",
+                    act_layer,
+                    f"damaged_{lvl}",
+                    "rdm.zarr",
+                )
+
+                if not os.path.exists(zarr_path):
+                    ax.axis("off")
                     continue
-                frac = float(extract_string_numeric_parts(sub.name)[1])
-            else:
-                m = re.search(subdir_regex, sub.name)
-                if not m:
-                    continue
-                frac = float(m.group(1))
-            frac = round(frac, 3)
 
-            cache_file = cache_root / f"avg_RDM_{frac}.pkl"
-            if cache_file.exists():
-                avg_mat = np.asarray(pd.read_pickle(cache_file), dtype=np.float32)
-            else:
-                mats = []
-                for item in sub.iterdir():
-                    if item.suffix.lower() in (".pkl", ".zarr"):
-                        try:
-                            mats.extend(load_all_corr_mats(item))
-                        except Exception as exc:
-                            print(f"[skip] {item}: {exc}")
-                if not mats:
-                    continue
-                avg_mat = np.mean(mats, axis=0).astype(np.float32)
-                pd.to_pickle(avg_mat.tolist(), cache_file)
+                rdm = zarr.open(zarr_path, mode="r")[:]
+                im = ax.imshow(rdm, vmin=-1, vmax=vmax)
 
-            fraction_to_matrix[(frac, layer)] = avg_mat
+                if i == 0:
+                    ax.set_title(f"{lvl}")
+                if j == 0:
+                    ax.set_ylabel(dmg_layer)
 
-    if not fraction_to_matrix:
-        print("No matrices found – nothing to plot.")
-        return
+                ax.set_xticks([])
+                ax.set_yticks([])
 
-    # ---------- plotting ----------
-    keys = sorted(fraction_to_matrix)
-    n   = len(keys)
-    n_c = int(np.ceil(n ** 0.5))
-    n_r = int(np.ceil(n / n_c))
-    fig, axes = plt.subplots(n_r, n_c, figsize=(4*n_c, 4*n_r), squeeze=False)
-    axes = axes.ravel()
+        fig.suptitle(f"Avg corr matrix – {act_layer}", fontsize=16)
+        plt.tight_layout()
 
-    for i, (frac, layer) in enumerate(keys):
-        R   = fraction_to_matrix[(frac, layer)]
-        ax  = axes[i]
-        im  = ax.imshow(R, cmap="viridis", vmin=0, vmax=vmax)
-        ax.set_xticks(range(n_img))
-        ax.set_yticks(range(n_img))
-        ax.set_xticklabels(sorted_image_names, rotation=90, fontsize=4)
-        ax.set_yticklabels(sorted_image_names, fontsize=4)
-        ax.set_title(f"{layer} — dmg={frac}")
-        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        if plot_dir is not None:
+            os.makedirs(plot_dir, exist_ok=True)
+            out = os.path.join(plot_dir, f"avg_corr_mat_{act_layer}.png")
+            plt.savefig(out, dpi=300)
 
-    for ax in axes[i+1:]:
-        ax.axis("off")
-
-    plt.suptitle(damage_type)
-    plt.tight_layout()
-
-    plot_dir = Path(plot_dir); plot_dir.mkdir(parents=True, exist_ok=True)
-    model_name = Path(main_dir).parts[-2]  # “…/damaged/<model>/…”
-    n_lvls = len(damage_levels) if damage_levels else len(keys)
-    tag_layers = "_".join(layers)
-    out_png = plot_dir / f"{model_name}_RDM_{damage_type}_{tag_layers}_{n_lvls}-levels.png"
-
-    if verbose == 1:
-        if input(f"Save plot to {out_png}? [Y/n] ").strip().lower() in ("", "y"):
-            plt.savefig(out_png, dpi=500)
-        plt.show()
-    elif verbose == 0:
-        plt.savefig(out_png, dpi=500)
         plt.close(fig)
-    else:
-        raise ValueError("verbose must be 0 or 1")
 
 
 def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name='IT', vmax=0.4, model_name="untitled_model"):
