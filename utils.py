@@ -2510,12 +2510,20 @@ def plot_avg_corr_mat(
 
             plt.tight_layout()
             # ---- dynamic output filename ----
+            # --- model name (same logic as categ_corr_lineplot) ---
+            try:
+                model_name = Path(main_dir).parts[-2]
+            except Exception:
+                model_name = "model"
             def _fmt_levels(lvls):
+                lvls = sorted(set(float(x) for x in lvls))
                 if len(lvls) == 1:
                     return f"dmg{lvls[0]:.2f}"
-                return f"dmg{len(lvls)}lvls"
+                return f"dmg{len(lvls)}lvls_{lvls[0]:.2f}-{lvls[-1]:.2f}"
 
             lvl_tag = _fmt_levels(lvls_present)
+            layer_tag = "-".join(damage_layers)
+            act_tag = "-".join(activations_layers)
 
             sel_tag = ""
             if data_type == "selectivity":
@@ -2523,10 +2531,8 @@ def plot_avg_corr_mat(
                 used = "-".join(used_sel)
                 sel_tag = f"_sel{frac}_{selection_mode}_{selectivity_mode}_{used}"
 
-            layer_tag = "-".join(damage_layers)
-            act_tag = "-".join(activations_layers)
-
             out = plot_dir / (
+                f"{model_name}_"
                 f"avg_corr_mat_"
                 f"{damage_type}_"
                 f"{act_tag}_"
