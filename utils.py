@@ -2375,11 +2375,16 @@ def plot_avg_corr_mat(
 
             sel_root = _selective_root(dmg_layer, act)
 
-            lvls = (
-                list(map(float, damage_levels))
-                if damage_levels is not None
-                else _discover_levels(sel_root / f"{used_sel[0]}_selective")
-            )
+            # ---- choose damage levels ----
+            if damage_levels is not None:
+                # allow scalar or list/tuple
+                if isinstance(damage_levels, (int, float, str)):
+                    lvls = [float(damage_levels)]
+                else:
+                    lvls = [float(x) for x in damage_levels]
+            else:
+                lvls = _discover_levels(sel_root / f"{used_sel[0]}_selective")
+
             if verbose:
                 print(f"[plot_avg_corr_mat] dmg={dmg_layer} act={act} lvls={lvls} used_sel={used_sel} mode={selectivity_mode}")
 
