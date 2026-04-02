@@ -7,8 +7,8 @@ tasks:
       damage_layers: ["block1","block2","block3","block4","block5"]
       activations_layers: ["features_30"]
       damage_type: "connections"
-      categories: ["avg_within","avg_between"]
-      metric: "observed_difference"
+      categories: ["total"]
+      metric: "avg_within"
       verbose: 0
       percentage: False
       ylim: [-0.2,1]
@@ -22,8 +22,38 @@ tasks:
       damage_layers: ["block1","block2","block3","block4","block5"]
       activations_layers: ["features_30"]
       damage_type: "units"
-      categories: ["avg_within","avg_between"]
-      metric: "observed_difference"
+      categories: ["total"]
+      metric: "avg_within"
+      verbose: 0
+      percentage: False
+      ylim: [-0.2,1]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: vgg16
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_30"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "avg_between"
+      verbose: 0
+      percentage: False
+      ylim: [-0.2,1]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: vgg16
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/vgg16_c+b/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_30"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "avg_between"
       verbose: 0
       percentage: False
       ylim: [-0.2,1]
@@ -40,8 +70,8 @@ tasks:
       damage_layers: ["V1","V2","V4","IT"]
       activations_layers: ["IT"]
       damage_type: "connections"
-      categories: ["avg_within","avg_between"]
-      metric: "observed_difference"
+      categories: ["total"]
+      metric: "avg_within"
       verbose: 0
       percentage: False
       ylim: [-0.2,1]
@@ -55,8 +85,38 @@ tasks:
       damage_layers: ["V1","V2","V4","IT"]
       activations_layers: ["IT"]
       damage_type: "units"
-      categories: ["avg_within","avg_between"]
-      metric: "observed_difference"
+      categories: ["total"]
+      metric: "avg_within"
+      verbose: 0
+      percentage: False
+      ylim: [-0.2,1]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "avg_between"
+      verbose: 0
+      percentage: False
+      ylim: [-0.2,1]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "avg_between"
       verbose: 0
       percentage: False
       ylim: [-0.2,1]
@@ -73,8 +133,8 @@ tasks:
       damage_layers: ["V1","V2","V4","IT"]
       activations_layers: ["IT"]
       damage_type: "connections"
-      categories: ["avg_within","avg_between"]
-      metric: "observed_difference"
+      categories: ["total"]
+      metric: "avg_within"
       verbose: 0
       percentage: False
       ylim: [-0.2,1]
@@ -88,8 +148,8 @@ tasks:
       damage_layers: ["V1","V2","V4","IT"]
       activations_layers: ["IT"]
       damage_type: "units"
-      categories: ["avg_within","avg_between"]
-      metric: "observed_difference"
+      categories: ["total"]
+      metric: "avg_within"
       verbose: 0
       percentage: False
       ylim: [-0.2,1]
@@ -97,15 +157,14 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: cornet_s
-
   - function: categ_corr_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_s4_c/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
       damage_layers: ["V1","V2","V4","IT"]
       activations_layers: ["IT"]
       damage_type: "connections"
-      categories: ["avg_within","avg_between"]
-      metric: "observed_difference"
+      categories: ["total"]
+      metric: "avg_between"
       verbose: 0
       percentage: False
       ylim: [-0.2,1]
@@ -115,12 +174,12 @@ tasks:
       model_tag: cornet_s
   - function: categ_corr_lineplot
     parameters:
-      main_dir: "data/haupt_stim_activ/damaged/cornet_s4_c+b/"
+      main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c+b/"
       damage_layers: ["V1","V2","V4","IT"]
       activations_layers: ["IT"]
       damage_type: "units"
-      categories: ["avg_within","avg_between"]
-      metric: "observed_difference"
+      categories: ["total"]
+      metric: "avg_between"
       verbose: 0
       percentage: False
       ylim: [-0.2,1]
@@ -136,8 +195,8 @@ tasks:
       damage_layers: ["block1","block2","block3","block4","block5"]
       activations_layers: ["features_12"]
       damage_type: "connections"
-      categories: ["avg_within","avg_between"]
-      metric: "observed_difference"
+      categories: ["total"]
+      metric: "avg_within"
       verbose: 0
       percentage: False
       ylim: [-0.2,1]
@@ -151,8 +210,38 @@ tasks:
       damage_layers: ["block1","block2","block3","block4","block5"]
       activations_layers: ["features_12"]
       damage_type: "units"
-      categories: ["avg_within","avg_between"]
-      metric: "observed_difference"
+      categories: ["total"]
+      metric: "avg_within"
+      verbose: 0
+      percentage: False
+      ylim: [-0.2,1]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: alexnet
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "avg_between"
+      verbose: 0
+      percentage: False
+      ylim: [-0.2,1]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: alexnet
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c+b/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "avg_between"
       verbose: 0
       percentage: False
       ylim: [-0.2,1]
