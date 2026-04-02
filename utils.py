@@ -1756,13 +1756,17 @@ def categ_corr_lineplot(
                     _dbg(f"[PRECOMPUTE] activ_root = {activ_root}", 1)
 
                     if not _have_selective_rdms(rdm_dir, categories_rdm):
+                        selectivity_file_path = Path(f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl")
+                        if not selectivity_file_path.exists():
+                            selectivity_file_path = selectivity_file_path.with_suffix('.csv')
+                        selectivity_file = str(selectivity_file_path)
                         generate_category_selective_RDMs(
                             activations_root = Path(main_dir) / damage_type,
                             layer_name       = layer,         # matches selectivity table’s layer label
                             top_frac         = float(selectivity_fraction),
                             categories       = categories_rdm,   # no "total" here
                             selection_mode   = selection_mode,
-                            selectivity_file = f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl",
+                            selectivity_file = selectivity_file,
                             damage_layer     = layer,
                             activation_layer = act,
                             model_tag        = model_tag
