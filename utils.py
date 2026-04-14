@@ -354,7 +354,13 @@ def apply_noise(model, noise_level, noise_dict, layer_paths, apply_to_all_layers
             get_all_weight_layers(model, "", include_bias)
         )
     else:
-        targets = _as_list(layer_paths)
+        targets = []
+        for path in _as_list(layer_paths):
+            base = get_layer_from_path(model, path)
+            if only_conv:
+                targets.extend(get_all_conv_layers(base, path))
+            else:
+                targets.extend(get_all_weight_layers(base, path))
 
     for w_path in targets:
         npath = normalize_module_name(w_path)
@@ -400,7 +406,13 @@ def apply_activation_noise(
     if apply_to_all_layers:
         targets = get_all_conv_layers(model, "", include_bias=False) if only_conv else get_all_weight_layers(model, "", include_bias=False)
     else:
-        targets = _as_list(layer_paths)
+        targets = []
+        for path in _as_list(layer_paths):
+            base = get_layer_from_path(model, path)
+            if only_conv:
+                targets.extend(get_all_conv_layers(base, path))
+            else:
+                targets.extend(get_all_weight_layers(base, path))
 
     for w_path in targets:
         npath = normalize_module_name(w_path)
