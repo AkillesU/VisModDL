@@ -19,6 +19,8 @@ def main():
         config_filename = "cornet_s_it.yaml"
 
     config_path = f"configs/{config_filename}"
+    if not os.path.exists(config_path):
+        config_path = config_filename
 
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
