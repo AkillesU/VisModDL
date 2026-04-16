@@ -2614,7 +2614,9 @@ def plot_categ_differences(
     scatter=False,
     ylim=None,
     data_type="selectivity",   # "selectivity" or e.g. "svm_15"
-    percentage=False
+    percentage=False,
+    selectivity_fraction: float|None = None,
+    selection_mode: str = "percentage",
 ):
     """
     Plot either:
@@ -2888,7 +2890,12 @@ def plot_categ_differences(
             return os.path.join(main_dir, damage_type, dmg_layer, data_type, act_layer)
         else:
             # selectivity => correlation RDM
-            return os.path.join(main_dir, damage_type, dmg_layer, "RDM", act_layer)
+            if selectivity_fraction is not None:
+                # Use selective RDM path: .../RDM_{fraction}_{selection_mode}/
+                return os.path.join(main_dir, damage_type, dmg_layer, 
+                                    f"RDM_{selectivity_fraction:.2f}_{selection_mode}", act_layer)
+            else:
+                return os.path.join(main_dir, damage_type, dmg_layer, "RDM", act_layer)
 
     all_results = []  # list of (dmg_layer, act_layer, suffix, item_path, diffs_dict)
 
@@ -2901,45 +2908,103 @@ def plot_categ_differences(
         for act_layer in activations_layers:
             base_path = get_base_path(dmg_layer, act_layer)
             if not os.path.isdir(base_path):
-                raise FileNotFoundError(
-                    f"Directory '{base_path}' does not exist.\n"
-                    f"Check your damage_type='{damage_type}', damage_layer='{dmg_layer}', or activation_layer='{act_layer}'."
-                )
-
-            for suffix in damage_levels:
-                # find items (dirs or files) that match <file_prefix>*<suffix>
-                items = []
-                if mode == 'files':
-                    for f in os.listdir(base_path):
-                        fullpath = os.path.join(base_path, f)
-                        if os.path.isfile(fullpath):
-                            if f.startswith(file_prefix) and f.endswith(suffix):
-                                items.append(fullpath)
-                elif mode == 'dirs':
-                    for d in os.listdir(base_path):
-                        full_dpath = os.path.join(base_path, d)
-                        if os.path.isdir(full_dpath):
-                            if d.startswith(file_prefix) and d.endswith(suffix):
-                                items.append(full_dpath)
-                else:
-                    raise ValueError("mode must be 'files' or 'dirs'.")
-
-                if not items:
+                if data_type == "selectivity" and selectivity_fraction is not None:
                     raise FileNotFoundError(
-                        f"No matching items found in '{base_path}' for dmg_layer='{dmg_layer}', "
-                        f"act_layer='{act_layer}', suffix='{suffix}', prefix='{file_prefix}', mode='{mode}'."
+                        f"Selective RDM directory '{base_path}' does not exist.\n"
+                        f"Please run categ_corr_lineplot() first with selectivity_fraction={selectivity_fraction} "
+                        f"and selection_mode='{selection_mode}' to generate the selectivity fraction files.\n"
+                        f"Alternative: call plot_categ_differences() without selectivity_fraction to use standard RDM."
+                    )
+                else:
+                    raise FileNotFoundError(
+                        f"Directory '{base_path}' does not exist.\n"
+                        f"Check your damage_type='{damage_type}', damage_layer='{dmg_layer}', or activation_layer='{act_layer}'."
                     )
 
-                # load each item and compute diffs
-                for item_path in items:
-                    if data_type.startswith("svm"):
-                        dfs = load_svm_dataframes(item_path)
-                        diffs_dict = compute_svm_pairwise_accuracies(dfs, categories_list)
+            # ===== Selective RDM mode =====
+            if data_type == "selectivity" and selectivity_fraction is not None:
+                # base_path is now RDM_{frac}_{mode}/
+                # subdirs are like: animal_selective/, face_selective/, object_selective/, place_selective/
+                # Each contains: damaged_X.XX/ with .pkl/.zarr files
+                
+                base_categories = ["animal", "face", "object", "place"]
+                for focal_cat in base_categories:
+                    cat_dir = os.path.join(base_path, f"{focal_cat}_selective")
+                    if not os.path.isdir(cat_dir):
+                        # Try alternate names (e.g., "scene" vs "place")
+                        if focal_cat == "place":
+                            cat_dir = os.path.join(base_path, "scene_selective")
+                        if not os.path.isdir(cat_dir):
+                            if verbose:
+                                print(f"[WARN] Category dir not found: {cat_dir}")
+                            continue
+                    
+                    for suffix in damage_levels:
+                        # Look for damaged_{suffix} subdirs
+                        items = []
+                        for d in os.listdir(cat_dir):
+                            full_dpath = os.path.join(cat_dir, d)
+                            if os.path.isdir(full_dpath):
+                                if d.startswith(file_prefix) and d.endswith(suffix):
+                                    items.append(full_dpath)
+                        
+                        if not items:
+                            if verbose:
+                                print(f"[WARN] No matching damage dirs in {cat_dir} for suffix '{suffix}'")
+                            continue
+                        
+                        # Load and compute diffs for this category
+                        for item_path in items:
+                            mats = load_all_corr_mats(item_path)
+                            diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
+                            all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
+                
+                # After selective loop: check if we found anything
+                selective_results_count = len([r for r in all_results 
+                                              if r[0] == dmg_layer and r[1] == act_layer])
+                if selective_results_count == 0:
+                    raise FileNotFoundError(
+                        f"No selective RDM files found for damage_layer='{dmg_layer}', act_layer='{act_layer}' "
+                        f"with selectivity_fraction={selectivity_fraction} and selection_mode='{selection_mode}'.\n"
+                        f"Please run categ_corr_lineplot() first to generate the selectivity fraction files."
+                    )
+            
+            # ===== Standard (non-selective) mode =====
+            else:
+                for suffix in damage_levels:
+                    # find items (dirs or files) that match <file_prefix>*<suffix>
+                    items = []
+                    if mode == 'files':
+                        for f in os.listdir(base_path):
+                            fullpath = os.path.join(base_path, f)
+                            if os.path.isfile(fullpath):
+                                if f.startswith(file_prefix) and f.endswith(suffix):
+                                    items.append(fullpath)
+                    elif mode == 'dirs':
+                        for d in os.listdir(base_path):
+                            full_dpath = os.path.join(base_path, d)
+                            if os.path.isdir(full_dpath):
+                                if d.startswith(file_prefix) and d.endswith(suffix):
+                                    items.append(full_dpath)
                     else:
-                        mats = load_all_corr_mats(item_path)
-                        diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
+                        raise ValueError("mode must be 'files' or 'dirs'.")
 
-                    all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
+                    if not items:
+                        raise FileNotFoundError(
+                            f"No matching items found in '{base_path}' for dmg_layer='{dmg_layer}', "
+                            f"act_layer='{act_layer}', suffix='{suffix}', prefix='{file_prefix}', mode='{mode}'."
+                        )
+
+                    # load each item and compute diffs
+                    for item_path in items:
+                        if data_type.startswith("svm"):
+                            dfs = load_svm_dataframes(item_path)
+                            diffs_dict = compute_svm_pairwise_accuracies(dfs, categories_list)
+                        else:
+                            mats = load_all_corr_mats(item_path)
+                            diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
+
+                        all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
 
     # ---------- 3) (OPTIONAL) CONVERT TO PERCENTAGES -----------
     if percentage:
