@@ -2602,7 +2602,7 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
 def plot_categ_differences(
     damage_layers,
     activations_layers,
-    damage_type,
+    damage_type: str|None = None,  # Damage type to plot; required only if damage_pairs is None
     main_dir: str|list[str] = "data/haupt_stim_activ/damaged/cornet_rt/",  # Single dir or list of fallback dirs to search
     image_dir="stimuli/",
     mode='dirs',
@@ -2895,6 +2895,8 @@ def plot_categ_differences(
     # ---------- 2) GATHER RESULTS (matrices or dataframes) -----------
     # If damage_pairs not provided, use old (damage_type, damage_levels) behavior
     if damage_pairs is None:
+        if damage_type is None:
+            raise ValueError("Either 'damage_type' or 'damage_pairs' must be provided.")
         damage_pairs = {damage_type: damage_levels}
     
     def find_valid_base_path(dmg_layer, act_layer, dmg_type):
