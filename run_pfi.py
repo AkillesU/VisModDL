@@ -189,6 +189,12 @@ def band_permutation(sel_mat, rand_mat, n_perm=10000, stat_fn=cliffs_delta, rng=
 
 # ------------------------- Plotting ------------------------------------------
 
+def _save_png_and_svg(path, dpi=300):
+    out_path = pathlib.Path(path)
+    plt.savefig(out_path, dpi=dpi)
+    plt.savefig(out_path.with_suffix(".svg"))
+
+
 def plot_effect_curve_multi(centers, curves, cis_low, cis_high, colors, out_png):
     """
     curves: {label: delta_vec}
@@ -206,7 +212,7 @@ def plot_effect_curve_multi(centers, curves, cis_low, cis_high, colors, out_png)
     plt.ylabel("Cliff's Δ (sel − rand)")
     plt.legend(frameon=False)
     plt.tight_layout()
-    plt.savefig(out_png, dpi=300)
+    _save_png_and_svg(out_png, dpi=300)
     plt.close()
 
 
@@ -220,7 +226,7 @@ def plot_effect_curve_single(centers, delta, ci_low, ci_high, out_png, color='C0
     if label:
         plt.legend(frameon=False)
     plt.tight_layout()
-    plt.savefig(out_png, dpi=250)
+    _save_png_and_svg(out_png, dpi=250)
     plt.close()
 
 
