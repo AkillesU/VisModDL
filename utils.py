@@ -2947,7 +2947,7 @@ def plot_categ_differences(
             else:
                 return os.path.join(used_main_dir, dmg_type, dmg_layer, "RDM", act_layer)
 
-    all_results = []  # list of (dmg_layer, act_layer, suffix, item_path, diffs_dict)
+    all_results = []  # list of (dmg_layer, act_layer, suffix, item_path, diffs_dict, selective_cat)
 
     if not damage_layers:
         raise ValueError("No damage_layers specified.")
@@ -3031,7 +3031,7 @@ def plot_categ_differences(
                                         print(f"[WARN] No RDM files found in {item_path}")
                                     continue
                                 diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
-                                all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
+                                all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict, focal_cat))
                     
                     # After selective loop: check if we found anything for this (dmg, act, dmg_type) combo
                     if len(all_results) == results_before:
@@ -3078,14 +3078,14 @@ def plot_categ_differences(
                                 mats = load_all_corr_mats(item_path)
                                 diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
 
-                            all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
+                            all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict, None))
 
     # ---------- 3) (OPTIONAL) CONVERT TO PERCENTAGES -----------
     if percentage:
         # Group entries by (damage_layer, act_layer, damage_type) to handle multiple damage types
         # For each group, use the first damage level in damage_pairs as the baseline
         group_map = defaultdict(list)
-        for idx, (dmg_layer, act_layer, sfx, ipath, diffs) in enumerate(all_results):
+        for idx, (dmg_layer, act_layer, sfx, ipath, diffs, selective_cat) in enumerate(all_results):
             # Infer damage_type from the first occurrence with this (dmg_layer, act_layer)
             dmg_type_for_group = None
             for dt, levels in damage_pairs.items():
@@ -3095,7 +3095,7 @@ def plot_categ_differences(
             if dmg_type_for_group is None:
                 # Fallback: use first damage_type in damage_pairs
                 dmg_type_for_group = list(damage_pairs.keys())[0]
-            group_map[(dmg_layer, act_layer, dmg_type_for_group)].append((sfx, ipath, diffs, idx))
+            group_map[(dmg_layer, act_layer, dmg_type_for_group)].append((sfx, ipath, diffs, idx, selective_cat))
 
         updated_all_results = list(all_results)  # make a mutable copy
         for group_key, items in group_map.items():
@@ -3108,9 +3108,9 @@ def plot_categ_differences(
             
             # Find the baseline item for this group (the one with suffix == baseline_sfx)
             baseline_item = None
-            for (sfx, ipath, diffs_d, idx_in_all) in items:
+            for (sfx, ipath, diffs_d, idx_in_all, selective_cat) in items:
                 if str(sfx) == str(baseline_sfx):
-                    baseline_item = (sfx, ipath, diffs_d, idx_in_all)
+                    baseline_item = (sfx, ipath, diffs_d, idx_in_all, selective_cat)
                     break
 
             if baseline_item is None:
@@ -3122,7 +3122,7 @@ def plot_categ_differences(
 
             # Scale *every* suffix (including the baseline) 
             # so that baseline ÷ baseline = 1 => 100%.
-            for (sfx, ipath, current_diffs, idx_in_all) in items:
+            for (sfx, ipath, current_diffs, idx_in_all, selective_cat) in items:
                 scaled_diffs = scale_to_baseline(current_diffs, baseline_diffs)
                 # Overwrite in updated_all_results
                 old_tuple = list(updated_all_results[idx_in_all])
@@ -3138,8 +3138,8 @@ def plot_categ_differences(
         # Aggregate all_results by (dmg_layer, act_layer, suffix) instead of including item_path
         aggregated_results = {}  # key: (dmg_layer, act_layer, suffix), value: aggregated diffs_dict
         
-        for (dmg_layer, act_layer, suffix, item_path, diffs_dict) in all_results:
-            agg_key = (dmg_layer, act_layer, suffix)
+        for (dmg_layer, act_layer, suffix, item_path, diffs_dict, selective_cat) in all_results:
+            agg_key = (dmg_layer, act_layer, suffix, selective_cat)
             
             if agg_key not in aggregated_results:
                 # Initialize: deep copy the diffs_dict structure
@@ -3163,7 +3163,7 @@ def plot_categ_differences(
         
         # Convert aggregated results back to all_results format
         all_results_agg = []
-        for (dmg_layer, act_layer, suffix), agg_dict in aggregated_results.items():
+        for (dmg_layer, act_layer, suffix, selective_cat), agg_dict in aggregated_results.items():
             # Recalculate means and stds from aggregated raw arrays
             final_diffs_dict = {}
             for cat, (oc_list, raw_arrays) in agg_dict.items():
@@ -3174,7 +3174,7 @@ def plot_categ_differences(
                     std_vals.append(np.std(arr_np) * 1.96)  # 95% CI
                 final_diffs_dict[cat] = (oc_list, mean_vals, std_vals, raw_arrays)
             
-            all_results_agg.append((dmg_layer, act_layer, suffix, f"aggregated_{suffix}", final_diffs_dict))
+            all_results_agg.append((dmg_layer, act_layer, suffix, f"aggregated_{suffix}", final_diffs_dict, selective_cat))
         
         all_results = all_results_agg
 
@@ -3190,7 +3190,7 @@ def plot_categ_differences(
         )
         axes = np.array(axes, ndmin=2)  # ensure 2D
 
-        for i, (dmg_layer, act_layer, suffix, item_path, diffs_dict) in enumerate(all_results):
+        for i, (dmg_layer, act_layer, suffix, item_path, diffs_dict, selective_cat) in enumerate(all_results):
             for j, cat in enumerate(categories_list):
                 ax = axes[i, j]
                 if cat not in diffs_dict:
@@ -3271,7 +3271,7 @@ def plot_categ_differences(
         # group results by category
         results_by_cat = {cat: {} for cat in categories_list}
         combos = []
-        for (dmg_layer, act_layer, suffix, item_path, diffs_dict) in all_results:
+        for (dmg_layer, act_layer, suffix, item_path, diffs_dict, selective_cat) in all_results:
             # When damage_pairs is used, combo_key is based on (dmg_layer, act_layer, suffix)
             # to ensure one bar per damage pair (not one per replicate).
             # When damage_pairs is None, we use item_path for legacy behavior (one bar per item).
@@ -3283,6 +3283,9 @@ def plot_categ_differences(
             if combo_key not in combos:
                 combos.append(combo_key)
             for cat in categories_list:
+                # In selective mode, only use RDMs from the matching selective category for each subplot
+                if selective_cat is not None and selective_cat != cat:
+                    continue
                 results_by_cat[cat][combo_key] = diffs_dict.get(cat, ([], [], [], []))
 
         bar_width = 0.8 / len(combos)
