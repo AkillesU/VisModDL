@@ -2155,11 +2155,14 @@ def grouped_categ_corr_lineplot(
         "damage_layer": "IT",
         "activation_layer": "IT",
         "damage_type": "noise",
+        "tags": {"stage": "late"},
       }
 
     `aggregate_by` can be a string like "damage_type" or a list like
-    ["damage_type", "activation_layer"]. Aggregate lines are drawn as the mean
-    of all constituent raw datapoints at each x, with shaded error bands.
+    ["damage_type", "activation_layer"]. The requested fields can be normal
+    top-level spec keys or custom tag keys stored in `tags`. Aggregate lines
+    are drawn as the mean of all constituent raw datapoints at each x, with
+    shaded error bands.
     """
 
     def _dbg(msg, level=1):
@@ -2198,10 +2201,23 @@ def grouped_categ_corr_lineplot(
             f"{spec['damage_layer']}->{spec['activation_layer']} | {spec['damage_type']}"
         )
 
+    def _group_field_value(spec, field):
+        if field in spec:
+            return spec[field]
+        tags = spec.get("tags", {})
+        if isinstance(tags, Mapping) and field in tags:
+            return tags[field]
+        if field == "group_tag":
+            if "group_tag" in spec:
+                return spec["group_tag"]
+            if isinstance(tags, Mapping) and "group_tag" in tags:
+                return tags["group_tag"]
+        return None
+
     def _aggregate_group_key(spec, fields):
         if not fields:
             return None
-        return tuple((field, spec.get(field)) for field in fields)
+        return tuple((field, _group_field_value(spec, field)) for field in fields)
 
     def _format_group_label(group_key):
         if not group_key:

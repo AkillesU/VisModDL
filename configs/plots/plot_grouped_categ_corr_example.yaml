@@ -9,7 +9,7 @@ tasks:
       selection_mode: "percentage"
       percentage: true
       scatter: false
-      aggregate_by: "damage_layer"
+      aggregate_by: "stage"
       title: "Grouped Category Correlation Lineplot"
       line_specs:
         - label: "CorNet-RT | Late | Connection severing"
@@ -18,24 +18,32 @@ tasks:
           activation_layer: "IT"
           damage_type: "connections"
           model_tag: "cornet_rt5"
+          tags:
+            stage: "late"
         - label: "AlexNet | Late | Connection severing"
           main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
           damage_layer: "block5"
           activation_layer: "features_12"
           damage_type: "connections"
           model_tag: "alexnet"
+          tags:
+            stage: "late"
         - label: "VGG16 | Late | Connection severing"
           main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
           damage_layer: "block5"
           activation_layer: "features_30"
           damage_type: "connections"
           model_tag: "vgg16"
+          tags:
+            stage: "late"
         - label: "CorNet-S | Late | Connection severing"
           main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
           damage_layer: "IT"
           activation_layer: "IT"
           damage_type: "connections"
           model_tag: "cornet_s5"
+          tags:
+            stage: "late"
 
         - label: "cornet_rt5_c | Early | Connection severing"
           main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -43,24 +51,32 @@ tasks:
           activation_layer: "IT"
           damage_type: "connections"
           model_tag: "cornet_rt5"
+          tags:
+            stage: "early"
         - label: "AlexNet | Early | Connection severing"
           main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
           damage_layer: "block1"
           activation_layer: "features_12"
           damage_type: "connections"
           model_tag: "alexnet"
+          tags:
+            stage: "early"
         - label: "VGG16 | Early | Connection severing"
           main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
           damage_layer: "block1"
           activation_layer: "features_30"
           damage_type: "connections"
           model_tag: "vgg16"
+          tags:
+            stage: "early"
         - label: "CorNet-S | Early | Connection severing"
           main_dir: "data/haupt_stim_activ/damaged/cornet_s5_c/"
           damage_layer: "V1"
           activation_layer: "IT"
           damage_type: "connections"
           model_tag: "cornet_s5"
+          tags:
+            stage: "early"
 
 
   - function: grouped_categ_corr_lineplot
