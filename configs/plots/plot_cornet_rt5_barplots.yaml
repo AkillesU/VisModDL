@@ -13,7 +13,7 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: "percentage"
       damage_pairs:
-        connections: ["0", "0.5"]
+        connections: ["0.0", "0.5"]
         noise: ["1.8"]
         units: ["0.4"]
       save_mode: "png+svg"
@@ -30,7 +30,7 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: "percentage"
       damage_pairs:
-        connections: ["0", "0.5"]
+        connections: ["0.0", "0.5"]
         noise: ["1.8"]
         units: ["0.4"]
       save_mode: "png+svg"
@@ -47,7 +47,7 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: "percentage"
       damage_pairs:
-        connections: ["0", "0.5"]
+        connections: ["0.0", "0.5"]
         noise: ["1.8"]
         units: ["0.4"]
       save_mode: "png+svg"
@@ -64,7 +64,7 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: "percentage"
       damage_pairs:
-        connections: ["0", "0.5"]
+        connections: ["0.0", "0.5"]
         noise: ["1.8"]
         units: ["0.4"]
       save_mode: "png+svg"
