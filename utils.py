@@ -3173,7 +3173,8 @@ def plot_categ_differences(
 
         plt.tight_layout()
         os.makedirs(plot_dir, exist_ok=True)
-        model_name = main_dir.strip("/").split("/")[-1]
+        model_dir = main_dir[0] if isinstance(main_dir, (list, tuple)) else main_dir
+        model_name = str(model_dir).strip("/").split("/")[-1]
         plot_name = f"{model_name}_{data_type}_categ-diff_{damage_type}"
         for layer in damage_layers:
             plot_name += f"_{layer}"
@@ -3277,7 +3278,8 @@ def plot_categ_differences(
         plt.tight_layout()
 
         os.makedirs(plot_dir, exist_ok=True)
-        model_name = main_dir.strip("/").split("/")[-1]
+        model_dir = main_dir[0] if isinstance(main_dir, (list, tuple)) else main_dir
+        model_name = str(model_dir).strip("/").split("/")[-1]
         plot_name = f"{model_name}_{data_type}_categ-diff_{damage_type}"
         for layer in damage_layers:
             plot_name += f"_{layer}"
@@ -3543,7 +3545,8 @@ def pair_corr_scatter_subplots(
     plt.subplots_adjust(top=0.93)
 
     # Build a filename
-    model_name = main_dir.strip("/").split("/")[-1]
+    model_dir = main_dir[0] if isinstance(main_dir, (list, tuple)) else main_dir
+    model_name = str(model_dir).strip("/").split("/")[-1]
     plot_name = (
         f"{model_name}_scatter_grid_{damage_type}_"
         f"{image1}_vs_{image2}_permut{n_permutations}"
