@@ -2603,7 +2603,7 @@ def plot_categ_differences(
     damage_layers,
     activations_layers,
     damage_type,
-    main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
+    main_dir: str|list[str] = "data/haupt_stim_activ/damaged/cornet_rt/",  # Single dir or list of fallback dirs to search
     image_dir="stimuli/",
     mode='dirs',
     file_prefix='damaged_',
@@ -2637,6 +2637,14 @@ def plot_categ_differences(
        "selectivity" -> correlation-based data from ".../RDM/<act_layer>"
        "svm_..." -> classification accuracy from ".../svm_15/<act_layer>".
     """
+    # ---------- Normalize main_dir to a list (for fallback dirs) ----------
+    if isinstance(main_dir, str):
+        main_dir_list = [main_dir]
+    else:
+        main_dir_list = list(main_dir)
+    if not main_dir_list:
+        raise ValueError("main_dir cannot be empty")
+    
     # ---------------- NEW COMMON IO HELPERS --------------------------
 
     def load_svm_dataframes(item_path: str | os.PathLike) -> list[pd.DataFrame]:
@@ -2889,18 +2897,37 @@ def plot_categ_differences(
     if damage_pairs is None:
         damage_pairs = {damage_type: damage_levels}
     
-    def get_base_path(dmg_layer, act_layer, dmg_type):
+    def find_valid_base_path(dmg_layer, act_layer, dmg_type):
+        """
+        Try each main_dir in sequence and return the first valid base_path that exists.
+        Also returns which main_dir was used.
+        Returns (base_path, used_main_dir) or (None, None) if none exist.
+        """
+        for md in main_dir_list:
+            if data_type.startswith("svm"):
+                candidate = os.path.join(md, dmg_type, dmg_layer, data_type, act_layer)
+            else:
+                # selectivity => correlation RDM
+                if selectivity_fraction is not None:
+                    candidate = os.path.join(md, dmg_type, dmg_layer, 
+                                            f"RDM_{selectivity_fraction:.2f}_{selection_mode}", act_layer)
+                else:
+                    candidate = os.path.join(md, dmg_type, dmg_layer, "RDM", act_layer)
+            
+            if os.path.isdir(candidate):
+                return candidate, md
+        return None, None
+    
+    def get_base_path(dmg_layer, act_layer, dmg_type, used_main_dir):
+        """Construct base path using the selected main_dir."""
         if data_type.startswith("svm"):
-            # e.g. .../<dmg_layer>/svm_15/<act_layer>/
-            return os.path.join(main_dir, dmg_type, dmg_layer, data_type, act_layer)
+            return os.path.join(used_main_dir, dmg_type, dmg_layer, data_type, act_layer)
         else:
-            # selectivity => correlation RDM
             if selectivity_fraction is not None:
-                # Use selective RDM path: .../RDM_{fraction}_{selection_mode}/
-                return os.path.join(main_dir, dmg_type, dmg_layer, 
+                return os.path.join(used_main_dir, dmg_type, dmg_layer, 
                                     f"RDM_{selectivity_fraction:.2f}_{selection_mode}", act_layer)
             else:
-                return os.path.join(main_dir, dmg_type, dmg_layer, "RDM", act_layer)
+                return os.path.join(used_main_dir, dmg_type, dmg_layer, "RDM", act_layer)
 
     all_results = []  # list of (dmg_layer, act_layer, suffix, item_path, diffs_dict)
 
@@ -2912,20 +2939,27 @@ def plot_categ_differences(
     for dmg_layer in damage_layers:
         for act_layer in activations_layers:
             for current_damage_type, current_damage_levels in damage_pairs.items():
-                base_path = get_base_path(dmg_layer, act_layer, current_damage_type)
-            if not os.path.isdir(base_path):
-                if data_type == "selectivity" and selectivity_fraction is not None:
-                    raise FileNotFoundError(
-                        f"Selective RDM directory '{base_path}' does not exist.\n"
-                        f"Please run categ_corr_lineplot() first with selectivity_fraction={selectivity_fraction} "
-                        f"and selection_mode='{selection_mode}' to generate the selectivity fraction files.\n"
-                        f"Alternative: call plot_categ_differences() without selectivity_fraction to use standard RDM."
-                    )
-                else:
-                    raise FileNotFoundError(
-                        f"Directory '{base_path}' does not exist.\n"
-                        f"Check your damage_type='{current_damage_type}', damage_layer='{dmg_layer}', or activation_layer='{act_layer}'."
-                    )
+                # Try to find valid base_path from list of main_dirs
+                base_path, used_main_dir = find_valid_base_path(dmg_layer, act_layer, current_damage_type)
+                
+                if base_path is None:
+                    if data_type == "selectivity" and selectivity_fraction is not None:
+                        raise FileNotFoundError(
+                            f"Selective RDM directory not found for dmg_layer='{dmg_layer}', "
+                            f"act_layer='{act_layer}', damage_type='{current_damage_type}' "
+                            f"in any of {len(main_dir_list)} provided main_dir(s).\n"
+                            f"Searched: {main_dir_list}\n"
+                            f"Please run categ_corr_lineplot() first with selectivity_fraction={selectivity_fraction} "
+                            f"and selection_mode='{selection_mode}' to generate the selectivity fraction files."
+                        )
+                    else:
+                        raise FileNotFoundError(
+                            f"RDM directory not found for dmg_layer='{dmg_layer}', "
+                            f"act_layer='{act_layer}', damage_type='{current_damage_type}' "
+                            f"in any of {len(main_dir_list)} provided main_dir(s).\n"
+                            f"Searched: {main_dir_list}\n"
+                            f"Check your damage_type, damage_layer, or activation_layer settings."
+                        )
 
                 # ===== Selective RDM mode =====
                 if data_type == "selectivity" and selectivity_fraction is not None:
