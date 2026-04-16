@@ -193,99 +193,101 @@ def short_module_tag(path: str) -> str:
 def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path="", model_time_steps=5):
     """
     Load a specified pretrained model and register a forward hook to capture activations.
-
-    Parameters:
-        model_class: The class (constructor) for the model (e.g., cornet_s).
-        pretrained (bool): If True, load pretrained weights.
-        layer_name (str): The layer name at which to hook and capture activations.
-                          Possible values depend on the model architecture.
-
-    Returns:
-        model: The loaded and hooked model
-        activations: A dictionary to store captured activations
     """
-    # Define model load parameters
     model_source = model_info["source"]
     model_repo = model_info["repo"]
     model_name = model_info["name"]
-    # Determine a canonical name to use for loading constructors/hub calls.
-    # Some callers append a `_ut` suffix to indicate untrained variants for
-    # filesystem naming; but the actual constructor names do not include that
-    # suffix. Keep the potentially-suffixed `model_name` for other uses but
-    # strip `_ut` when resolving which model to load.
+
     load_model_name = model_name[:-3] if isinstance(model_name, str) and model_name.endswith("_ut") else model_name
-    # Tag untrained models explicitly for naming elsewhere but do not affect
-    # which constructor we call (we use `load_model_name` for that purpose).
+
     if not pretrained and not str(model_name).endswith("_ut"):
-        # keep model_info['name'] for filesystem/metadata, but loading uses load_model_name
         model_info["name"] = f"{model_name}_ut"
         model_name = model_info["name"]
+
     model_weights = model_info["weights"]
     if "time_steps" in model_info:
         model_time_steps = model_info["time_steps"]
 
-    # Hook function to capture layer outputs
-    def hook_fn(module, input, output):
-        activations[layer_name] = output.cpu().detach().numpy()
-
-
     if model_source == "cornet":
-        # use the stripped name for constructor lookup
         m = str(load_model_name).lower()
         if m == "cornet_z":
             from cornet import cornet_z
-            model = cornet_z(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
-
+            model = cornet_z(
+                pretrained=pretrained,
+                map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            )
         elif m == "cornet_s":
             from cornet import cornet_s
-            model = cornet_s(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
-
+            model = cornet_s(
+                pretrained=pretrained,
+                map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            )
         elif m == "cornet_rt":
             from cornet import cornet_rt
-            model = cornet_rt(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")), times=model_time_steps)
-
+            model = cornet_rt(
+                pretrained=pretrained,
+                map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")),
+                times=model_time_steps
+            )
         else:
             raise ValueError(f"CORnet model {load_model_name} not found. Check config file.")
 
     elif model_source == "pytorch_hub":
-        # use load_model_name (without any _ut suffix) for hub resolution
-        if model_weights == "":
-            model = torch.hub.load(model_repo, load_model_name)
-        else:
-            model = torch.hub.load(model_repo, load_model_name, weights=model_weights)
+        # Safe path for torchvision models: do NOT use torch.hub for pytorch/vision
+        if model_repo == "pytorch/vision":
+            from torchvision.models import get_model, get_model_weights
 
-        # Assign model to device
+            try:
+                if (not pretrained) or model_weights in ("", None):
+                    weights = None
+                elif isinstance(model_weights, str):
+                    weights_enum = get_model_weights(load_model_name)
+                    if model_weights.upper() == "DEFAULT":
+                        weights = weights_enum.DEFAULT
+                    else:
+                        weights = getattr(weights_enum, model_weights)
+                else:
+                    weights = model_weights
+
+                model = get_model(load_model_name, weights=weights)
+
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to load torchvision model '{load_model_name}' "
+                    f"via torchvision.models for repo '{model_repo}'."
+                ) from e
+
+        else:
+            # Keep old behaviour for non-torchvision hub repos
+            if model_weights == "":
+                model = torch.hub.load(model_repo, load_model_name)
+            else:
+                model = torch.hub.load(model_repo, load_model_name, weights=model_weights)
+
         model.cuda() if torch.cuda.is_available() else model.cpu()
+
     else:
         raise ValueError(f"Check model source: {model_source}")
-    
-    # Print model summary
-    #print(model)
 
     model.eval()
-    activations = {} # Init activations dictionary for hook registration
+    activations = {}
 
-    # early-exit guard 
     if layer_path in (None, ""):
-        # caller does not need hooks – just return the model as-is
         return model, activations
 
-
-    # We'll store all hooks in the same 'activations' dictionary, keyed by their path.
     if isinstance(layer_path, list):
-        # If layer_path is already a list of paths, do multiple hooks
         def make_hook_fn(name):
             def hook_fn(module, input, output):
                 activations[name] = output.cpu().detach().numpy()
             return hook_fn
-        
+
         for lp in layer_path:
             target_layer = get_layer_from_path(model, lp)
             target_layer.register_forward_hook(make_hook_fn(lp))
     else:
-        # Old single-layer logic
         def hook_fn(module, input, output):
             activations[layer_name] = output.cpu().detach().numpy()
+
         target_layer = get_layer_from_path(model, layer_path)
         target_layer.register_forward_hook(hook_fn)
 
@@ -1473,7 +1475,6 @@ def _load_svm_scores(path, categories):
       asked for `categories=['total']`.
     * Missing categories → value = np.nan.
     """
-    import os, pickle, numpy as np, pandas as pd, zarr
 
     BASE_CATS = ("animal", "face", "object", "place")
     want_cats = set(cat.lower() for cat in categories) | set(BASE_CATS)
