@@ -1,0 +1,15 @@
+output_dir: it2v1_analysis
+categories: [animals,objects,places,faces]
+top_frac: [0.05]
+mode: percentage
+nbins: 12
+binning: equal_width
+bootstrap_iters: 10000
+permutations: 11000
+curve_stat: area
+area_normalize: true
+alpha_fdr: 0.05
+plot_all_together: true
+color_seed: 13
+palette: tab20
+combined_plot_name: nnorm_0.05_all_curves_12bins_eqwidth.png
