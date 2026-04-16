@@ -2618,6 +2618,7 @@ def plot_categ_differences(
     selectivity_fraction: float|None = None,
     selection_mode: str = "percentage",
     damage_pairs: dict[str, list]|None = None,  # {damage_type: [levels, ...], ...} to plot multiple damage types; None uses (damage_type, damage_levels)
+    save_mode: str = "png",  # Save format: "png", "svg", or "png+svg" for both
 ):
     """
     Plot either:
@@ -2871,6 +2872,21 @@ def plot_categ_differences(
             scaled_dict[cat] = (scaled_oc_list, new_mean_vals, new_std_vals, new_raw_arrays)
         return scaled_dict
 
+    # ---------- Helper to save plot in multiple formats ----------
+    def _save_plot(fig, base_path, mode="png", dpi=500):
+        """
+        Save figure in format(s) specified by mode.
+        
+        mode: "png", "svg", or "png+svg"
+        Saves to base_path + appropriate extension (.png, .svg, or both)
+        """
+        if "png" in mode:
+            png_path = base_path + ".png"
+            fig.savefig(png_path, dpi=dpi, format="png")
+        if "svg" in mode:
+            svg_path = base_path + ".svg"
+            fig.savefig(svg_path, format="svg")
+
     # ---------- 1) LOAD & GROUP IMAGES BY CATEGORY -----------
     if not os.path.isdir(image_dir):
         raise FileNotFoundError(f"Image directory '{image_dir}' does not exist.")
@@ -3115,6 +3131,53 @@ def plot_categ_differences(
 
         all_results = updated_all_results
 
+    # ---------- 3b) AGGREGATE REPLICATES WHEN damage_pairs IS SET AND comparison=True -----------
+    # When damage_pairs is used, multiple item_paths per suffix should be aggregated into one bar.
+    # This prevents 4x bars per subplot when there are 4 replicates.
+    if damage_pairs is not None and comparison and len(damage_pairs) > 0:
+        # Aggregate all_results by (dmg_layer, act_layer, suffix) instead of including item_path
+        aggregated_results = {}  # key: (dmg_layer, act_layer, suffix), value: aggregated diffs_dict
+        
+        for (dmg_layer, act_layer, suffix, item_path, diffs_dict) in all_results:
+            agg_key = (dmg_layer, act_layer, suffix)
+            
+            if agg_key not in aggregated_results:
+                # Initialize: deep copy the diffs_dict structure
+                aggregated_results[agg_key] = {}
+                for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_dict.items():
+                    # Store raw arrays as lists for accumulation; means/stds will be recalculated
+                    aggregated_results[agg_key][cat] = (
+                        oc_list,
+                        [list(arr) if isinstance(arr, np.ndarray) else arr for arr in raw_arrays]
+                    )
+            else:
+                # Merge: concatenate raw arrays for this result
+                for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_dict.items():
+                    if cat in aggregated_results[agg_key]:
+                        existing_oc_list, existing_raw_arrays = aggregated_results[agg_key][cat]
+                        # Assume oc_list is in same order; concatenate raw arrays
+                        for idx, oc in enumerate(oc_list):
+                            if idx < len(existing_raw_arrays):
+                                arr_to_add = list(raw_arrays[idx]) if isinstance(raw_arrays[idx], np.ndarray) else list(raw_arrays[idx])
+                                existing_raw_arrays[idx].extend(arr_to_add)
+        
+        # Convert aggregated results back to all_results format
+        all_results_agg = []
+        for (dmg_layer, act_layer, suffix), agg_dict in aggregated_results.items():
+            # Recalculate means and stds from aggregated raw arrays
+            final_diffs_dict = {}
+            for cat, (oc_list, raw_arrays) in agg_dict.items():
+                mean_vals, std_vals = [], []
+                for raw_arr in raw_arrays:
+                    arr_np = np.array(raw_arr)
+                    mean_vals.append(np.mean(arr_np))
+                    std_vals.append(np.std(arr_np) * 1.96)  # 95% CI
+                final_diffs_dict[cat] = (oc_list, mean_vals, std_vals, raw_arrays)
+            
+            all_results_agg.append((dmg_layer, act_layer, suffix, f"aggregated_{suffix}", final_diffs_dict))
+        
+        all_results = all_results_agg
+
     # ---------- 4) PLOTTING -----------
     if not comparison:
         # One row per (dmg_layer, act_layer, suffix, item_path)
@@ -3190,10 +3253,10 @@ def plot_categ_differences(
         if verbose == 1:
             save_plot = input(f"Save plot under {plot_path}? Y/N: ")
             if save_plot.capitalize() == "Y":
-                plt.savefig(plot_path, dpi=500)
+                _save_plot(fig, plot_path, save_mode, dpi=500)
             plt.show()
         elif verbose == 0:
-            plt.savefig(plot_path, dpi=500)
+            _save_plot(fig, plot_path, save_mode, dpi=500)
             plt.show()
         else:
             raise ValueError(f"{verbose} is not valid. Use 0 or 1.")
@@ -3209,7 +3272,14 @@ def plot_categ_differences(
         results_by_cat = {cat: {} for cat in categories_list}
         combos = []
         for (dmg_layer, act_layer, suffix, item_path, diffs_dict) in all_results:
-            combo_key = (dmg_layer, act_layer, suffix, item_path)
+            # When damage_pairs is used, combo_key is based on (dmg_layer, act_layer, suffix)
+            # to ensure one bar per damage pair (not one per replicate).
+            # When damage_pairs is None, we use item_path for legacy behavior (one bar per item).
+            if damage_pairs is not None and comparison and len(damage_pairs) > 0:
+                combo_key = (dmg_layer, act_layer, suffix)
+            else:
+                combo_key = (dmg_layer, act_layer, suffix, item_path)
+            
             if combo_key not in combos:
                 combos.append(combo_key)
             for cat in categories_list:
@@ -3245,12 +3315,20 @@ def plot_categ_differences(
                 offset = i * bar_width
                 color_id = f"C{i}"
 
+                # Generate label based on combo_key structure
+                if len(combo_key) == 3:
+                    # damage_pairs case: (dmg_layer, act_layer, suffix)
+                    label = f"{combo_key[0]}, {combo_key[1]}, dmg={combo_key[2]}"
+                else:
+                    # Legacy case: (dmg_layer, act_layer, suffix, item_path)
+                    label = f"{combo_key[0]}, {combo_key[1]}, dmg={combo_key[2]}"
+
                 ax.bar(
                     x_pos + offset,
                     new_mean_vals,
                     yerr=new_std_vals,
                     width=bar_width,
-                    label=f"{combo_key[0]}, {combo_key[1]}, dmg={combo_key[2]}",
+                    label=label,
                     capsize=4,
                     facecolor="none",
                     edgecolor=color_id,
@@ -3295,10 +3373,10 @@ def plot_categ_differences(
         if verbose == 1:
             save_plot = input(f"Save plot under {plot_path}? Y/N: ")
             if save_plot.capitalize() == "Y":
-                plt.savefig(plot_path, dpi=500)
+                _save_plot(fig, plot_path, save_mode, dpi=500)
             plt.show()
         elif verbose == 0:
-            plt.savefig(plot_path, dpi=500)
+            _save_plot(fig, plot_path, save_mode, dpi=500)
             plt.show()
         else:
             raise ValueError(f"{verbose} is not valid. Use 0 or 1.")
