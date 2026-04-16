@@ -2969,6 +2969,18 @@ def plot_categ_differences(
                     # subdirs are like: animal_selective/, face_selective/, object_selective/, place_selective/
                     # Each contains: damaged_X.XX/ with .pkl/.zarr files
                     
+                    def _load_corr_files_from_folder(folder_path):
+                        mats = []
+                        p = Path(folder_path)
+                        if not p.exists():
+                            return mats
+                        for child in sorted(p.iterdir()):
+                            if child.is_file() and child.suffix.lower() == ".pkl":
+                                mats.extend(load_all_corr_mats(child))
+                            elif child.is_dir() and child.suffix.lower() == ".zarr":
+                                mats.extend(load_all_corr_mats(child))
+                        return mats
+
                     results_before = len(all_results)
                     base_categories = ["animal", "face", "object", "place"]
                     for focal_cat in base_categories:
@@ -2987,9 +2999,8 @@ def plot_categ_differences(
                             items = []
                             for d in os.listdir(cat_dir):
                                 full_dpath = os.path.join(cat_dir, d)
-                                if os.path.isdir(full_dpath):
-                                    if d.startswith(file_prefix) and d.endswith(suffix):
-                                        items.append(full_dpath)
+                                if os.path.isdir(full_dpath) and d.startswith(file_prefix) and d.endswith(suffix):
+                                    items.append(full_dpath)
                             
                             if not items:
                                 if verbose:
@@ -2998,7 +3009,11 @@ def plot_categ_differences(
                             
                             # Load and compute diffs for this category
                             for item_path in items:
-                                mats = load_all_corr_mats(item_path)
+                                mats = _load_corr_files_from_folder(item_path)
+                                if not mats:
+                                    if verbose:
+                                        print(f"[WARN] No RDM files found in {item_path}")
+                                    continue
                                 diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
                                 all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
                     
