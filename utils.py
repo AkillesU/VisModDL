@@ -2915,26 +2915,32 @@ def plot_categ_differences(
             raise ValueError("Either 'damage_type' or 'damage_pairs' must be provided.")
         damage_pairs = {damage_type: damage_levels}
     
-    def find_valid_base_path(dmg_layer, act_layer, dmg_type):
+    def find_valid_base_paths(dmg_layer, act_layer, dmg_type):
         """
-        Try each main_dir in sequence and return the first valid base_path that exists.
-        Also returns which main_dir was used.
-        Returns (base_path, used_main_dir) or (None, None) if none exist.
+        Return every existing base_path across main_dir_list, preserving order.
+        Each requested suffix is then resolved against these base paths in order,
+        so a list of main_dir values behaves like per-suffix fallbacks.
         """
+        found_paths = []
         for md in main_dir_list:
             if data_type.startswith("svm"):
                 candidate = os.path.join(md, dmg_type, dmg_layer, data_type, act_layer)
             else:
                 # selectivity => correlation RDM
                 if selectivity_fraction is not None:
-                    candidate = os.path.join(md, dmg_type, dmg_layer, 
-                                            f"RDM_{selectivity_fraction:.2f}_{selection_mode}", act_layer)
+                    candidate = os.path.join(
+                        md,
+                        dmg_type,
+                        dmg_layer,
+                        f"RDM_{selectivity_fraction:.2f}_{selection_mode}",
+                        act_layer,
+                    )
                 else:
                     candidate = os.path.join(md, dmg_type, dmg_layer, "RDM", act_layer)
-            
+
             if os.path.isdir(candidate):
-                return candidate, md
-        return None, None
+                found_paths.append((candidate, md))
+        return found_paths
     
     def get_base_path(dmg_layer, act_layer, dmg_type, used_main_dir):
         """Construct base path using the selected main_dir."""
@@ -2976,10 +2982,10 @@ def plot_categ_differences(
     for dmg_layer in damage_layers:
         for act_layer in activations_layers:
             for current_damage_type, current_damage_levels in damage_pairs.items():
-                # Try to find valid base_path from list of main_dirs
-                base_path, used_main_dir = find_valid_base_path(dmg_layer, act_layer, current_damage_type)
-                
-                if base_path is None:
+                # Find every valid base path so each requested suffix can resolve independently.
+                candidate_base_paths = find_valid_base_paths(dmg_layer, act_layer, current_damage_type)
+
+                if not candidate_base_paths:
                     if data_type == "selectivity" and selectivity_fraction is not None:
                         raise FileNotFoundError(
                             f"Selective RDM directory not found for dmg_layer='{dmg_layer}', "
@@ -3019,28 +3025,27 @@ def plot_categ_differences(
                     results_before = len(all_results)
                     base_categories = ["animal", "face", "object", "place"]
                     for focal_cat in base_categories:
-                        cat_dir = os.path.join(base_path, f"{focal_cat}_selective")
-                        if not os.path.isdir(cat_dir):
-                            # Try alternate names (e.g., "scene" vs "place")
-                            if focal_cat == "place":
-                                cat_dir = os.path.join(base_path, "scene_selective")
-                            if not os.path.isdir(cat_dir):
-                                if verbose:
-                                    print(f"[WARN] Category dir not found: {cat_dir}")
-                                continue
-                        
                         for suffix in current_damage_levels:
-                            # Look for damaged_{suffix} subdirs - exact match for suffix
-                            items = []
                             expected_name = f"{file_prefix}{suffix}"
-                            for d in os.listdir(cat_dir):
-                                full_dpath = os.path.join(cat_dir, d)
-                                if os.path.isdir(full_dpath) and d == expected_name:
+                            items = []
+                            for base_path, used_main_dir in candidate_base_paths:
+                                cat_dir = os.path.join(base_path, f"{focal_cat}_selective")
+                                if not os.path.isdir(cat_dir) and focal_cat == "place":
+                                    cat_dir = os.path.join(base_path, "scene_selective")
+                                if not os.path.isdir(cat_dir):
+                                    continue
+
+                                full_dpath = os.path.join(cat_dir, expected_name)
+                                if os.path.isdir(full_dpath):
                                     items.append(full_dpath)
-                            
+                                    break
+
                             if not items:
                                 if verbose:
-                                    print(f"[WARN] No matching damage dirs in {cat_dir} for suffix '{suffix}'")
+                                    print(
+                                        f"[WARN] No matching damage dirs found for focal_cat='{focal_cat}', "
+                                        f"suffix='{suffix}' in any of: {[bp for bp, _ in candidate_base_paths]}"
+                                    )
                                 continue
                             
                             # Load and compute diffs for this category
@@ -3083,27 +3088,28 @@ def plot_categ_differences(
                 # ===== Standard (non-selective) mode =====
                 else:
                     for suffix in current_damage_levels:
-                        # find items (dirs or files) that match <file_prefix><suffix> exactly
-                        items = []
                         expected_name = f"{file_prefix}{suffix}"
-                        if mode == 'files':
-                            for f in os.listdir(base_path):
-                                fullpath = os.path.join(base_path, f)
-                                if os.path.isfile(fullpath) and f == expected_name:
+                        items = []
+                        for base_path, used_main_dir in candidate_base_paths:
+                            if mode == 'files':
+                                fullpath = os.path.join(base_path, expected_name)
+                                if os.path.isfile(fullpath):
                                     items.append(fullpath)
-                        elif mode == 'dirs':
-                            for d in os.listdir(base_path):
-                                full_dpath = os.path.join(base_path, d)
-                                if os.path.isdir(full_dpath) and d == expected_name:
+                                    break
+                            elif mode == 'dirs':
+                                full_dpath = os.path.join(base_path, expected_name)
+                                if os.path.isdir(full_dpath):
                                     items.append(full_dpath)
-                        else:
-                            raise ValueError("mode must be 'files' or 'dirs'.")
+                                    break
+                            else:
+                                raise ValueError("mode must be 'files' or 'dirs'.")
 
                         if not items:
                             raise FileNotFoundError(
-                                f"No matching items found in '{base_path}' for dmg_layer='{dmg_layer}', "
+                                f"No matching items found in any candidate base path for dmg_layer='{dmg_layer}', "
                                 f"act_layer='{act_layer}', damage_type='{current_damage_type}', "
-                                f"suffix='{suffix}', prefix='{file_prefix}', mode='{mode}'."
+                                f"suffix='{suffix}', prefix='{file_prefix}', mode='{mode}'.\n"
+                                f"Searched: {[bp for bp, _ in candidate_base_paths]}"
                             )
 
                         # load each item and compute diffs
@@ -3396,7 +3402,7 @@ def plot_categ_differences(
                         ax.scatter(
                             (x_pos[idx_oc] + offset) + jitter,
                             arr,
-                            alpha=0.4, s=20, zorder=0,
+                            alpha=0.15, s=20, zorder=0,
                             color=color_id
                         )
 
