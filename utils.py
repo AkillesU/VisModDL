@@ -2947,7 +2947,26 @@ def plot_categ_differences(
             else:
                 return os.path.join(used_main_dir, dmg_type, dmg_layer, "RDM", act_layer)
 
-    all_results = []  # list of (dmg_layer, act_layer, suffix, item_path, diffs_dict, selective_cat)
+    def _damage_type_tag() -> str:
+        if damage_type is not None:
+            return str(damage_type).replace("/", "-")
+        return "+".join(str(dt).replace("/", "-") for dt in damage_pairs.keys())
+
+    def _level_count_tag() -> int:
+        return sum(len(levels) for levels in damage_pairs.values())
+
+    def _combo_label(combo_key) -> str:
+        if len(combo_key) == 4:
+            dmg_layer, act_layer, dmg_type_key, suffix = combo_key
+        else:
+            dmg_layer, act_layer, dmg_type_key, suffix, _item_path = combo_key
+
+        label = f"{dmg_layer}, {act_layer}, dmg={suffix}"
+        if len(damage_pairs) > 1 or damage_type is None:
+            label = f"{dmg_type_key}, {label}"
+        return label
+
+    all_results = []  # list of (dmg_layer, act_layer, damage_type, suffix, item_path, diffs_dict, selective_cat)
 
     if not damage_layers:
         raise ValueError("No damage_layers specified.")
@@ -3011,11 +3030,12 @@ def plot_categ_differences(
                                 continue
                         
                         for suffix in current_damage_levels:
-                            # Look for damaged_{suffix} subdirs
+                            # Look for damaged_{suffix} subdirs - exact match for suffix
                             items = []
+                            expected_name = f"{file_prefix}{suffix}"
                             for d in os.listdir(cat_dir):
                                 full_dpath = os.path.join(cat_dir, d)
-                                if os.path.isdir(full_dpath) and d.startswith(file_prefix) and d.endswith(suffix):
+                                if os.path.isdir(full_dpath) and d == expected_name:
                                     items.append(full_dpath)
                             
                             if not items:
@@ -3031,7 +3051,25 @@ def plot_categ_differences(
                                         print(f"[WARN] No RDM files found in {item_path}")
                                     continue
                                 diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
-                                all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict, focal_cat))
+                                if focal_cat not in diffs_dict:
+                                    if verbose:
+                                        print(
+                                            f"[WARN] No focal category '{focal_cat}' found in {item_path}; "
+                                            "skipping this selective result."
+                                        )
+                                    continue
+                                focal_diffs_dict = {focal_cat: diffs_dict[focal_cat]}
+                                all_results.append(
+                                    (
+                                        dmg_layer,
+                                        act_layer,
+                                        current_damage_type,
+                                        suffix,
+                                        item_path,
+                                        focal_diffs_dict,
+                                        focal_cat,
+                                    )
+                                )
                     
                     # After selective loop: check if we found anything for this (dmg, act, dmg_type) combo
                     if len(all_results) == results_before:
@@ -3045,20 +3083,19 @@ def plot_categ_differences(
                 # ===== Standard (non-selective) mode =====
                 else:
                     for suffix in current_damage_levels:
-                        # find items (dirs or files) that match <file_prefix>*<suffix>
+                        # find items (dirs or files) that match <file_prefix><suffix> exactly
                         items = []
+                        expected_name = f"{file_prefix}{suffix}"
                         if mode == 'files':
                             for f in os.listdir(base_path):
                                 fullpath = os.path.join(base_path, f)
-                                if os.path.isfile(fullpath):
-                                    if f.startswith(file_prefix) and f.endswith(suffix):
-                                        items.append(fullpath)
+                                if os.path.isfile(fullpath) and f == expected_name:
+                                    items.append(fullpath)
                         elif mode == 'dirs':
                             for d in os.listdir(base_path):
                                 full_dpath = os.path.join(base_path, d)
-                                if os.path.isdir(full_dpath):
-                                    if d.startswith(file_prefix) and d.endswith(suffix):
-                                        items.append(full_dpath)
+                                if os.path.isdir(full_dpath) and d == expected_name:
+                                    items.append(full_dpath)
                         else:
                             raise ValueError("mode must be 'files' or 'dirs'.")
 
@@ -3078,28 +3115,30 @@ def plot_categ_differences(
                                 mats = load_all_corr_mats(item_path)
                                 diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
 
-                            all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict, None))
+                            all_results.append(
+                                (
+                                    dmg_layer,
+                                    act_layer,
+                                    current_damage_type,
+                                    suffix,
+                                    item_path,
+                                    diffs_dict,
+                                    None,
+                                )
+                            )
 
     # ---------- 3) (OPTIONAL) CONVERT TO PERCENTAGES -----------
     if percentage:
         # Group entries by (damage_layer, act_layer, damage_type) to handle multiple damage types
         # For each group, use the first damage level in damage_pairs as the baseline
         group_map = defaultdict(list)
-        for idx, (dmg_layer, act_layer, sfx, ipath, diffs, selective_cat) in enumerate(all_results):
-            # Infer damage_type from the first occurrence with this (dmg_layer, act_layer)
-            dmg_type_for_group = None
-            for dt, levels in damage_pairs.items():
-                if any(str(lvl) in str(sfx) or sfx in [str(l) for l in levels] for lvl in levels):
-                    dmg_type_for_group = dt
-                    break
-            if dmg_type_for_group is None:
-                # Fallback: use first damage_type in damage_pairs
-                dmg_type_for_group = list(damage_pairs.keys())[0]
-            group_map[(dmg_layer, act_layer, dmg_type_for_group)].append((sfx, ipath, diffs, idx, selective_cat))
+        for idx, (dmg_layer, act_layer, current_damage_type, sfx, ipath, diffs, selective_cat) in enumerate(all_results):
+            group_key = (dmg_layer, act_layer, current_damage_type, selective_cat)
+            group_map[group_key].append((sfx, ipath, diffs, idx))
 
         updated_all_results = list(all_results)  # make a mutable copy
         for group_key, items in group_map.items():
-            dmg_layer, act_layer, dmg_type = group_key
+            dmg_layer, act_layer, dmg_type, selective_cat = group_key
             # Use the first level of this damage_type as the baseline
             baseline_sfx_list = damage_pairs.get(dmg_type, [])
             if not baseline_sfx_list:
@@ -3108,9 +3147,9 @@ def plot_categ_differences(
             
             # Find the baseline item for this group (the one with suffix == baseline_sfx)
             baseline_item = None
-            for (sfx, ipath, diffs_d, idx_in_all, selective_cat) in items:
+            for (sfx, ipath, diffs_d, idx_in_all) in items:
                 if str(sfx) == str(baseline_sfx):
-                    baseline_item = (sfx, ipath, diffs_d, idx_in_all, selective_cat)
+                    baseline_item = (sfx, ipath, diffs_d, idx_in_all)
                     break
 
             if baseline_item is None:
@@ -3122,11 +3161,11 @@ def plot_categ_differences(
 
             # Scale *every* suffix (including the baseline) 
             # so that baseline ÷ baseline = 1 => 100%.
-            for (sfx, ipath, current_diffs, idx_in_all, selective_cat) in items:
+            for (sfx, ipath, current_diffs, idx_in_all) in items:
                 scaled_diffs = scale_to_baseline(current_diffs, baseline_diffs)
                 # Overwrite in updated_all_results
                 old_tuple = list(updated_all_results[idx_in_all])
-                old_tuple[4] = scaled_diffs
+                old_tuple[5] = scaled_diffs
                 updated_all_results[idx_in_all] = tuple(old_tuple)
 
         all_results = updated_all_results
@@ -3138,8 +3177,8 @@ def plot_categ_differences(
         # Aggregate all_results by (dmg_layer, act_layer, suffix) instead of including item_path
         aggregated_results = {}  # key: (dmg_layer, act_layer, suffix), value: aggregated diffs_dict
         
-        for (dmg_layer, act_layer, suffix, item_path, diffs_dict, selective_cat) in all_results:
-            agg_key = (dmg_layer, act_layer, suffix, selective_cat)
+        for (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in all_results:
+            agg_key = (dmg_layer, act_layer, current_damage_type, suffix, selective_cat)
             
             if agg_key not in aggregated_results:
                 # Initialize: deep copy the diffs_dict structure
@@ -3163,7 +3202,7 @@ def plot_categ_differences(
         
         # Convert aggregated results back to all_results format
         all_results_agg = []
-        for (dmg_layer, act_layer, suffix, selective_cat), agg_dict in aggregated_results.items():
+        for (dmg_layer, act_layer, current_damage_type, suffix, selective_cat), agg_dict in aggregated_results.items():
             # Recalculate means and stds from aggregated raw arrays
             final_diffs_dict = {}
             for cat, (oc_list, raw_arrays) in agg_dict.items():
@@ -3174,7 +3213,17 @@ def plot_categ_differences(
                     std_vals.append(np.std(arr_np) * 1.96)  # 95% CI
                 final_diffs_dict[cat] = (oc_list, mean_vals, std_vals, raw_arrays)
             
-            all_results_agg.append((dmg_layer, act_layer, suffix, f"aggregated_{suffix}", final_diffs_dict, selective_cat))
+            all_results_agg.append(
+                (
+                    dmg_layer,
+                    act_layer,
+                    current_damage_type,
+                    suffix,
+                    f"aggregated_{suffix}",
+                    final_diffs_dict,
+                    selective_cat,
+                )
+            )
         
         all_results = all_results_agg
 
@@ -3190,7 +3239,7 @@ def plot_categ_differences(
         )
         axes = np.array(axes, ndmin=2)  # ensure 2D
 
-        for i, (dmg_layer, act_layer, suffix, item_path, diffs_dict, selective_cat) in enumerate(all_results):
+        for i, (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in enumerate(all_results):
             for j, cat in enumerate(categories_list):
                 ax = axes[i, j]
                 if cat not in diffs_dict:
@@ -3232,18 +3281,22 @@ def plot_categ_differences(
                     ylabel += " (scaled %)"
 
                 ax.set_ylabel(ylabel)
-                ax.set_title(f"{dmg_layer}, {act_layer}, dmg={suffix}\n{cat}")
+                if len(damage_pairs) > 1 or damage_type is None:
+                    title = f"{current_damage_type}, {dmg_layer}, {act_layer}, dmg={suffix}\n{cat}"
+                else:
+                    title = f"{dmg_layer}, {act_layer}, dmg={suffix}\n{cat}"
+                ax.set_title(title)
 
         plt.tight_layout()
         os.makedirs(plot_dir, exist_ok=True)
         model_dir = main_dir[0] if isinstance(main_dir, (list, tuple)) else main_dir
         model_name = str(model_dir).strip("/").split("/")[-1]
-        plot_name = f"{model_name}_{data_type}_categ-diff_{damage_type}"
+        plot_name = f"{model_name}_{data_type}_categ-diff_{_damage_type_tag()}"
         for layer in damage_layers:
             plot_name += f"_{layer}"
         for al in activations_layers:
             plot_name += f"_{al}"
-        plot_name += f"_{len(damage_levels)}-levels"
+        plot_name += f"_{_level_count_tag()}-levels"
         if scatter:
             plot_name += "_with-points"
         if percentage:
@@ -3271,14 +3324,14 @@ def plot_categ_differences(
         # group results by category
         results_by_cat = {cat: {} for cat in categories_list}
         combos = []
-        for (dmg_layer, act_layer, suffix, item_path, diffs_dict, selective_cat) in all_results:
+        for (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in all_results:
             # When damage_pairs is used, combo_key is based on (dmg_layer, act_layer, suffix)
             # to ensure one bar per damage pair (not one per replicate).
             # When damage_pairs is None, we use item_path for legacy behavior (one bar per item).
             if damage_pairs is not None and comparison and len(damage_pairs) > 0:
-                combo_key = (dmg_layer, act_layer, suffix)
+                combo_key = (dmg_layer, act_layer, current_damage_type, suffix)
             else:
-                combo_key = (dmg_layer, act_layer, suffix, item_path)
+                combo_key = (dmg_layer, act_layer, current_damage_type, suffix, item_path)
             
             if combo_key not in combos:
                 combos.append(combo_key)
@@ -3288,7 +3341,7 @@ def plot_categ_differences(
                     continue
                 results_by_cat[cat][combo_key] = diffs_dict.get(cat, ([], [], [], []))
 
-        bar_width = 0.8 / len(combos)
+        bar_width = 0.8 / max(len(combos), 1)
         for idx_cat, cat in enumerate(categories_list):
             ax = axes[idx_cat]
             if data_type.startswith("svm"):
@@ -3300,9 +3353,11 @@ def plot_categ_differences(
 
             ax.set_ylabel(ylabel)
             ax.set_title(f"{cat}")
+            cat_x_pos = None
+            cat_labels = None
 
             for i, combo_key in enumerate(combos):
-                (oc_list, mean_vals, std_vals, raw_diffs) = results_by_cat[cat][combo_key]
+                (oc_list, mean_vals, std_vals, raw_diffs) = results_by_cat[cat].get(combo_key, ([], [], [], []))
                 if not oc_list:
                     continue
 
@@ -3315,16 +3370,11 @@ def plot_categ_differences(
                 new_raw_diffs = [raw_diffs[index_map[c]] for c in new_oc_list]
 
                 x_pos = np.arange(len(new_oc_list))
+                cat_x_pos = x_pos
+                cat_labels = new_oc_list
                 offset = i * bar_width
                 color_id = f"C{i}"
-
-                # Generate label based on combo_key structure
-                if len(combo_key) == 3:
-                    # damage_pairs case: (dmg_layer, act_layer, suffix)
-                    label = f"{combo_key[0]}, {combo_key[1]}, dmg={combo_key[2]}"
-                else:
-                    # Legacy case: (dmg_layer, act_layer, suffix, item_path)
-                    label = f"{combo_key[0]}, {combo_key[1]}, dmg={combo_key[2]}"
+                label = _combo_label(combo_key)
 
                 ax.bar(
                     x_pos + offset,
@@ -3350,8 +3400,11 @@ def plot_categ_differences(
                             color=color_id
                         )
 
-            ax.set_xticks(x_pos + bar_width*(len(combos)/2 - 0.5))
-            ax.set_xticklabels(new_oc_list, rotation=45, ha='right')
+            if cat_x_pos is not None and cat_labels is not None:
+                ax.set_xticks(cat_x_pos + bar_width*(len(combos)/2 - 0.5))
+                ax.set_xticklabels(cat_labels, rotation=45, ha='right')
+            else:
+                ax.set_visible(False)
             if ylim is not None:
                 ax.set_ylim(ylim)
 
@@ -3361,12 +3414,12 @@ def plot_categ_differences(
         os.makedirs(plot_dir, exist_ok=True)
         model_dir = main_dir[0] if isinstance(main_dir, (list, tuple)) else main_dir
         model_name = str(model_dir).strip("/").split("/")[-1]
-        plot_name = f"{model_name}_{data_type}_categ-diff_{damage_type}"
+        plot_name = f"{model_name}_{data_type}_categ-diff_{_damage_type_tag()}"
         for layer in damage_layers:
             plot_name += f"_{layer}"
         for al in activations_layers:
             plot_name += f"_{al}"
-        plot_name += f"_{len(damage_levels)}-levels_comparison"
+        plot_name += f"_{_level_count_tag()}-levels_comparison"
         if scatter:
             plot_name += "_with-points"
         if percentage:
