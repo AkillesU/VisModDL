@@ -45,6 +45,10 @@ import hashlib
 
 EPS = 1e-12
 
+TRAPZ_FN = getattr(np, "trapezoid", None)
+if TRAPZ_FN is None:
+    TRAPZ_FN = np.trapz
+
 # ------------------------- Utils --------------------------------------------
 
 def load_yaml(path):
@@ -149,7 +153,7 @@ def curve_permutation(sel_mat, rand_mat, n_perm=10000, stat='area', rng=None):
         rng = default_rng(0)
     diff_curve = sel_mat.mean(0) - rand_mat.mean(0)
     if stat == 'area':
-        obs = np.trapz(diff_curve)
+        obs = TRAPZ_FN(diff_curve)
     elif stat == 'l2':
         obs = np.sum(diff_curve**2)
     else:
@@ -161,7 +165,7 @@ def curve_permutation(sel_mat, rand_mat, n_perm=10000, stat='area', rng=None):
         rng.shuffle(all_curves)
         d = all_curves[:nA].mean(0) - all_curves[nA:].mean(0)
         if stat == 'area':
-            stats[i] = np.trapz(d)
+            stats[i] = TRAPZ_FN(d)
         elif stat == 'l2':
             stats[i] = np.sum(d**2)
         else:
@@ -195,18 +199,20 @@ def _save_png_and_svg(path, dpi=300):
     plt.savefig(out_path.with_suffix(".svg"))
 
 
-def plot_effect_curve_multi(centers, curves, cis_low, cis_high, colors, out_png):
+def plot_effect_curve_multi(centers, curves, cis_low, cis_high, colors, markers, out_png):
     """
     curves: {label: delta_vec}
     cis_low/high: {label: low/high vec}
     colors: {label: color}
+    markers: {label: marker}
     """
     plt.figure(figsize=(7,5))
     plt.axhline(0, color='k', lw=0.6)
     for label, delta in curves.items():
         c = colors[label]
+        m = markers[label]
         lo = cis_low[label]; hi = cis_high[label]
-        plt.plot(centers, delta, marker='o', color=c, label=label)
+        plt.plot(centers, delta, marker=m, color=c, label=label, lw=2, ms=6)
         plt.fill_between(centers, lo, hi, alpha=0.20, color=c)
     plt.xlabel('Eccentricity band center (px)')
     plt.ylabel("Cliff's Δ (sel − rand)")
@@ -216,10 +222,10 @@ def plot_effect_curve_multi(centers, curves, cis_low, cis_high, colors, out_png)
     plt.close()
 
 
-def plot_effect_curve_single(centers, delta, ci_low, ci_high, out_png, color='C0', label=None):
+def plot_effect_curve_single(centers, delta, ci_low, ci_high, out_png, color='C0', marker='o', label=None):
     plt.figure(figsize=(6,4))
     plt.axhline(0, color='k', lw=0.6)
-    plt.plot(centers, delta, marker='o', color=color, label=label)
+    plt.plot(centers, delta, marker=marker, color=color, label=label, lw=2, ms=6)
     plt.fill_between(centers, ci_low, ci_high, alpha=0.25, color=color)
     plt.xlabel('Eccentricity band center (px)')
     plt.ylabel("Cliff's Δ (sel − rand)")
@@ -245,6 +251,37 @@ def stable_color(label, palette='tab20', seed=0, fixed=None):
     ncols = getattr(cmap, 'N', 256)
     return cmap(idx % ncols)
 
+
+def stable_marker(label, fixed=None):
+    """
+    Return a marker for a label. Prefer fixed mapping; otherwise hash into a
+    short set of visually distinct markers suitable for line plots.
+    """
+    if fixed and label in fixed:
+        return fixed[label]
+    markers = ['o', 's', '^', 'D', 'v', 'P', 'X', '*']
+    h = hashlib.md5(label.encode()).hexdigest()
+    idx = int(h[:8], 16)
+    return markers[idx % len(markers)]
+
+
+def resolve_style(category, label, palette='tab20', seed=0, fixed_colors=None, fixed_markers=None):
+    """
+    Resolve style for a curve. Prefer category-level mappings, then full-label
+    mappings, then deterministic fallbacks.
+    """
+    color = None
+    marker = None
+    if fixed_colors:
+        color = fixed_colors.get(category, fixed_colors.get(label))
+    if fixed_markers:
+        marker = fixed_markers.get(category, fixed_markers.get(label))
+    if color is None:
+        color = stable_color(category, palette=palette, seed=seed, fixed=None)
+    if marker is None:
+        marker = stable_marker(category)
+    return color, marker
+
 # ------------------------- Main ---------------------------------------------
 
 def main():
@@ -268,6 +305,7 @@ def main():
     palette = cfg.get('palette', 'tab20')
     color_seed = cfg.get('color_seed', 0)
     fixed_colors = cfg.get('fixed_colors', None)
+    fixed_markers = cfg.get('fixed_markers', None)
 
     out_root = pathlib.Path(cfg.get('output_dir', 'it2v1_analysis')) / 'pfi_band'
     out_root.mkdir(parents=True, exist_ok=True)
@@ -282,6 +320,7 @@ def main():
     all_ci_low = {}
     all_ci_high = {}
     all_colors = {}
+    all_markers = {}
 
     for cat in cats:
         for tf in top_fracs:
@@ -339,14 +378,31 @@ def main():
             pd.DataFrame(rand_mat, columns=[f'band_{i}' for i in range(len(centers))]).to_csv(out_root / f'rand_band_{label}.csv', index=False)
 
             # Decide color for this label
-            col = stable_color(label, palette=palette, seed=color_seed, fixed=fixed_colors)
+            col, marker = resolve_style(
+                cat,
+                label,
+                palette=palette,
+                seed=color_seed,
+                fixed_colors=fixed_colors,
+                fixed_markers=fixed_markers,
+            )
             all_curves[label]   = delta_hat
             all_ci_low[label]   = ci_low
             all_ci_high[label]  = ci_high
             all_colors[label]   = col
+            all_markers[label]  = marker
 
             # Single plot (keep existing behaviour)
-            plot_effect_curve_single(centers, delta_hat, ci_low, ci_high, color=col, out_png=out_root / f'delta_{label}.png',label=label)
+            plot_effect_curve_single(
+                centers,
+                delta_hat,
+                ci_low,
+                ci_high,
+                color=col,
+                marker=marker,
+                out_png=out_root / f'delta_{label}.png',
+                label=label,
+            )
 
 
             summary_rows.append(dict(category=cat, top_frac=tf, obs_curve_stat=obs_curve, p_curve=p_curve))
@@ -359,12 +415,12 @@ def main():
 
     if plot_all and all_curves:
         combined_name = cfg.get('combined_plot_name', 'all_curves.png')
-        plot_effect_curve_multi(centers, all_curves, all_ci_low, all_ci_high, all_colors,
+        plot_effect_curve_multi(centers, all_curves, all_ci_low, all_ci_high, all_colors, all_markers,
                                 out_root / combined_name)
         # also save the color mapping for reproducibility
         pd.DataFrame([
-            {'label': k, 'color': all_colors[k]}
-            for k in all_colors]).to_csv(out_root / 'colors_used.csv', index=False)
+            {'label': k, 'color': all_colors[k], 'marker': all_markers[k]}
+            for k in all_colors]).to_csv(out_root / 'styles_used.csv', index=False)
 
     # Save meta
     meta = dict(nbins=nbins, binning=binning, bootstrap_iters=B, permutations=NPERM,

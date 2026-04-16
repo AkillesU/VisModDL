@@ -12,4 +12,14 @@ alpha_fdr: 0.05
 plot_all_together: true
 color_seed: 13
 palette: tab20
+fixed_colors:
+  animals: "#009E73"
+  objects: "#E69F00"
+  places: "#0072B2"
+  faces: "#CC79A7"
+fixed_markers:
+  animals: "o"
+  objects: "s"
+  places: "^"
+  faces: "D"
 combined_plot_name: nnorm_0.05_all_curves_12bins_eqwidth.png
