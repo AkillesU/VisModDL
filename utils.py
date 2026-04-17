@@ -190,6 +190,56 @@ def short_module_tag(path: str) -> str:
     return norm.replace(".", "_")
 
 
+def format_damage_dirname(damage_level: float) -> str:
+    return f"damaged_{round(damage_level, 3)}"
+
+
+def resolve_damage_dir_tag(
+    manipulation_method: str,
+    base_dir_tag: str,
+    r_start: float,
+    r_end: float,
+    damage_levels_list,
+) -> str:
+    if manipulation_method == "eccentricity_gradual":
+        sweep_start = damage_levels_list[0]
+        if sweep_start > 0.0:
+            band_label = f"band{r_start:.2f}-{r_end:.2f}_min_{sweep_start:.2f}"
+        else:
+            band_label = f"band{r_start:.2f}-{r_end:.2f}"
+        return f"eccentricity_gradual_{band_label}"
+
+    if manipulation_method == "eccentricity":
+        return f"eccentricity_{r_start:.2f}-{r_end:.2f}"
+
+    return base_dir_tag
+
+
+def is_damage_permutation_complete(
+    output_root: Path,
+    dir_tag: str,
+    layer_name: str,
+    activation_layer_tags,
+    damage_level: float,
+    permutation_index: int,
+) -> bool:
+    damage_dirname = format_damage_dirname(damage_level)
+
+    for activation_tag in activation_layer_tags:
+        activation_dir = output_root / dir_tag / layer_name / "activations" / activation_tag / damage_dirname
+        rdm_dir = output_root / dir_tag / layer_name / "RDM" / activation_tag / damage_dirname
+        selectivity_dir = output_root / dir_tag / layer_name / "selectivity" / activation_tag / damage_dirname
+
+        has_activation = any(activation_dir.glob(f"{permutation_index}__activ_*.zarr"))
+        has_rdm = any(rdm_dir.glob(f"{permutation_index}__activ_*.zarr"))
+        has_selectivity = (selectivity_dir / f"{permutation_index}.pkl").exists()
+
+        if not (has_activation and has_rdm and has_selectivity):
+            return False
+
+    return True
+
+
 def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path="", model_time_steps=5):
     """
     Load a specified pretrained model and register a forward hook to capture activations.
@@ -1134,6 +1184,7 @@ def run_damage(
     groupnorm_scaling_targets,
     gain_control_noise=0.0,
     masking_level="connections",
+    resume_existing_damage=False,
     eccentricity_layer_path=None,  # Specific layer path. The output will be used for damage
     eccentricity_bands: list[list[float]] | None = [[0.60, 1.00]],  # [min,max] normalized eccentricity bands
     ecc_fraction_to_mask_params=[0, 0, 0],
@@ -1212,189 +1263,214 @@ def run_damage(
     # ------------------------------------------------------------
     # C) Directory naming (unchanged)
     # ------------------------------------------------------------
-    if manipulation_method == "noise":
-        dir_tag = "noise"
-    elif manipulation_method == "noise_activations":
-        dir_tag = "noise_activations"
-    elif manipulation_method == "connections":
-        if masking_level == "units":
-            dir_tag = "units"
-        elif masking_level == "unit_activations":
-            dir_tag = "unit_activations"
-        elif masking_level == "unit_activations_spatial":
-            dir_tag = "unit_activations_spatial"
-        else:
-            dir_tag = "connections"
-    elif manipulation_method == "groupnorm_scaling":
+    if manipulation_method == "groupnorm_scaling":
         _map = {"groupnorm": "g", "conv": "c"}
         sel = [_map[t] for t in sorted(set(groupnorm_scaling_targets))]
         targ_tag = "+".join(sel)
-        dir_tag = f"groupnorm_scaling_{targ_tag}_noise{gain_control_noise:.3f}"
+        base_dir_tag = f"groupnorm_scaling_{targ_tag}_noise{gain_control_noise:.3f}"
     else:
-        dir_tag = manipulation_method
+        base_dir_tag = manipulation_method
+
+    eccentricity_bands = (
+        eccentricity_bands if eccentricity_bands is not None else [[0.60, 1.00]]
+    )
+
+    if manipulation_method == "noise":
+        base_dir_tag = "noise"
+    elif manipulation_method == "noise_activations":
+        base_dir_tag = "noise_activations"
+    elif manipulation_method == "connections":
+        if masking_level == "units":
+            base_dir_tag = "units"
+        elif masking_level == "unit_activations":
+            base_dir_tag = "unit_activations"
+        elif masking_level == "unit_activations_spatial":
+            base_dir_tag = "unit_activations_spatial"
+        else:
+            base_dir_tag = "connections"
 
     # ------------------------------------------------------------
-    # D) Total iterations
+    # D) Build permutation plan, optionally skipping completed runs
     # ------------------------------------------------------------
-    total_iterations = len(damage_levels_list) * mc_permutations * len(eccentricity_bands)
+    output_root = Path(f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}")
+    activation_layer_tags = {
+        lp: (lp.split(".")[2] if is_cornet(model_info) else short_module_tag(lp))
+        for lp in final_layers_to_hook
+    }
+    iteration_plan = []
+    skipped_iterations = 0
+
+    for r_start, r_end in eccentricity_bands:
+        dir_tag = resolve_damage_dir_tag(
+            manipulation_method=manipulation_method,
+            base_dir_tag=base_dir_tag,
+            r_start=r_start,
+            r_end=r_end,
+            damage_levels_list=damage_levels_list,
+        )
+        for damage_level in damage_levels_list:
+            for permutation_index in range(mc_permutations):
+                if resume_existing_damage and is_damage_permutation_complete(
+                    output_root=output_root,
+                    dir_tag=dir_tag,
+                    layer_name=layer_name,
+                    activation_layer_tags=activation_layer_tags.values(),
+                    damage_level=damage_level,
+                    permutation_index=permutation_index,
+                ):
+                    skipped_iterations += 1
+                    continue
+
+                iteration_plan.append((r_start, r_end, dir_tag, damage_level, permutation_index))
+
+    total_iterations = len(iteration_plan)
+    if resume_existing_damage:
+        print(
+            f"Resume mode: skipping {skipped_iterations} completed permutations; "
+            f"running {total_iterations} remaining."
+        )
 
     # ------------------------------------------------------------
     # E) Main loops (reload WITH hooks; apply damage; save)
     # ------------------------------------------------------------
     with tqdm(total=total_iterations, desc=f"Running {manipulation_method} alteration") as pbar:
-        for r_start, r_end in eccentricity_bands:
+        for r_start, r_end, dir_tag, damage_level, permutation_index in iteration_plan:
 
-            # Clean folder naming for eccentricity modes (unchanged)
-            if manipulation_method == "eccentricity_gradual":
-                sweep_start = damage_levels_list[0]
-                if sweep_start > 0.0:
-                    band_label = f"band{r_start:.2f}-{r_end:.2f}_min_{sweep_start:.2f}"
-                else:
-                    band_label = f"band{r_start:.2f}-{r_end:.2f}"
-                dir_tag = f"eccentricity_gradual_{band_label}"
+            # 1) Load fresh model WITH ALL hooks at once
+            model, activations = load_model(
+                model_info=model_info,
+                pretrained=pretrained,
+                layer_name=layer_name,
+                layer_path=final_layers_to_hook     # LIST is okay
+            )
+            model.eval()
+
+            # 2) Apply chosen damage to ALL requested target blocks
+            if manipulation_method == "connections":
+                apply_masking(
+                    model, fraction_to_mask=damage_level,
+                    layer_paths=damage_layers_list,
+                    apply_to_all_layers=apply_to_all_layers,
+                    masking_level=masking_level,
+                    only_conv=only_conv,
+                    include_bias=include_bias
+                )
+
+            elif manipulation_method == "noise":
+                apply_noise(
+                    model, noise_level=damage_level,
+                    noise_dict=noise_dict,
+                    layer_paths=damage_layers_list,
+                    apply_to_all_layers=apply_to_all_layers,
+                    only_conv=only_conv,
+                    include_bias=include_bias
+                )
+            elif manipulation_method == "noise_activations":
+                apply_activation_noise(
+                    model,
+                    noise_multiplier=damage_level,  # from noise_levels_params
+                    layer_paths=damage_layers_list,
+                    apply_to_all_layers=apply_to_all_layers,
+                    only_conv=only_conv,
+                )
+
+            elif manipulation_method == "groupnorm_scaling":
+                apply_groupnorm_scaling(
+                    model, scaling_factor=damage_level,
+                    layer_paths=damage_layers_list,
+                    apply_to_all_layers=apply_to_all_layers,
+                    include_bias=include_bias,
+                    targets=groupnorm_scaling_targets,
+                    gain_control_noise=gain_control_noise
+                )
+
             elif manipulation_method == "eccentricity":
-                dir_tag = f"eccentricity_{r_start:.2f}-{r_end:.2f}"
+                apply_eccentricity_mask(
+                    model,
+                    layer_path=eccentricity_layer_path,
+                    r_min=r_start,
+                    r_max=r_end,
+                    fraction=damage_level,
+                    per_channel=False
+                )
 
-            # ----- damage sweep -----
-            for damage_level in damage_levels_list:
-                for permutation_index in range(mc_permutations):
+            elif manipulation_method == "eccentricity_gradual":
+                apply_eccentricity_graded(
+                    model,
+                    layer_path=eccentricity_layer_path,
+                    r_start=r_start,
+                    r_end=r_end,
+                    p_min=0.0,
+                    p_max=damage_level,
+                    mode=ecc_mode,
+                    profile=ecc_profile,
+                    per_channel=ecc_per_channel,
+                    poly_deg=ecc_poly_deg,
+                    exp_k=ecc_exp_k,
+                    reverse=ecc_reverse
+                )
 
-                    # 1) Load fresh model WITH ALL hooks at once
-                    model, activations = load_model(
-                        model_info=model_info,
-                        pretrained=pretrained,
-                        layer_name=layer_name,
-                        layer_path=final_layers_to_hook     # LIST is okay
+            # 3) Extract activations
+            per_layer_data = {lp: [] for lp in final_layers_to_hook}
+            image_files = sorted([
+                f for f in os.listdir(image_dir)
+                if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+            ])
+
+            for image_file in image_files:
+                img_path = os.path.join(image_dir, image_file)
+                input_tensor = preprocess_image(img_path)
+                with torch.no_grad():
+                    model(input_tensor)
+                for lp in final_layers_to_hook:
+                    out_flat = activations[lp].flatten()
+                    per_layer_data[lp].append(
+                        out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat
                     )
-                    model.eval()
 
-                    # 2) Apply chosen damage to ALL requested target blocks
-                    if manipulation_method == "connections":
-                        apply_masking(
-                            model, fraction_to_mask=damage_level,
-                            layer_paths=damage_layers_list,
-                            apply_to_all_layers=apply_to_all_layers,
-                            masking_level=masking_level,
-                            only_conv=only_conv,
-                            include_bias=include_bias
-                        )
+            # 4) Save outputs — robust name tags
+            for lp in final_layers_to_hook:
+                arr_2d = np.stack(per_layer_data[lp], axis=0)
+                activations_df = pd.DataFrame(arr_2d, index=image_files)
+                activations_df_sorted = sort_activations_by_numeric_index(activations_df)
+                lp_name = activation_layer_tags[lp]
+                damage_dirname = format_damage_dirname(damage_level)
 
-                    elif manipulation_method == "noise":
-                        apply_noise(
-                            model, noise_level=damage_level,
-                            noise_dict=noise_dict,
-                            layer_paths=damage_layers_list,
-                            apply_to_all_layers=apply_to_all_layers,
-                            only_conv=only_conv,
-                            include_bias=include_bias
-                        )
-                    elif manipulation_method == "noise_activations":
-                        apply_activation_noise(
-                            model,
-                            noise_multiplier=damage_level,  # from noise_levels_params
-                            layer_paths=damage_layers_list,
-                            apply_to_all_layers=apply_to_all_layers,
-                            only_conv=only_conv,
-                        )
+                # Activations
+                activation_dir = (
+                    output_root / dir_tag / layer_name / "activations" / lp_name / damage_dirname
+                )
+                os.makedirs(activation_dir, exist_ok=True)
+                append_activation_to_zarr(
+                    activations_df_sorted.astype(np.float16),
+                    activation_dir,
+                    perm_idx=permutation_index
+                )
 
-                    elif manipulation_method == "groupnorm_scaling":
-                        apply_groupnorm_scaling(
-                            model, scaling_factor=damage_level,
-                            layer_paths=damage_layers_list,
-                            apply_to_all_layers=apply_to_all_layers,
-                            include_bias=include_bias,
-                            targets=groupnorm_scaling_targets,
-                            gain_control_noise=gain_control_noise
-                        )
+                # RDM
+                correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
+                corrmat_dir = (
+                    output_root / dir_tag / layer_name / "RDM" / lp_name / damage_dirname
+                )
+                os.makedirs(corrmat_dir, exist_ok=True)
+                append_activation_to_zarr(
+                    pd.DataFrame(correlation_matrix.astype("float32")),
+                    corrmat_dir,
+                    perm_idx=permutation_index
+                )
 
-                    elif manipulation_method == "eccentricity":
-                        apply_eccentricity_mask(
-                            model,
-                            layer_path=eccentricity_layer_path,
-                            r_min=r_start,
-                            r_max=r_end,
-                            fraction=damage_level,
-                            per_channel=False
-                        )
+                # Within-between selectivity
+                categories_array = assign_categories(sorted_image_names)
+                results = convert_np_to_native(calc_within_between(correlation_matrix, categories_array))
 
-                    elif manipulation_method == "eccentricity_gradual":
-                        apply_eccentricity_graded(
-                            model,
-                            layer_path=eccentricity_layer_path,
-                            r_start=r_start,
-                            r_end=r_end,
-                            p_min=0.0,
-                            p_max=damage_level,
-                            mode=ecc_mode,
-                            profile=ecc_profile,
-                            per_channel=ecc_per_channel,
-                            poly_deg=ecc_poly_deg,
-                            exp_k=ecc_exp_k,
-                            reverse=ecc_reverse
-                        )
+                selectivity_dir = (
+                    output_root / dir_tag / layer_name / "selectivity" / lp_name / damage_dirname
+                )
+                os.makedirs(selectivity_dir, exist_ok=True)
+                with open(os.path.join(selectivity_dir, f"{permutation_index}.pkl"), "wb") as f:
+                    pickle.dump(results, f)
 
-                    # 3) Extract activations
-                    per_layer_data = {lp: [] for lp in final_layers_to_hook}
-                    image_files = sorted([
-                        f for f in os.listdir(image_dir)
-                        if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-                    ])
-
-                    for image_file in image_files:
-                        img_path = os.path.join(image_dir, image_file)
-                        input_tensor = preprocess_image(img_path)
-                        with torch.no_grad():
-                            model(input_tensor)
-                        for lp in final_layers_to_hook:
-                            out_flat = activations[lp].flatten()
-                            per_layer_data[lp].append(
-                                out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat
-                            )
-
-                    # 4) Save outputs — robust name tags
-                    for lp in final_layers_to_hook:
-                        arr_2d = np.stack(per_layer_data[lp], axis=0)
-                        activations_df = pd.DataFrame(arr_2d, index=image_files)
-                        activations_df_sorted = sort_activations_by_numeric_index(activations_df)
-
-                        # SAFE replacement for lp.split('.')[2]
-                        lp_name = lp.split(".")[2] if is_cornet(model_info) else short_module_tag(lp)
-
-                        # Activations
-                        activation_dir = (
-                            f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                            f"{dir_tag}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
-                        )
-                        os.makedirs(activation_dir, exist_ok=True)
-                        append_activation_to_zarr(activations_df_sorted.astype(np.float16),
-                                                  activation_dir, perm_idx=permutation_index)
-
-                        # RDM
-                        correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
-                        corrmat_dir = (
-                            f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                            f"{dir_tag}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
-                        )
-                        os.makedirs(corrmat_dir, exist_ok=True)
-                        append_activation_to_zarr(
-                            pd.DataFrame(correlation_matrix.astype("float32")),
-                            corrmat_dir,
-                            perm_idx=permutation_index
-                        )
-
-                        # Within-between selectivity
-                        categories_array = assign_categories(sorted_image_names)
-                        results = convert_np_to_native(calc_within_between(correlation_matrix, categories_array))
-
-                        selectivity_dir = (
-                            f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                            f"{dir_tag}/{layer_name}/selectivity/{lp_name}/damaged_{round(damage_level,3)}"
-                        )
-                        os.makedirs(selectivity_dir, exist_ok=True)
-                        with open(os.path.join(selectivity_dir, f"{permutation_index}.pkl"), "wb") as f:
-                            pickle.dump(results, f)
-
-                    pbar.update(1)
+            pbar.update(1)
 
     print("All damage permutations completed!")
 
