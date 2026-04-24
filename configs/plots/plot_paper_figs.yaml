@@ -15,6 +15,7 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: cornet_rt
+      save_mode: "png+svg"
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -40,6 +41,7 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: cornet_rt
+      save_mode: "png+svg"
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -66,6 +68,7 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: percentage
       model_tag: cornet_rt
+      save_mode: "png+svg"
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -91,9 +94,7 @@ tasks:
       percentage: True
       data_type: "selectivity"
       flip_x_axis: False
-
-
-
+      save_mode: "png+svg"
       selectivity_fraction: 0.05
       line_colours:
         animal: "#00A087"
@@ -118,6 +119,7 @@ tasks:
       data_type: "selectivity"
       flip_x_axis: False
       selectivity_fraction: 0.05
+      save_mode: "png+svg"
       line_colours:
         animal: "#00A087"
         object: "#F39C12"
