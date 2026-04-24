@@ -2126,6 +2126,27 @@ def _explicit_style_value(spec, *keys):
             return spec[key]
     return None
 
+
+def _style_name_variants(value):
+    if value is None:
+        return []
+
+    variants = [value]
+    alias_map = {
+        "animal": "animals",
+        "animals": "animal",
+        "face": "faces",
+        "faces": "face",
+        "object": "objects",
+        "objects": "object",
+        "place": "places",
+        "places": "place",
+    }
+    value_str = str(value)
+    if value_str in alias_map:
+        variants.append(alias_map[value_str])
+    return variants
+
 def categ_corr_lineplot(
     damage_layers,
     activations_layers,
@@ -2194,9 +2215,14 @@ def categ_corr_lineplot(
         err= [frac_dict[x][1] for x in xs]
         lbl = f"{layer}-{act_key}-{cat}"
         series_key = (layer, act_key, cat)
+        category_candidates = []
+        for cat_name in _style_name_variants(cat):
+            category_candidates.append(cat_name)
+            category_candidates.append((layer, act_key, cat_name))
+
         marker = _resolve_style_override(
             marker_overrides,
-            candidates=(series_key, lbl, layer, act_key, cat),
+            candidates=(series_key, lbl, layer, act_key, *category_candidates),
             index=series_index,
         )
         if marker is None:
@@ -2211,7 +2237,7 @@ def categ_corr_lineplot(
 
         color = _resolve_style_override(
             color_overrides,
-            candidates=(series_key, lbl, layer, act_key, cat),
+            candidates=(series_key, lbl, layer, act_key, *category_candidates),
             index=series_index,
         )
         try:
@@ -3409,6 +3435,12 @@ def plot_categ_differences(
         if combo_label is not None:
             candidates.append(combo_label)
 
+        damage_type_value = context.get("damage_type")
+        suffix_value = context.get("suffix")
+        if damage_type_value is not None and suffix_value is not None:
+            candidates.append(f"{damage_type_value}, dmg={suffix_value}")
+            candidates.append((damage_type_value, suffix_value))
+
         tuple_candidate = tuple(
             context.get(k)
             for k in ("damage_layer", "activation_layer", "damage_type", "suffix", "category", "other_category")
@@ -3419,7 +3451,7 @@ def plot_categ_differences(
 
         for key in ("damage_layer", "activation_layer", "damage_type", "suffix", "category", "other_category"):
             if key in context and context[key] is not None:
-                candidates.append(context[key])
+                candidates.extend(_style_name_variants(context[key]))
 
         return _resolve_style_override(overrides, candidates=tuple(candidates), index=index)
 
