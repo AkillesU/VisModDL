@@ -142,21 +142,21 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: "percentage"
       damage_pairs:
-        connections: ["0.0", "0.5"]
-        noise: ["1.8"]
-        units: ["0.4"]
+        connections: ["0.0", "0.8"]
+        noise: ["2.2"]
+        units: ["0.3"]
       save_mode: "png+svg"
       line_colours:
         "connections, dmg=0.0": "#4477AA"
-        "connections, dmg=0.5": "#EE6677"
-        "noise, dmg=1.8": "#228833"
-        "units, dmg=0.4": "#AA3377"
+        "connections, dmg=0.8": "#EE6677"
+        "noise, dmg=2.2": "#228833"
+        "units, dmg=0.3": "#AA3377"
 
       point_markers:
         "connections, dmg=0.0": "o"
-        "connections, dmg=0.5": "s"
-        "noise, dmg=1.8": "^"
-        "units, dmg=0.4": "D"
+        "connections, dmg=0.8": "s"
+        "noise, dmg=2.2": "^"
+        "units, dmg=0.3": "D"
   - function: plot_categ_differences
     parameters:
       main_dir: ["data/haupt_stim_activ/damaged/cornet_rt5_c/", "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"]
@@ -226,18 +226,18 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: "percentage"
       damage_pairs:
-        connections: ["0.0", "0.5"]
-        noise: ["1.8"]
+        connections: ["0.0", "0.45"]
+        noise: ["1.4"]
         units: ["0.4"]
       save_mode: "png+svg"
       line_colours:
         "connections, dmg=0.0": "#4477AA"
-        "connections, dmg=0.5": "#EE6677"
-        "noise, dmg=1.8": "#228833"
+        "connections, dmg=0.45": "#EE6677"
+        "noise, dmg=1.4": "#228833"
         "units, dmg=0.4": "#AA3377"
 
       point_markers:
         "connections, dmg=0.0": "o"
-        "connections, dmg=0.5": "s"
-        "noise, dmg=1.8": "^"
+        "connections, dmg=0.45": "s"
+        "noise, dmg=1.4": "^"
         "units, dmg=0.4": "D"
