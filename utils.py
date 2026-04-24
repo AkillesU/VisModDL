@@ -2161,6 +2161,43 @@ def _normalize_plot_save_mode(save_mode):
     return mode
 
 
+def _layer_name_match_candidates(layer_name):
+    """Return likely table-name variants for a filesystem-safe layer name."""
+    if layer_name is None:
+        return []
+
+    base = str(layer_name).strip()
+    if not base:
+        return []
+
+    candidates = []
+
+    def add(value):
+        if value and value not in candidates:
+            candidates.append(value)
+
+    add(base)
+    if base.startswith("module."):
+        add(base.removeprefix("module."))
+    else:
+        add("module." + base)
+
+    unprefixed = base.removeprefix("module.")
+    parts = unprefixed.split("_")
+    if len(parts) > 1:
+        # Try every underscore/dot assignment. This handles names like
+        # Mixed_7c_branch_pool_bn -> Mixed_7c.branch_pool.bn without changing paths.
+        for separators in product(("_", "."), repeat=len(parts) - 1):
+            variant_parts = [parts[0]]
+            for sep, part in zip(separators, parts[1:]):
+                variant_parts.extend((sep, part))
+            variant = "".join(variant_parts)
+            add(variant)
+            add("module." + variant)
+
+    return candidates
+
+
 def categ_corr_lineplot(
     damage_layers,
     activations_layers,
@@ -5374,22 +5411,26 @@ def generate_category_selective_RDMs(
 
     print(sel_df.head())
     print(sel_path)
-    layer_key = activation_layer
     if "layer" not in sel_df.columns or "unit" not in sel_df.columns:
         raise ValueError("Selectivity file must include 'layer' and 'unit' columns.")
 
-    # Filter to activation layer rows (strict, then a suffix fallback)
-    rows = sel_df[sel_df["layer"] == layer_key]
+    # Filter to activation layer rows. The activation folder may use a
+    # filesystem-safe name while the selectivity table keeps module path dots.
+    tried_layer_keys = _layer_name_match_candidates(activation_layer)
+    rows = pd.DataFrame()
+    layer_key = activation_layer
+    for candidate_key in tried_layer_keys:
+        candidate_rows = sel_df[sel_df["layer"] == candidate_key]
+        if not candidate_rows.empty:
+            rows = candidate_rows
+            layer_key = candidate_key
+            break
     if rows.empty:
-        layer_key = layer_key.replace("_", ".")
-        print("trying key: ", layer_key)
-        rows = sel_df[sel_df["layer"] == layer_key]
-    if rows.empty:
-        layer_key = "module." + activation_layer
-        rows = sel_df[sel_df["layer"] == layer_key]
-    if rows.empty:
-        raise ValueError(f"No rows in selectivity file for layer '{layer_key}' "
-                         f"(or suffix '/{activation_layer}').")
+        tried = ", ".join(repr(key) for key in tried_layer_keys)
+        raise ValueError(
+            f"No rows in selectivity file for activation layer '{activation_layer}'. "
+            f"Tried layer keys: {tried}."
+        )
 
     missing_cols = [c for c in col_map.values() if c not in sel_df.columns]
     if missing_cols:
