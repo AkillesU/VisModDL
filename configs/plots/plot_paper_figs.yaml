@@ -16,16 +16,15 @@ tasks:
       selection_mode: percentage
       model_tag: cornet_rt
       line_colours:
-        V1: "#4D4D4D"
-        V2: "#A34A28"
-        V4: "#7A8F3A"
-        IT: "#6A4C93"
-
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
       point_markers:
-        V1: "X"
-        V2: "P"
-        V4: "v"
-        IT: "*"
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -42,16 +41,16 @@ tasks:
       selection_mode: percentage
       model_tag: cornet_rt
       line_colours:
-        V1: "#4D4D4D"
-        V2: "#A34A28"
-        V4: "#7A8F3A"
-        IT: "#6A4C93"
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
 
       point_markers:
-        V1: "X"
-        V2: "P"
-        V4: "v"
-        IT: "*"
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
@@ -68,16 +67,16 @@ tasks:
       selection_mode: percentage
       model_tag: cornet_rt
       line_colours:
-        V1: "#4D4D4D"
-        V2: "#A34A28"
-        V4: "#7A8F3A"
-        IT: "#6A4C93"
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
 
       point_markers:
-        V1: "X"
-        V2: "P"
-        V4: "v"
-        IT: "*"
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
 
 
   - function: categ_corr_lineplot
@@ -97,15 +96,15 @@ tasks:
 
       selectivity_fraction: 0.05
       line_colours:
-        animals: "#009E73"
-        objects: "#E69F00"
-        places: "#0072B2"
-        faces: "#CC79A7"
+        animal: "#00A087"
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
       point_markers:
-        animals: "o"
-        objects: "s"
-        places: "^"
-        faces: "D"
+        animal: "o"
+        object: "s"
+        place: "^"
+        face: "D"
   - function: categ_corr_lineplot
     parameters:
       main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
@@ -120,15 +119,15 @@ tasks:
       flip_x_axis: False
       selectivity_fraction: 0.05
       line_colours:
-        animals: "#009E73"
-        objects: "#E69F00"
-        places: "#0072B2"
-        faces: "#CC79A7"
+        animal: "#00A087"
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
       point_markers:
-        animals: "o"
-        objects: "s"
-        places: "^"
-        faces: "D"
+        animal: "o"
+        object: "s"
+        place: "^"
+        face: "D"
 
   - function: plot_categ_differences
     parameters:
@@ -148,10 +147,10 @@ tasks:
         units: ["0.4"]
       save_mode: "png+svg"
       line_colours:
-        "connections, dmg=0.0": "#404040"
-        "connections, dmg=0.5": "#A23B2A"
-        "noise, dmg=1.8": "#4C6A2F"
-        "units, dmg=0.4": "#6A4C93"
+        "connections, dmg=0.0": "#4477AA"
+        "connections, dmg=0.5": "#EE6677"
+        "noise, dmg=1.8": "#228833"
+        "units, dmg=0.4": "#AA3377"
 
       point_markers:
         "connections, dmg=0.0": "o"
@@ -176,10 +175,10 @@ tasks:
         units: ["0.4"]
       save_mode: "png+svg"
       line_colours:
-        "connections, dmg=0.0": "#404040"
-        "connections, dmg=0.5": "#A23B2A"
-        "noise, dmg=1.8": "#4C6A2F"
-        "units, dmg=0.4": "#6A4C93"
+        "connections, dmg=0.0": "#4477AA"
+        "connections, dmg=0.5": "#EE6677"
+        "noise, dmg=1.8": "#228833"
+        "units, dmg=0.4": "#AA3377"
 
       point_markers:
         "connections, dmg=0.0": "o"
@@ -204,10 +203,10 @@ tasks:
         units: ["0.4"]
       save_mode: "png+svg"
       line_colours:
-        "connections, dmg=0.0": "#404040"
-        "connections, dmg=0.5": "#A23B2A"
-        "noise, dmg=1.8": "#4C6A2F"
-        "units, dmg=0.4": "#6A4C93"
+        "connections, dmg=0.0": "#4477AA"
+        "connections, dmg=0.5": "#EE6677"
+        "noise, dmg=1.8": "#228833"
+        "units, dmg=0.4": "#AA3377"
 
       point_markers:
         "connections, dmg=0.0": "o"
@@ -232,10 +231,10 @@ tasks:
         units: ["0.4"]
       save_mode: "png+svg"
       line_colours:
-        "connections, dmg=0.0": "#404040"
-        "connections, dmg=0.5": "#A23B2A"
-        "noise, dmg=1.8": "#4C6A2F"
-        "units, dmg=0.4": "#6A4C93"
+        "connections, dmg=0.0": "#4477AA"
+        "connections, dmg=0.5": "#EE6677"
+        "noise, dmg=1.8": "#228833"
+        "units, dmg=0.4": "#AA3377"
 
       point_markers:
         "connections, dmg=0.0": "o"
