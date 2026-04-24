@@ -142,19 +142,19 @@ tasks:
       selectivity_fraction: 0.05
       selection_mode: "percentage"
       damage_pairs:
-        connections: ["0.0", "0.7"]
+        connections: ["0.0", "0.75"]
         noise: ["2.2"]
         units: ["0.25"]
       save_mode: "png+svg"
       line_colours:
         "connections, dmg=0.0": "#4477AA"
-        "connections, dmg=0.7": "#EE6677"
+        "connections, dmg=0.75": "#EE6677"
         "noise, dmg=2.2": "#228833"
         "units, dmg=0.25": "#AA3377"
 
       point_markers:
         "connections, dmg=0.0": "o"
-        "connections, dmg=0.7": "s"
+        "connections, dmg=0.75": "s"
         "noise, dmg=2.2": "^"
         "units, dmg=0.25": "D"
   - function: plot_categ_differences
