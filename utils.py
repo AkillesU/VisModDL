@@ -2085,6 +2085,47 @@ def _lineplot_model_tag(main_dir):
     p = Path(str(main_dir).rstrip("/"))
     return p.name or "model"
 
+
+def _coalesce_style_overrides(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _resolve_style_override(overrides, candidates=(), index=None):
+    if overrides is None:
+        return None
+
+    if isinstance(overrides, Mapping):
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            if candidate in overrides:
+                return overrides[candidate]
+            candidate_str = str(candidate)
+            if candidate_str in overrides:
+                return overrides[candidate_str]
+        return None
+
+    if isinstance(overrides, (list, tuple)):
+        if index is None:
+            return None
+        if 0 <= index < len(overrides):
+            return overrides[index]
+        return None
+
+    return overrides
+
+
+def _explicit_style_value(spec, *keys):
+    if not isinstance(spec, Mapping):
+        return None
+    for key in keys:
+        if key in spec and spec[key] is not None:
+            return spec[key]
+    return None
+
 def categ_corr_lineplot(
     damage_layers,
     activations_layers,
@@ -2104,6 +2145,14 @@ def categ_corr_lineplot(
     selectivity_file: str|None   = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
     flip_x_axis=False,  # Used for e.g., gain control plots
     model_tag: str | None = None,
+    line_colors=None,
+    line_colours=None,
+    line_color=None,
+    line_colour=None,
+    point_shapes=None,
+    point_markers=None,
+    point_shape=None,
+    point_marker=None,
 ):
     """
     Aggregate replicate files into mean±std curves.
@@ -2129,14 +2178,29 @@ def categ_corr_lineplot(
         model_tag=model_tag,
     )
 
+    color_overrides = _coalesce_style_overrides(
+        line_colors, line_colours, line_color, line_colour
+    )
+    marker_overrides = _coalesce_style_overrides(
+        point_shapes, point_markers, point_shape, point_marker
+    )
+
     # ------------ 6. plotting ----------------------
-    for (layer, act_key, cat), frac_dict in data.items():
+    for series_index, ((layer, act_key, cat), frac_dict) in enumerate(data.items()):
         if not frac_dict or cat not in categories:
             continue
         xs = sorted(frac_dict.keys())
         ys = [frac_dict[x][0] for x in xs]
         err= [frac_dict[x][1] for x in xs]
         lbl = f"{layer}-{act_key}-{cat}"
+        series_key = (layer, act_key, cat)
+        marker = _resolve_style_override(
+            marker_overrides,
+            candidates=(series_key, lbl, layer, act_key, cat),
+            index=series_index,
+        )
+        if marker is None:
+            marker = "o"
 
         if data_type == "imagenet":
             color_cat = "total"
@@ -2145,11 +2209,18 @@ def categ_corr_lineplot(
             color_cat = cat
             color_act = act_key
 
+        color = _resolve_style_override(
+            color_overrides,
+            candidates=(series_key, lbl, layer, act_key, cat),
+            index=series_index,
+        )
         try:
-            color = get_color_for_triple(layer, color_act, str(color_cat))
-            plt.errorbar(xs, ys, yerr=err, fmt='-o', capsize=4, label=lbl, color=color)
+            if color is None:
+                color = get_color_for_triple(layer, color_act, str(color_cat))
+            plt.errorbar(xs, ys, yerr=err, fmt='-', marker=marker, capsize=4, label=lbl, color=color)
         except Exception:
-            plt.errorbar(xs, ys, yerr=err, fmt='-o', capsize=4, label=lbl)
+            color = None
+            plt.errorbar(xs, ys, yerr=err, fmt='-', marker=marker, capsize=4, label=lbl)
 
         if scatter:
             for x in xs:
@@ -2158,11 +2229,11 @@ def categ_corr_lineplot(
                     try:
                         plt.scatter([x + j for j in jitter],
                                     raw_points[(layer, act_key, cat)].get(x, []),
-                                    alpha=0.5, s=10, color=color)
+                                    alpha=0.5, s=10, color=color, marker=marker)
                     except Exception:
                         plt.scatter([x + j for j in jitter],
                                     raw_points[(layer, act_key, cat)].get(x, []),
-                                    alpha=0.5, s=10)
+                                    alpha=0.5, s=10, marker=marker)
 
     plt.xlabel("Damage parameter")
     plt.ylabel(_categ_corr_ylabel(data_type, metric, percentage))
@@ -2220,6 +2291,14 @@ def grouped_categ_corr_lineplot(
     constituent_alpha: float = 0.28,
     constituent_linewidth: float = 1.0,
     aggregate_linewidth: float = 2.8,
+    line_colors=None,
+    line_colours=None,
+    line_color=None,
+    line_colour=None,
+    point_shapes=None,
+    point_markers=None,
+    point_shape=None,
+    point_marker=None,
 ):
     """
     Plot multiple categ_corr_lineplot-style series together and add aggregate traces.
@@ -2317,6 +2396,12 @@ def grouped_categ_corr_lineplot(
     agg_fields = _normalize_aggregate_by(aggregate_by)
     line_records = []
     group_order = []
+    color_overrides = _coalesce_style_overrides(
+        line_colors, line_colours, line_color, line_colour
+    )
+    marker_overrides = _coalesce_style_overrides(
+        point_shapes, point_markers, point_shape, point_marker
+    )
 
     for idx, raw_spec in enumerate(line_specs):
         spec = dict(raw_spec)
@@ -2386,16 +2471,62 @@ def grouped_categ_corr_lineplot(
         color_map = {}
 
     for idx, rec in enumerate(line_records):
+        explicit_color = _explicit_style_value(
+            rec["spec"], "line_color", "line_colour", "color", "colour"
+        )
+        explicit_marker = _explicit_style_value(
+            rec["spec"], "point_shape", "point_marker", "marker"
+        )
         color_key = rec["group_key"] if rec["group_key"] is not None else ("__line__", idx, rec["category"])
-        if color_key not in color_map:
-            color_map[color_key] = color_cycle[len(color_map) % len(color_cycle)]
-        color = color_map[color_key]
+        resolved_color = _resolve_style_override(
+            color_overrides,
+            candidates=(
+                rec["label"],
+                rec["spec"].get("label"),
+                (rec["spec"]["damage_layer"], rec["spec"]["activation_layer"], rec["category"]),
+                rec["group_key"],
+                _format_group_label(rec["group_key"]) if rec["group_key"] is not None else None,
+                rec["spec"]["damage_layer"],
+                rec["spec"]["activation_layer"],
+                rec["category"],
+                rec["spec"].get("damage_type"),
+            ),
+            index=idx,
+        )
+        if explicit_color is not None:
+            color = explicit_color
+        elif resolved_color is not None:
+            color = resolved_color
+        else:
+            if color_key not in color_map:
+                color_map[color_key] = color_cycle[len(color_map) % len(color_cycle)]
+            color = color_map[color_key]
+        marker = _resolve_style_override(
+            marker_overrides,
+            candidates=(
+                rec["label"],
+                rec["spec"].get("label"),
+                (rec["spec"]["damage_layer"], rec["spec"]["activation_layer"], rec["category"]),
+                rec["group_key"],
+                _format_group_label(rec["group_key"]) if rec["group_key"] is not None else None,
+                rec["spec"]["damage_layer"],
+                rec["spec"]["activation_layer"],
+                rec["category"],
+                rec["spec"].get("damage_type"),
+            ),
+            index=idx,
+        )
+        if explicit_marker is not None:
+            marker = explicit_marker
+        if marker is None:
+            marker = "o"
 
         plt.errorbar(
             rec["xs"],
             rec["ys"],
             yerr=rec["err"],
-            fmt="-o",
+            fmt="-",
+            marker=marker,
             capsize=4,
             linewidth=constituent_linewidth,
             alpha=constituent_alpha,
@@ -2415,6 +2546,7 @@ def grouped_categ_corr_lineplot(
                     alpha=max(constituent_alpha * 0.7, 0.1),
                     s=10,
                     color=color,
+                    marker=marker,
                 )
 
     if agg_fields:
@@ -2425,7 +2557,18 @@ def grouped_categ_corr_lineplot(
                 aggregate_records[(rec["group_key"], rec["category"])][x].extend(rec["raw_points"].get(x, []))
 
         for (group_key, cat), grouped in aggregate_records.items():
-            color = color_map[group_key]
+            color = _resolve_style_override(
+                color_overrides,
+                candidates=(group_key, _format_group_label(group_key), cat),
+            )
+            if color is None:
+                color = color_map[group_key]
+            marker = _resolve_style_override(
+                marker_overrides,
+                candidates=(group_key, _format_group_label(group_key), cat),
+            )
+            if marker is None:
+                marker = "o"
             x_values = sorted(x for x in grouped.keys() if x != "records")
             if not x_values:
                 continue
@@ -2452,7 +2595,8 @@ def grouped_categ_corr_lineplot(
             plt.plot(
                 x_values,
                 mean_arr,
-                "-o",
+                linestyle="-",
+                marker=marker,
                 linewidth=aggregate_linewidth,
                 color=color,
                 label=label,
