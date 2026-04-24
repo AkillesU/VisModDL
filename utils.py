@@ -2147,6 +2147,20 @@ def _style_name_variants(value):
         variants.append(alias_map[value_str])
     return variants
 
+
+def _normalize_plot_save_mode(save_mode):
+    if save_mode is None or str(save_mode).strip() == "":
+        return "png"
+
+    mode = str(save_mode).strip().lower()
+    allowed_modes = {"png", "svg", "png+svg"}
+    if mode not in allowed_modes:
+        raise ValueError(
+            f"save_mode must be one of {sorted(allowed_modes)} or empty, got {save_mode!r}."
+        )
+    return mode
+
+
 def categ_corr_lineplot(
     damage_layers,
     activations_layers,
@@ -2174,9 +2188,13 @@ def categ_corr_lineplot(
     point_markers=None,
     point_shape=None,
     point_marker=None,
+    save_mode: str | None = "png",
 ):
     """
     Aggregate replicate files into mean±std curves.
+
+    save_mode:
+      Save the plot as "png", "svg", or "png+svg". Empty/None defaults to "png".
 
     Enhancement:
       - If selectivity RDMs are missing at RDM_{fraction}_{selection_mode}/<act>/<cat>_selective/,
@@ -2284,10 +2302,19 @@ def categ_corr_lineplot(
         name_parts.append("percentage")
     if selectivity_fraction is not None:
         name_parts.append(f"top{selectivity_fraction:.2f}-{selection_mode}")
-    plot_path = os.path.join(plot_dir, "_".join(name_parts) + ".png")
-    plt.savefig(plot_path, dpi=500)
+    plot_base_path = os.path.join(plot_dir, "_".join(name_parts))
+    save_mode = _normalize_plot_save_mode(save_mode)
+    saved_paths = []
+    if "png" in save_mode:
+        png_path = plot_base_path + ".png"
+        plt.savefig(png_path, dpi=500, format="png")
+        saved_paths.append(png_path)
+    if "svg" in save_mode:
+        svg_path = plot_base_path + ".svg"
+        plt.savefig(svg_path, format="svg")
+        saved_paths.append(svg_path)
     if verbose:
-        print(f"[PLOT] saved to {plot_path}")
+        print(f"[PLOT] saved to {', '.join(saved_paths)}")
         plt.show()
     else:
         plt.close()
