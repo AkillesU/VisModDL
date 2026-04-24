@@ -3030,6 +3030,14 @@ def plot_categ_differences(
     selection_mode: str = "percentage",
     damage_pairs: dict[str, list]|None = None,  # {damage_type: [levels, ...], ...} to plot multiple damage types; None uses (damage_type, damage_levels)
     save_mode: str = "png",  # Save format: "png", "svg", or "png+svg" for both
+    line_colors=None,
+    line_colours=None,
+    line_color=None,
+    line_colour=None,
+    point_shapes=None,
+    point_markers=None,
+    point_shape=None,
+    point_marker=None,
 ):
     """
     Plot either:
@@ -3056,6 +3064,13 @@ def plot_categ_differences(
         main_dir_list = list(main_dir)
     if not main_dir_list:
         raise ValueError("main_dir cannot be empty")
+
+    color_overrides = _coalesce_style_overrides(
+        line_colors, line_colours, line_color, line_colour
+    )
+    marker_overrides = _coalesce_style_overrides(
+        point_shapes, point_markers, point_shape, point_marker
+    )
     
     # ---------------- NEW COMMON IO HELPERS --------------------------
 
@@ -3383,6 +3398,31 @@ def plot_categ_differences(
             label = f"{dmg_type_key}, {label}"
         return label
 
+    def _resolve_categ_diff_style(overrides, *, index=None, **context):
+        if overrides is None:
+            return None
+        candidates = []
+        combo_key = context.get("combo_key")
+        combo_label = context.get("combo_label")
+        if combo_key is not None:
+            candidates.append(combo_key)
+        if combo_label is not None:
+            candidates.append(combo_label)
+
+        tuple_candidate = tuple(
+            context.get(k)
+            for k in ("damage_layer", "activation_layer", "damage_type", "suffix", "category", "other_category")
+            if k in context
+        )
+        if tuple_candidate:
+            candidates.append(tuple_candidate)
+
+        for key in ("damage_layer", "activation_layer", "damage_type", "suffix", "category", "other_category"):
+            if key in context and context[key] is not None:
+                candidates.append(context[key])
+
+        return _resolve_style_override(overrides, candidates=tuple(candidates), index=index)
+
     all_results = []  # list of (dmg_layer, act_layer, damage_type, suffix, item_path, diffs_dict, selective_cat)
 
     if not damage_layers:
@@ -3665,12 +3705,38 @@ def plot_categ_differences(
 
                 other_cats, mean_vals, std_vals, raw_diffs = diffs_dict[cat]
                 x_pos = np.arange(len(other_cats))
+                bar_colors = []
+                point_markers_for_cat = []
+                for idx_oc, other_cat in enumerate(other_cats):
+                    resolved_color = _resolve_categ_diff_style(
+                        color_overrides,
+                        index=idx_oc,
+                        damage_layer=dmg_layer,
+                        activation_layer=act_layer,
+                        damage_type=current_damage_type,
+                        suffix=suffix,
+                        category=cat,
+                        other_category=other_cat,
+                    )
+                    bar_colors.append(resolved_color if resolved_color is not None else f"C{idx_oc}")
+                    resolved_marker = _resolve_categ_diff_style(
+                        marker_overrides,
+                        index=idx_oc,
+                        damage_layer=dmg_layer,
+                        activation_layer=act_layer,
+                        damage_type=current_damage_type,
+                        suffix=suffix,
+                        category=cat,
+                        other_category=other_cat,
+                    )
+                    point_markers_for_cat.append(resolved_marker if resolved_marker is not None else "o")
 
                 # bars
                 ax.bar(
                     x_pos, mean_vals,
                     yerr=std_vals,
-                    capsize=4
+                    capsize=4,
+                    color=bar_colors,
                 )
 
                 # scatter if desired
@@ -3682,7 +3748,9 @@ def plot_categ_differences(
                         ax.scatter(
                             x_pos[idx_oc] + jitter,
                             arr,
-                            alpha=0.4, s=20, zorder=0
+                            alpha=0.4, s=20, zorder=0,
+                            color=bar_colors[idx_oc],
+                            marker=point_markers_for_cat[idx_oc],
                         )
 
                 ax.set_xticks(x_pos)
@@ -3790,8 +3858,31 @@ def plot_categ_differences(
                 cat_x_pos = x_pos
                 cat_labels = new_oc_list
                 offset = i * bar_width
-                color_id = f"C{i}"
                 label = _combo_label(combo_key)
+                resolved_color = _resolve_categ_diff_style(
+                    color_overrides,
+                    index=i,
+                    combo_key=combo_key,
+                    combo_label=label,
+                    damage_layer=combo_key[0],
+                    activation_layer=combo_key[1],
+                    damage_type=combo_key[2],
+                    suffix=combo_key[3],
+                    category=cat,
+                )
+                color_id = resolved_color if resolved_color is not None else f"C{i}"
+                resolved_marker = _resolve_categ_diff_style(
+                    marker_overrides,
+                    index=i,
+                    combo_key=combo_key,
+                    combo_label=label,
+                    damage_layer=combo_key[0],
+                    activation_layer=combo_key[1],
+                    damage_type=combo_key[2],
+                    suffix=combo_key[3],
+                    category=cat,
+                )
+                point_marker_value = resolved_marker if resolved_marker is not None else "o"
 
                 ax.bar(
                     x_pos + offset,
@@ -3814,7 +3905,8 @@ def plot_categ_differences(
                             (x_pos[idx_oc] + offset) + jitter,
                             arr,
                             alpha=0.15, s=20, zorder=0,
-                            color=color_id
+                            color=color_id,
+                            marker=point_marker_value,
                         )
 
             if cat_x_pos is not None and cat_labels is not None:
