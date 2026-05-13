@@ -11,6 +11,7 @@ lineplot_common: &lineplot_common
   selection_mode: "percentage"
 
 five_blocks: &five_blocks ["block1", "block2", "block3", "block4", "block5"]
+four_blocks: &four_blocks ["block1", "block2", "block3", "block4"]
 latest_readout: &latest_readout ["avgpool"]
 
 tasks:
@@ -30,6 +31,14 @@ tasks:
       activations_layers: ["layer4_2_relu"]
       damage_type: "noise"
       model_tag: "resnet50"
+  - function: categ_corr_lineplot
+    parameters:
+      <<: *lineplot_common
+      main_dir: "data/haupt_stim_activ/damaged/resnet50_c+b/"
+      damage_layers: *five_blocks
+      activations_layers: ["layer4_2_relu"]
+      damage_type: "connections"
+      model_tag: "resnet50"
 
   - function: categ_corr_lineplot
     parameters:
@@ -46,6 +55,14 @@ tasks:
       damage_layers: *five_blocks
       activations_layers: ["layer4_2_relu"]
       damage_type: "noise"
+      model_tag: "resnet101"
+  - function: categ_corr_lineplot
+    parameters:
+      <<: *lineplot_common
+      main_dir: "data/haupt_stim_activ/damaged/resnet101_c+b/"
+      damage_layers: *five_blocks
+      activations_layers: ["layer4_2_relu"]
+      damage_type: "connections"
       model_tag: "resnet101"
 
   - function: categ_corr_lineplot
@@ -64,6 +81,14 @@ tasks:
       activations_layers: ["features_8_2"]
       damage_type: "noise"
       model_tag: "efficientnet_b4"
+  - function: categ_corr_lineplot
+    parameters:
+      <<: *lineplot_common
+      main_dir: "data/haupt_stim_activ/damaged/efficientnet_b4_c+b/"
+      damage_layers: *five_blocks
+      activations_layers: ["features_8_2"]
+      damage_type: "connections"
+      model_tag: "efficientnet_b4"
 
   - function: categ_corr_lineplot
     parameters:
@@ -80,6 +105,14 @@ tasks:
       damage_layers: *five_blocks
       activations_layers: ["features_8_2"]
       damage_type: "noise"
+      model_tag: "efficientnet_b7"
+  - function: categ_corr_lineplot
+    parameters:
+      <<: *lineplot_common
+      main_dir: "data/haupt_stim_activ/damaged/efficientnet_b7_c+b/"
+      damage_layers: *five_blocks
+      activations_layers: ["features_8_2"]
+      damage_type: "connections"
       model_tag: "efficientnet_b7"
 
   - function: categ_corr_lineplot
@@ -98,6 +131,39 @@ tasks:
       activations_layers: ["Mixed_7c_branch_pool_bn"]
       damage_type: "noise"
       model_tag: "inception_v3"
+  - function: categ_corr_lineplot
+    parameters:
+      <<: *lineplot_common
+      main_dir: "data/haupt_stim_activ/damaged/inception_v3_c+b/"
+      damage_layers: *five_blocks
+      activations_layers: ["Mixed_7c_branch_pool_bn"]
+      damage_type: "connections"
+      model_tag: "inception_v3"
+
+  - function: categ_corr_lineplot
+    parameters:
+      <<: *lineplot_common
+      main_dir: "data/haupt_stim_activ/damaged/mobilenet_v2_c/"
+      damage_layers: *four_blocks
+      activations_layers: ["features_18_2"]
+      damage_type: "connections"
+      model_tag: "mobilenet_v2"
+  - function: categ_corr_lineplot
+    parameters:
+      <<: *lineplot_common
+      main_dir: "data/haupt_stim_activ/damaged/mobilenet_v2_c/"
+      damage_layers: *four_blocks
+      activations_layers: ["features_18_2"]
+      damage_type: "noise"
+      model_tag: "mobilenet_v2"
+  - function: categ_corr_lineplot
+    parameters:
+      <<: *lineplot_common
+      main_dir: "data/haupt_stim_activ/damaged/mobilenet_v2_c+b/"
+      damage_layers: *four_blocks
+      activations_layers: ["features_18_2"]
+      damage_type: "connections"
+      model_tag: "mobilenet_v2"
 
   
   - function: grouped_categ_corr_lineplot
@@ -111,7 +177,7 @@ tasks:
       constituent_alpha: 0.16
       constituent_linewidth: 0.8
       aggregate_linewidth: 3.0
-      title: "5% Selective Units: Early vs Late Damage"
+      title: "5% Selective Units: Early vs Late Connections"
       line_specs:
         - label: "ResNet-50 | Early | Connections"
           main_dir: "data/haupt_stim_activ/damaged/resnet50_c/"
@@ -201,6 +267,23 @@ tasks:
           tags:
             stage: "Late"
 
+        - label: "MobileNet-V2 | Early | Connections"
+          main_dir: "data/haupt_stim_activ/damaged/mobilenet_v2_c/"
+          damage_layer: "block1"
+          activation_layer: ["features_18_2"]
+          damage_type: "connections"
+          model_tag: "mobilenet_v2"
+          tags:
+            stage: "Early"
+        - label: "MobileNet-V2 | Late | Connections"
+          main_dir: "data/haupt_stim_activ/damaged/mobilenet_v2_c/"
+          damage_layer: "block4"
+          activation_layer: ["features_18_2"]
+          damage_type: "connections"
+          model_tag: "mobilenet_v2"
+          tags:
+            stage: "Late"
+
 
 
 
@@ -215,7 +298,7 @@ tasks:
       constituent_alpha: 0.16
       constituent_linewidth: 0.8
       aggregate_linewidth: 3.0
-      title: "5% Selective Units: Early vs Late Damage"
+      title: "5% Selective Units: Early vs Late Noise"
       line_specs:
 
         - label: "ResNet-50 | Early | Noise"
@@ -300,5 +383,138 @@ tasks:
           activation_layer: ["Mixed_7c_branch_pool_bn"]
           damage_type: "noise"
           model_tag: "inception_v3"
+          tags:
+            stage: "Late"
+
+        - label: "MobileNet-V2 | Early | Noise"
+          main_dir: "data/haupt_stim_activ/damaged/mobilenet_v2_c/"
+          damage_layer: "block1"
+          activation_layer: ["features_18_2"]
+          damage_type: "noise"
+          model_tag: "mobilenet_v2"
+          tags:
+            stage: "Early"
+        - label: "MobileNet-V2 | Late | Noise"
+          main_dir: "data/haupt_stim_activ/damaged/mobilenet_v2_c/"
+          damage_layer: "block4"
+          activation_layer: ["features_18_2"]
+          damage_type: "noise"
+          model_tag: "mobilenet_v2"
+          tags:
+            stage: "Late"
+
+
+  - function: grouped_categ_corr_lineplot
+    parameters:
+      <<: *lineplot_common
+      percentage: True
+      ylim: [-15, 115]
+      scatter: false
+      aggregate_by: ["damage_type", "stage"]
+      aggregate_error: "sem"
+      constituent_alpha: 0.16
+      constituent_linewidth: 0.8
+      aggregate_linewidth: 3.0
+      title: "5% Selective Units: Early vs Late Units"
+      line_specs:
+        - label: "ResNet-50 | Early | Units"
+          main_dir: "data/haupt_stim_activ/damaged/resnet50_c+b/"
+          damage_layer: "block1"
+          activation_layer: ["layer4_2_relu"]
+          damage_type: "connections"
+          model_tag: "resnet50"
+          tags:
+            stage: "Early"
+        - label: "ResNet-50 | Late | Units"
+          main_dir: "data/haupt_stim_activ/damaged/resnet50_c+b/"
+          damage_layer: "block5"
+          activation_layer: ["layer4_2_relu"]
+          damage_type: "connections"
+          model_tag: "resnet50"
+          tags:
+            stage: "Late"
+
+        - label: "ResNet-101 | Early | Units"
+          main_dir: "data/haupt_stim_activ/damaged/resnet101_c+b/"
+          damage_layer: "block1"
+          activation_layer: ["layer4_2_relu"]
+          damage_type: "connections"
+          model_tag: "resnet101"
+          tags:
+            stage: "Early"
+        - label: "ResNet-101 | Late | Units"
+          main_dir: "data/haupt_stim_activ/damaged/resnet101_c+b/"
+          damage_layer: "block5"
+          activation_layer: ["layer4_2_relu"]
+          damage_type: "connections"
+          model_tag: "resnet101"
+          tags:
+            stage: "Late"
+
+        - label: "EfficientNet-B4 | Early | Units"
+          main_dir: "data/haupt_stim_activ/damaged/efficientnet_b4_c+b/"
+          damage_layer: "block1"
+          activation_layer: ["features_8_2"]
+          damage_type: "connections"
+          model_tag: "efficientnet_b4"
+          tags:
+            stage: "Early"
+        - label: "EfficientNet-B4 | Late | Units"
+          main_dir: "data/haupt_stim_activ/damaged/efficientnet_b4_c+b/"
+          damage_layer: "block5"
+          activation_layer: ["features_8_2"]
+          damage_type: "connections"
+          model_tag: "efficientnet_b4"
+          tags:
+            stage: "Late"
+
+        - label: "EfficientNet-B7 | Early | Units"
+          main_dir: "data/haupt_stim_activ/damaged/efficientnet_b7_c+b/"
+          damage_layer: "block1"
+          activation_layer: ["features_8_2"]
+          damage_type: "connections"
+          model_tag: "efficientnet_b7"
+          tags:
+            stage: "Early"
+        - label: "EfficientNet-B7 | Late | Units"
+          main_dir: "data/haupt_stim_activ/damaged/efficientnet_b7_c+b/"
+          damage_layer: "block5"
+          activation_layer: ["features_8_2"]
+          damage_type: "connections"
+          model_tag: "efficientnet_b7"
+          tags:
+            stage: "Late"
+
+        - label: "Inception-V3 | Early | Units"
+          main_dir: "data/haupt_stim_activ/damaged/inception_v3_c+b/"
+          damage_layer: "block1"
+          activation_layer: ["Mixed_7c_branch_pool_bn"]
+          damage_type: "connections"
+          model_tag: "inception_v3"
+          tags:
+            stage: "Early"
+        - label: "Inception-V3 | Late | Units"
+          main_dir: "data/haupt_stim_activ/damaged/inception_v3_c+b/"
+          damage_layer: "block5"
+          activation_layer: ["Mixed_7c_branch_pool_bn"]
+          damage_type: "connections"
+          model_tag: "inception_v3"
+          tags:
+            stage: "Late"
+
+        - label: "MobileNet-V2 | Early | Units"
+          main_dir: "data/haupt_stim_activ/damaged/mobilenet_v2_c+b/"
+          damage_layer: "block1"
+          activation_layer: ["features_18_2"]
+          damage_type: "connections"
+          model_tag: "mobilenet_v2"
+          tags:
+            stage: "Early"
+        - label: "MobileNet-V2 | Late | Units"
+          main_dir: "data/haupt_stim_activ/damaged/mobilenet_v2_c+b/"
+          damage_layer: "block4"
+          activation_layer: ["features_18_2"]
+          damage_type: "connections"
+          model_tag: "mobilenet_v2"
           tags:
             stage: "Late"
