@@ -32,6 +32,16 @@ import zarr
 import numcodecs
 
 
+PLOT_FONT_FAMILY = "Times New Roman"
+PLOT_FONT_FALLBACKS = [PLOT_FONT_FAMILY, "Times", "DejaVu Serif"]
+
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.serif": PLOT_FONT_FALLBACKS,
+    "mathtext.fontset": "stix",
+})
+
+
 def get_layer_from_path(model, path: str):
     """
     Resolve dotted module paths across models (VGG/ResNet/CORnet/etc).
