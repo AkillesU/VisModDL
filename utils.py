@@ -2161,6 +2161,920 @@ def _normalize_plot_save_mode(save_mode):
     return mode
 
 
+def _normalize_group_cols(group_col):
+    if isinstance(group_col, (list, tuple)):
+        return list(group_col)
+    return [group_col]
+
+
+def _summary_axis_label(summary):
+    labels = {
+        "auc_loss": "AUC loss",
+        "mean_drop": "Mean drop",
+    }
+    return labels.get(summary, str(summary))
+
+
+def _resolve_existing_column(df, requested, candidates, purpose):
+    """Use an explicit column if present; otherwise try known local variants."""
+    if requested in df.columns:
+        return requested
+    for candidate in candidates:
+        if candidate in df.columns:
+            return candidate
+    available = ", ".join(map(str, df.columns))
+    raise ValueError(
+        f"Could not find a column for {purpose}. Requested {requested!r}; "
+        f"tried {list(candidates)!r}. Available columns: {available}"
+    )
+
+
+def _nearest_numeric_level(levels, requested, tolerance=1e-6, label="damage_level", verbose=0):
+    levels_arr = np.asarray(sorted(pd.unique(pd.Series(levels).dropna()).tolist()), dtype=float)
+    if levels_arr.size == 0:
+        raise ValueError(f"No available values found for {label}.")
+
+    requested = float(requested)
+    idx = int(np.argmin(np.abs(levels_arr - requested)))
+    chosen = float(levels_arr[idx])
+    if abs(chosen - requested) > tolerance:
+        available = ", ".join(f"{v:g}" for v in levels_arr)
+        raise ValueError(
+            f"Requested {label}={requested:g}, but no available value is within "
+            f"tolerance {tolerance:g}. Available values: {available}"
+        )
+    if verbose and not np.isclose(chosen, requested, atol=0.0, rtol=0.0):
+        print(f"[INFO] Using nearest available {label}={chosen:g} for requested {requested:g}.")
+    return chosen
+
+
+def compute_relative_drop_summary(
+    df,
+    group_col,
+    x_col,
+    y_col,
+    summary="auc_loss",
+    baseline_x=0.0,
+    baseline_tolerance=1e-8,
+):
+    """
+    Summarise baseline-relative differentiation drop for each plotted line.
+
+    Baseline normalisation is per group: relative_drop(d) = 1 - y(d) / y(0).
+    `auc_loss` uses trapezoidal integration over the actual x spacing; `mean_drop`
+    averages non-baseline damage levels only.
+    """
+    if summary not in ("auc_loss", "mean_drop"):
+        raise ValueError("summary must be 'auc_loss' or 'mean_drop'.")
+
+    group_cols = _normalize_group_cols(group_col)
+    required = [*group_cols, x_col, y_col]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns for relative-drop summary: {missing}")
+
+    work = df[required].copy()
+    work[x_col] = pd.to_numeric(work[x_col], errors="coerce")
+    work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
+    work = work.dropna(subset=[x_col, y_col])
+    if work.empty:
+        raise ValueError("No numeric x/y values available for relative-drop summary.")
+
+    grouped = (
+        work.groupby(group_cols + [x_col], dropna=False, as_index=False)[y_col]
+        .mean()
+    )
+
+    rows = []
+    groupby_arg = group_cols[0] if len(group_cols) == 1 else group_cols
+    for group_key, group_df in grouped.groupby(groupby_arg, dropna=False):
+        group_df = group_df.sort_values(x_col)
+        xs = group_df[x_col].to_numpy(dtype=float)
+        ys = group_df[y_col].to_numpy(dtype=float)
+        if len(xs) == 0:
+            continue
+
+        base_idx = int(np.argmin(np.abs(xs - float(baseline_x))))
+        actual_baseline_x = float(xs[base_idx])
+        if abs(actual_baseline_x - float(baseline_x)) > baseline_tolerance:
+            label = group_key if not isinstance(group_key, tuple) else group_key
+            raise ValueError(
+                f"No baseline x={baseline_x:g} found for group {label!r} within "
+                f"tolerance {baseline_tolerance:g}."
+            )
+
+        baseline_y = float(ys[base_idx])
+        if not np.isfinite(baseline_y) or np.isclose(baseline_y, 0.0):
+            value = np.nan
+        else:
+            relative_drop = 1.0 - (ys / baseline_y)
+            finite = np.isfinite(xs) & np.isfinite(relative_drop)
+            xs_f = xs[finite]
+            drops_f = relative_drop[finite]
+
+            if summary == "auc_loss":
+                if len(xs_f) < 2:
+                    value = np.nan
+                else:
+                    order = np.argsort(xs_f)
+                    xs_f = xs_f[order]
+                    drops_f = drops_f[order]
+                    damage_range = float(xs_f[-1] - xs_f[0])
+                    integrate = getattr(np, "trapezoid", None)
+                    if integrate is None:
+                        integrate = np.trapz
+                    value = (
+                        float(integrate(drops_f, xs_f) / damage_range)
+                        if damage_range > 0
+                        else np.nan
+                    )
+            else:
+                non_baseline = np.abs(xs_f - actual_baseline_x) > baseline_tolerance
+                value = (
+                    float(np.nanmean(drops_f[non_baseline]))
+                    if np.any(non_baseline)
+                    else np.nan
+                )
+
+        row = {
+            "summary": summary,
+            "relative_drop_summary": value,
+            "baseline_x": actual_baseline_x,
+            "baseline_y": baseline_y,
+            "n_levels": int(len(group_df)),
+        }
+        if len(group_cols) == 1:
+            row[group_cols[0]] = group_key
+        else:
+            for col, value_part in zip(group_cols, group_key):
+                row[col] = value_part
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _draw_relative_drop_sideplot(
+    ax,
+    summary_df,
+    label_col,
+    value_col="relative_drop_summary",
+    color_col=None,
+    order_col=None,
+    xlabel=None,
+):
+    if summary_df.empty:
+        ax.set_visible(False)
+        return
+
+    plot_df = summary_df.copy()
+    if order_col and order_col in plot_df.columns:
+        plot_df = plot_df.sort_values(order_col)
+
+    labels = plot_df[label_col].astype(str).tolist()
+    values = plot_df[value_col].astype(float).to_numpy()
+    positions = np.arange(len(plot_df))
+
+    if color_col and color_col in plot_df.columns:
+        colors = plot_df[color_col].tolist()
+    else:
+        colors = None
+
+    ax.barh(positions, values, color=colors, alpha=0.9)
+    ax.axvline(0, color="0.35", linewidth=0.8)
+    ax.set_yticks(positions)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel(xlabel or "AUC loss")
+    ax.tick_params(axis="both", labelsize=8)
+    ax.grid(axis="x", alpha=0.25)
+
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size and np.nanmin(finite_values) >= 0:
+        ax.set_xlim(left=0)
+    sns.despine(ax=ax, left=False, bottom=False)
+
+
+def plot_lineplot_with_side_summary(
+    df,
+    group_col,
+    x_col,
+    y_col,
+    summary="auc_loss",
+    baseline_x=0.0,
+    baseline_tolerance=1e-8,
+    yerr_col=None,
+    order=None,
+    palette=None,
+    ax=None,
+    side_ax=None,
+    side_width_ratio=0.25,
+    xlabel=None,
+    ylabel=None,
+    title=None,
+):
+    """
+    Generic line plot plus compact right-side relative-drop summary.
+
+    This is intentionally separate from the project-specific plot collectors so
+    dataframe-shaped analyses can reuse the same baseline-normalisation logic.
+    """
+    for col in (group_col, x_col, y_col):
+        if col not in df.columns:
+            raise ValueError(f"Column {col!r} is required for plot_lineplot_with_side_summary().")
+
+    created_side_axes = ax is None or side_ax is None
+    if created_side_axes:
+        width_ratios = [1.0, float(side_width_ratio)]
+        fig, (ax, side_ax) = plt.subplots(
+            1,
+            2,
+            figsize=(8.0 * (1.0 + float(side_width_ratio)), 5),
+            gridspec_kw={"width_ratios": width_ratios, "wspace": 0.18},
+        )
+    else:
+        fig = ax.figure
+
+    groups = list(order) if order is not None else list(dict.fromkeys(df[group_col].tolist()))
+    if palette is None:
+        colors = sns.color_palette(n_colors=max(len(groups), 1))
+        palette = {group: colors[i] for i, group in enumerate(groups)}
+    elif not isinstance(palette, Mapping):
+        colors = list(palette)
+        palette = {group: colors[i % len(colors)] for i, group in enumerate(groups)}
+
+    summary_rows = []
+    for idx, group in enumerate(groups):
+        group_df = df[df[group_col] == group].copy()
+        if group_df.empty:
+            continue
+        agg_map = {y_col: "mean"}
+        if yerr_col is not None and yerr_col in group_df.columns:
+            agg_map[yerr_col] = "mean"
+        group_df[x_col] = pd.to_numeric(group_df[x_col], errors="coerce")
+        group_df[y_col] = pd.to_numeric(group_df[y_col], errors="coerce")
+        line_df = group_df.groupby(x_col, as_index=False).agg(agg_map).dropna(subset=[x_col, y_col])
+        line_df = line_df.sort_values(x_col)
+        color = palette.get(group, f"C{idx}")
+        if yerr_col is not None and yerr_col in line_df.columns:
+            ax.errorbar(
+                line_df[x_col],
+                line_df[y_col],
+                yerr=line_df[yerr_col],
+                fmt="-o",
+                capsize=4,
+                color=color,
+                label=str(group),
+            )
+        else:
+            ax.plot(line_df[x_col], line_df[y_col], "-o", color=color, label=str(group))
+        summary_rows.extend(
+            {
+                "_summary_group": group,
+                x_col: row[x_col],
+                y_col: row[y_col],
+                "_summary_order": idx,
+                "_summary_color": color,
+            }
+            for _, row in line_df.iterrows()
+        )
+
+    if summary_rows:
+        summary_input = pd.DataFrame(summary_rows)
+        summary_df = compute_relative_drop_summary(
+            summary_input,
+            "_summary_group",
+            x_col,
+            y_col,
+            summary=summary,
+            baseline_x=baseline_x,
+            baseline_tolerance=baseline_tolerance,
+        )
+        style_df = (
+            summary_input.groupby("_summary_group", as_index=False)
+            .agg(_summary_order=("_summary_order", "min"), _summary_color=("_summary_color", "first"))
+        )
+        summary_df = summary_df.merge(style_df, on="_summary_group", how="left")
+        _draw_relative_drop_sideplot(
+            side_ax,
+            summary_df,
+            "_summary_group",
+            color_col="_summary_color",
+            order_col="_summary_order",
+            xlabel=_summary_axis_label(summary),
+        )
+    else:
+        summary_df = pd.DataFrame()
+        side_ax.set_visible(False)
+
+    ax.set_xlabel(xlabel or x_col)
+    ax.set_ylabel(ylabel or y_col)
+    if title:
+        ax.set_title(title)
+    ax.legend()
+    if not created_side_axes:
+        fig.tight_layout()
+    return fig, (ax, side_ax), summary_df
+
+
+_CATEGORY_DROP_PALETTE = {
+    "object": "#4C78A8",
+    "place": "#59A14F",
+    "face": "#E15759",
+    "animal": "#F28E2B",
+}
+
+
+def _normalize_category_name(category):
+    key = str(category).strip().lower()
+    aliases = {
+        "objects": "object",
+        "object": "object",
+        "places": "place",
+        "place": "place",
+        "scene": "place",
+        "scenes": "place",
+        "faces": "face",
+        "face": "face",
+        "animals": "animal",
+        "animal": "animal",
+    }
+    return aliases.get(key, key)
+
+
+def _category_display_label(category):
+    labels = {
+        "object": "objects",
+        "place": "places",
+        "face": "faces",
+        "animal": "animals",
+    }
+    return labels.get(category, str(category))
+
+
+def _category_relative_drop_from_df(
+    df,
+    damage_type="connections",
+    damage_level=0.5,
+    layer="IT",
+    category_col="category",
+    y_col="differentiation",
+    damage_type_col="damage_type",
+    damage_level_col="damage_level",
+    layer_col="layer",
+    activation_layer=None,
+    activation_layer_col=None,
+    percent=False,
+    tolerance=1e-6,
+    category_order=("object", "place", "face", "animal"),
+    match_cols=None,
+    verbose=0,
+):
+    category_col = _resolve_existing_column(
+        df, category_col, ("category", "cat", "stimulus_category"), "category"
+    )
+    y_col = _resolve_existing_column(
+        df,
+        y_col,
+        ("differentiation", "observed_difference", "value", "mean_selectivity", "score"),
+        "differentiation/value",
+    )
+    damage_type_col = _resolve_existing_column(
+        df, damage_type_col, ("damage_type", "damage", "damage_kind"), "damage type"
+    )
+    damage_level_col = _resolve_existing_column(
+        df, damage_level_col, ("damage_level", "damage_intensity", "intensity", "level"), "damage level"
+    )
+    layer_col = _resolve_existing_column(
+        df, layer_col, ("damage_layer", "damaged_layer", "layer", "area", "region"), "damaged layer"
+    )
+
+    work = df.copy()
+    work["_category_normalized"] = work[category_col].map(_normalize_category_name)
+    work[damage_level_col] = pd.to_numeric(work[damage_level_col], errors="coerce")
+    work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
+
+    filtered = work[
+        (work[damage_type_col].astype(str) == str(damage_type))
+        & (work[layer_col].astype(str) == str(layer))
+    ].copy()
+
+    if activation_layer is not None:
+        activation_layer_col = _resolve_existing_column(
+            filtered,
+            activation_layer_col or "activation_layer",
+            ("activation_layer", "act_layer", "activations_layer", "layer_name"),
+            "activation layer",
+        )
+        filtered = filtered[filtered[activation_layer_col].astype(str) == str(activation_layer)].copy()
+    elif activation_layer_col is not None and activation_layer_col in filtered.columns:
+        if filtered[activation_layer_col].dropna().nunique() > 1 and verbose:
+            vals = sorted(map(str, filtered[activation_layer_col].dropna().unique()))
+            print(
+                "[WARN] Multiple activation layers remain in the data; "
+                f"relative drops will be matched before averaging: {vals}"
+            )
+
+    filtered = filtered.dropna(subset=[damage_level_col, y_col, "_category_normalized"])
+    if filtered.empty:
+        raise ValueError(
+            f"No rows found for damage_type={damage_type!r}, layer={layer!r}. "
+            "Check the requested condition and column names."
+        )
+
+    selected_level = _nearest_numeric_level(
+        filtered[damage_level_col], damage_level, tolerance=tolerance,
+        label=damage_level_col, verbose=verbose
+    )
+    baseline_level = _nearest_numeric_level(
+        filtered[damage_level_col], 0.0, tolerance=tolerance,
+        label=f"{damage_level_col} baseline", verbose=verbose
+    )
+
+    if match_cols is None:
+        candidate_match_cols = (
+            "model_variant",
+            "model",
+            "model_name",
+            "include_bias",
+            "activation_layer",
+            "act_layer",
+            "activations_layer",
+            "data_type",
+            "metric",
+            "selectivity_fraction",
+            "selection_mode",
+        )
+        match_cols = [
+            col for col in candidate_match_cols
+            if col in filtered.columns
+            and col not in {category_col, y_col, damage_type_col, damage_level_col, layer_col}
+        ]
+    else:
+        match_cols = [col for col in match_cols if col in filtered.columns]
+
+    condition_cols = [
+        damage_type_col,
+        layer_col,
+        *match_cols,
+        "_category_normalized",
+        damage_level_col,
+    ]
+
+    # Average replicate/seed rows within each category-specific condition first.
+    condition_means = (
+        filtered.groupby(condition_cols, dropna=False, as_index=False)[y_col]
+        .mean()
+    )
+
+    level_mask = np.isclose(condition_means[damage_level_col], selected_level, atol=tolerance, rtol=0.0)
+    base_mask = np.isclose(condition_means[damage_level_col], baseline_level, atol=tolerance, rtol=0.0)
+    damaged = condition_means[level_mask].copy()
+    baseline = condition_means[base_mask].copy()
+    if baseline.empty:
+        raise ValueError(f"No baseline rows found at {damage_level_col}=0.")
+    if damaged.empty:
+        raise ValueError(f"No rows found at selected {damage_level_col}={selected_level:g}.")
+
+    merge_cols = [damage_type_col, layer_col, *match_cols, "_category_normalized"]
+    merged = baseline.merge(
+        damaged,
+        on=merge_cols,
+        suffixes=("_baseline", "_damaged"),
+        how="inner",
+    )
+    if merged.empty:
+        raise ValueError(
+            "Baseline and damaged rows could not be matched by category/condition. "
+            f"Match columns were: {merge_cols}"
+        )
+
+    merged["relative_drop"] = 1.0 - (merged[f"{y_col}_damaged"] / merged[f"{y_col}_baseline"])
+    merged.loc[np.isclose(merged[f"{y_col}_baseline"], 0.0), "relative_drop"] = np.nan
+    if percent:
+        merged["relative_drop"] = merged["relative_drop"] * 100.0
+
+    summary = (
+        merged.groupby("_category_normalized", as_index=False)["relative_drop"]
+        .agg(relative_drop="mean", sem=lambda v: float(np.nanstd(v, ddof=1) / np.sqrt(np.sum(~pd.isna(v)))) if np.sum(~pd.isna(v)) > 1 else 0.0, n="count")
+    )
+
+    order = [_normalize_category_name(c) for c in category_order]
+    present = [cat for cat in order if cat in set(summary["_category_normalized"])]
+    extras = [cat for cat in summary["_category_normalized"].tolist() if cat not in present]
+    ordered_cats = present + extras
+    summary["_order"] = summary["_category_normalized"].map({cat: i for i, cat in enumerate(ordered_cats)})
+    summary = summary.sort_values("_order").drop(columns="_order")
+    summary["category"] = summary["_category_normalized"]
+    summary["category_label"] = summary["category"].map(_category_display_label)
+    summary["damage_type"] = damage_type
+    summary["damage_level_requested"] = float(damage_level)
+    summary["damage_level_used"] = selected_level
+    summary["baseline_level_used"] = baseline_level
+    summary["layer"] = layer
+    if activation_layer is not None:
+        summary["activation_layer"] = activation_layer
+
+    requested = set(order)
+    missing = [cat for cat in order if cat in requested and cat not in set(summary["category"])]
+    if missing and verbose:
+        print(f"[WARN] Missing categories in relative-drop plot: {missing}")
+
+    return summary, merged
+
+
+def plot_category_relative_drop_bar(
+    df=None,
+    damage_type="connections",
+    damage_level=0.5,
+    layer="IT",
+    category_col="category",
+    y_col="differentiation",
+    damage_type_col="damage_type",
+    damage_level_col="damage_level",
+    layer_col="layer",
+    percent=False,
+    ax=None,
+    *,
+    main_dir=None,
+    activation_layer="IT",
+    activation_layer_col=None,
+    categories=("object", "place", "face", "animal"),
+    metric="observed_difference",
+    data_type="selectivity",
+    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",
+    selectivity_fraction=None,
+    selection_mode="percentage",
+    selectivity_file="unit_selectivity/all_layers_units_mannwhitneyu.pkl",
+    model_tag=None,
+    tolerance=1e-6,
+    match_cols=None,
+    palette=None,
+    title=True,
+    add_zero_line=True,
+    ylim=None,
+    plot_dir=None,
+    save_mode="png",
+    verbose=0,
+    return_data=False,
+):
+    """
+    Plot category-specific relative differentiation drop at one damage level.
+
+    If `df` is omitted, the function reads the existing on-disk selectivity
+    layout via `_collect_categ_corr_lineplot_data()`.
+    """
+    if df is None:
+        if main_dir is None:
+            raise ValueError("plot_category_relative_drop_bar requires either df or main_dir.")
+        collector_categories = tuple(_normalize_category_name(c) for c in categories)
+        data, _ = _collect_categ_corr_lineplot_data(
+            damage_layers=[layer],
+            activations_layers=[activation_layer],
+            damage_type=damage_type,
+            main_dir=main_dir,
+            categories=collector_categories,
+            metric=metric,
+            subdir_regex=subdir_regex,
+            data_type=data_type,
+            verbose=verbose,
+            percentage=False,
+            selectivity_fraction=selectivity_fraction,
+            selection_mode=selection_mode,
+            selectivity_file=selectivity_file,
+            model_tag=model_tag,
+        )
+        rows = []
+        for cat in collector_categories:
+            frac_dict = data.get((layer, activation_layer, cat), {})
+            for lvl, rec in frac_dict.items():
+                rows.append(
+                    {
+                        "damage_type": damage_type,
+                        "damage_layer": layer,
+                        "activation_layer": activation_layer,
+                        "damage_level": lvl,
+                        "category": cat,
+                        "differentiation": rec[0],
+                    }
+                )
+        if not rows:
+            raise RuntimeError(
+                "No category-level differentiation data could be collected. "
+                "Check main_dir, damage_type, layer, activation_layer, and categories."
+            )
+        df = pd.DataFrame(rows)
+        damage_type_col = "damage_type"
+        damage_level_col = "damage_level"
+        layer_col = "damage_layer"
+        category_col = "category"
+        y_col = "differentiation"
+        activation_layer_col = "activation_layer"
+
+    summary_df, matched_df = _category_relative_drop_from_df(
+        df,
+        damage_type=damage_type,
+        damage_level=damage_level,
+        layer=layer,
+        category_col=category_col,
+        y_col=y_col,
+        damage_type_col=damage_type_col,
+        damage_level_col=damage_level_col,
+        layer_col=layer_col,
+        activation_layer=activation_layer if activation_layer_col is not None else None,
+        activation_layer_col=activation_layer_col,
+        percent=percent,
+        tolerance=tolerance,
+        category_order=categories,
+        match_cols=match_cols,
+        verbose=verbose,
+    )
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(4.5, 4))
+    else:
+        fig = ax.figure
+
+    if palette is None:
+        palette = _CATEGORY_DROP_PALETTE
+    elif not isinstance(palette, Mapping):
+        colors = list(palette)
+        palette = {
+            cat: colors[i % len(colors)]
+            for i, cat in enumerate(summary_df["category"].tolist())
+        }
+
+    x_pos = np.arange(len(summary_df))
+    colors = [palette.get(cat, f"C{i}") for i, cat in enumerate(summary_df["category"])]
+    yerr = summary_df["sem"].to_numpy(dtype=float) if "sem" in summary_df else None
+    finite_yerr = yerr[np.isfinite(yerr)] if yerr is not None else np.asarray([])
+    ax.bar(
+        x_pos,
+        summary_df["relative_drop"].to_numpy(dtype=float),
+        yerr=yerr,
+        capsize=4 if finite_yerr.size and np.nanmax(finite_yerr) > 0 else 0,
+        color=colors,
+    )
+    if add_zero_line:
+        ax.axhline(0, color="0.35", linewidth=0.8)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(summary_df["category_label"], rotation=0)
+    ax.set_ylabel("Relative differentiation drop (%)" if percent else "Relative differentiation drop")
+    ax.set_xlabel("Category")
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    elif percent:
+        ax.set_ylim(bottom=min(0, ax.get_ylim()[0]))
+    else:
+        ax.set_ylim(bottom=min(0, ax.get_ylim()[0]))
+    if title:
+        used = summary_df["damage_level_used"].iloc[0]
+        layer_label = f", {layer}" if layer is not None else ""
+        ax.set_title(f"{damage_type}{layer_label}, damage={used:g}")
+    sns.despine(ax=ax)
+    fig.tight_layout()
+
+    saved_paths = []
+    if plot_dir is not None:
+        os.makedirs(plot_dir, exist_ok=True)
+        model_part = _lineplot_model_tag(main_dir) if main_dir is not None else "dataframe"
+        pct_part = "percent" if percent else "fraction"
+        base = os.path.join(
+            plot_dir,
+            f"{model_part}_category-relative-drop_{str(damage_type).replace('/', '-')}_{layer}_dmg{summary_df['damage_level_used'].iloc[0]:g}_{pct_part}",
+        )
+        mode = _normalize_plot_save_mode(save_mode)
+        if "png" in mode:
+            path = base + ".png"
+            fig.savefig(path, dpi=500, format="png")
+            saved_paths.append(path)
+        if "svg" in mode:
+            path = base + ".svg"
+            fig.savefig(path, format="svg")
+            saved_paths.append(path)
+        if verbose:
+            print(f"[PLOT] saved to {', '.join(saved_paths)}")
+
+    if return_data:
+        return fig, ax, summary_df, matched_df
+    return fig, ax
+
+
+def plot_total_differentiation_bar(
+    main_dir="data/haupt_stim_activ/damaged/cornet_rt5_c/",
+    damage_layers=("IT",),
+    activations_layers=("IT",),
+    damage_pairs=None,
+    categories=("total",),
+    metric="observed_difference",
+    data_type="selectivity",
+    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",
+    plot_dir="plots/",
+    verbose=0,
+    ylim=None,
+    percentage=False,
+    selectivity_fraction: float | None = None,
+    selection_mode: str = "percentage",
+    selectivity_file: str | None = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
+    model_tag: str | None = None,
+    save_mode: str | None = "png",
+    line_colors=None,
+    line_colours=None,
+    line_color=None,
+    line_colour=None,
+    point_shapes=None,
+    point_markers=None,
+    point_shape=None,
+    point_marker=None,
+    scatter=False,
+    tolerance=1e-6,
+):
+    """
+    Plot one bar per requested damage condition using the total across categories.
+
+    This is the compact counterpart to `plot_categ_differences(..., comparison=True)`
+    for paper panels that need total differentiation rather than one subplot per
+    focal category.
+    """
+    if damage_pairs is None:
+        raise ValueError("plot_total_differentiation_bar requires damage_pairs.")
+
+    damage_layers = list(_as_list(damage_layers))
+    activations_layers = list(_as_list(activations_layers))
+    if len(damage_layers) != 1 or len(activations_layers) != 1:
+        raise ValueError("plot_total_differentiation_bar expects exactly one damage layer and one activation layer.")
+    damage_layer = damage_layers[0]
+    activation_layer = activations_layers[0]
+
+    category = categories[0] if categories else "total"
+    main_dirs = list(_as_list(main_dir)) or [main_dir]
+    color_overrides = _coalesce_style_overrides(
+        line_colors, line_colours, line_color, line_colour
+    )
+    marker_overrides = _coalesce_style_overrides(
+        point_shapes, point_markers, point_shape, point_marker
+    )
+
+    def _condition_label(dmg_type, level):
+        return f"{dmg_type}, dmg={level}"
+
+    def _lookup_level(frac_dict, requested_level):
+        if not frac_dict:
+            return None
+        levels = np.asarray(sorted(frac_dict.keys()), dtype=float)
+        requested = float(requested_level)
+        idx = int(np.argmin(np.abs(levels - requested)))
+        chosen = float(levels[idx])
+        if abs(chosen - requested) <= tolerance:
+            return chosen
+        return None
+
+    records = []
+    for damage_type, levels in damage_pairs.items():
+        for level in _as_list(levels):
+            found = None
+            found_raw = None
+            found_dir = None
+            found_level = None
+            for candidate_main_dir in main_dirs:
+                try:
+                    data, raw_points = _collect_categ_corr_lineplot_data(
+                        damage_layers=[damage_layer],
+                        activations_layers=[activation_layer],
+                        damage_type=damage_type,
+                        main_dir=candidate_main_dir,
+                        categories=categories,
+                        metric=metric,
+                        subdir_regex=subdir_regex,
+                        data_type=data_type,
+                        verbose=verbose,
+                        percentage=percentage,
+                        selectivity_fraction=selectivity_fraction,
+                        selection_mode=selection_mode,
+                        selectivity_file=selectivity_file,
+                        model_tag=model_tag,
+                    )
+                except Exception as exc:
+                    if verbose:
+                        print(f"[WARN] Could not collect {damage_type} from {candidate_main_dir}: {exc}")
+                    continue
+
+                key = (damage_layer, activation_layer, category)
+                frac_dict = data.get(key, {})
+                chosen_level = _lookup_level(frac_dict, level)
+                if chosen_level is None:
+                    continue
+                found = frac_dict[chosen_level]
+                found_raw = raw_points.get(key, {}).get(chosen_level, [])
+                found_dir = candidate_main_dir
+                found_level = chosen_level
+                break
+
+            if found is None:
+                raise ValueError(
+                    f"No total differentiation value found for damage_type={damage_type!r}, "
+                    f"damage_level={level!r}, damage_layer={damage_layer!r}, "
+                    f"activation_layer={activation_layer!r} in {main_dirs}."
+                )
+
+            records.append(
+                {
+                    "damage_type": damage_type,
+                    "damage_level_requested": level,
+                    "damage_level_used": found_level,
+                    "label": _condition_label(damage_type, level),
+                    "mean": float(found[0]),
+                    "std": float(found[1]),
+                    "n": int(found[2]),
+                    "raw": list(map(float, found_raw)) if found_raw is not None else [],
+                    "main_dir": found_dir,
+                }
+            )
+
+    if not records:
+        raise RuntimeError("plot_total_differentiation_bar found no plottable conditions.")
+
+    fig, ax = plt.subplots(figsize=(4.6, 4))
+    x_pos = np.arange(len(records))
+    means = [rec["mean"] for rec in records]
+    errs = [rec["std"] for rec in records]
+    colors = []
+    markers = []
+    labels = []
+    for idx, rec in enumerate(records):
+        candidates = (
+            rec["label"],
+            (rec["damage_type"], str(rec["damage_level_requested"])),
+            rec["damage_type"],
+        )
+        color = _resolve_style_override(color_overrides, candidates=candidates, index=idx)
+        marker = _resolve_style_override(marker_overrides, candidates=candidates, index=idx)
+        colors.append(color if color is not None else f"C{idx}")
+        markers.append(marker if marker is not None else "o")
+        labels.append(rec["label"])
+
+    ax.bar(x_pos, means, yerr=errs, capsize=4, color=colors)
+    if scatter:
+        for idx, rec in enumerate(records):
+            vals = rec["raw"]
+            if not vals:
+                continue
+            jitter = np.random.normal(0, 0.035, size=len(vals))
+            ax.scatter(
+                x_pos[idx] + jitter,
+                vals,
+                alpha=0.35,
+                s=18,
+                color=colors[idx],
+                marker=markers[idx],
+                zorder=3,
+            )
+
+    ax.axhline(0, color="0.35", linewidth=0.8)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(labels, rotation=35, ha="right")
+    ax.set_ylabel(_categ_corr_ylabel(data_type, metric, percentage))
+    title_layer = f"{damage_layer}->{activation_layer}" if damage_layer != activation_layer else str(damage_layer)
+    ax.set_title(f"Total differentiation — {title_layer}")
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+
+    os.makedirs(plot_dir, exist_ok=True)
+    model_part = "-".join(sorted({_lineplot_model_tag(rec["main_dir"]) for rec in records}))
+    level_tag = "-".join(
+        f"{rec['damage_type']}{rec['damage_level_used']:g}".replace("/", "-")
+        for rec in records
+    )
+    name_parts = [
+        model_part,
+        "total-differentiation-bar",
+        damage_layer,
+        activation_layer,
+        level_tag,
+    ]
+    if percentage:
+        name_parts.append("percentage")
+    if selectivity_fraction is not None:
+        name_parts.append(f"top{selectivity_fraction:.2f}-{selection_mode}")
+    plot_base_path = os.path.join(plot_dir, "_".join(name_parts))
+    mode = _normalize_plot_save_mode(save_mode)
+    saved_paths = []
+    if "png" in mode:
+        path = plot_base_path + ".png"
+        fig.savefig(path, dpi=500, format="png")
+        saved_paths.append(path)
+    if "svg" in mode:
+        path = plot_base_path + ".svg"
+        fig.savefig(path, format="svg")
+        saved_paths.append(path)
+    if verbose:
+        print(f"[PLOT] saved to {', '.join(saved_paths)}")
+        plt.show()
+    else:
+        plt.close(fig)
+
+
 def _layer_name_match_candidates(layer_name):
     """Return likely table-name variants for a filesystem-safe layer name."""
     if layer_name is None:
@@ -2226,12 +3140,22 @@ def categ_corr_lineplot(
     point_shape=None,
     point_marker=None,
     save_mode: str | None = "png",
+    side_summary: bool = False,
+    side_summary_metric: str = "auc_loss",
+    side_summary_width_ratio: float = 0.25,
+    side_summary_baseline: float = 0.0,
+    side_summary_tolerance: float = 1e-8,
 ):
     """
     Aggregate replicate files into mean±std curves.
 
     save_mode:
       Save the plot as "png", "svg", or "png+svg". Empty/None defaults to "png".
+
+    side_summary:
+      When True, add a compact right-side horizontal bar plot. Bars use the
+      same line colours and summarise baseline-relative drop with either
+      "auc_loss" or "mean_drop".
 
     Enhancement:
       - If selectivity RDMs are missing at RDM_{fraction}_{selection_mode}/<act>/<cat>_selective/,
@@ -2262,6 +3186,20 @@ def categ_corr_lineplot(
     )
 
     # ------------ 6. plotting ----------------------
+    if side_summary:
+        fig, (main_ax, side_ax) = plt.subplots(
+            1,
+            2,
+            figsize=(8.0 * (1.0 + float(side_summary_width_ratio)), 5),
+            gridspec_kw={"width_ratios": [1.0, float(side_summary_width_ratio)], "wspace": 0.18},
+        )
+    else:
+        fig = plt.gcf()
+        main_ax = plt.gca()
+        side_ax = None
+
+    side_summary_rows = []
+
     for series_index, ((layer, act_key, cat), frac_dict) in enumerate(data.items()):
         if not frac_dict or cat not in categories:
             continue
@@ -2298,34 +3236,79 @@ def categ_corr_lineplot(
         try:
             if color is None:
                 color = get_color_for_triple(layer, color_act, str(color_cat))
-            plt.errorbar(xs, ys, yerr=err, fmt='-', marker=marker, capsize=4, label=lbl, color=color)
+            main_ax.errorbar(xs, ys, yerr=err, fmt='-', marker=marker, capsize=4, label=lbl, color=color)
         except Exception:
             color = None
-            plt.errorbar(xs, ys, yerr=err, fmt='-', marker=marker, capsize=4, label=lbl)
+            main_ax.errorbar(xs, ys, yerr=err, fmt='-', marker=marker, capsize=4, label=lbl)
+
+        if side_summary:
+            if len(categories) == 1 and len(activations_layers) == 1:
+                summary_label = str(layer)
+            else:
+                summary_label = lbl
+            for x, y in zip(xs, ys):
+                side_summary_rows.append(
+                    {
+                        "_summary_group": summary_label,
+                        "damage_level": x,
+                        "differentiation": y,
+                        "_summary_order": series_index,
+                        "_summary_color": color if color is not None else f"C{series_index}",
+                    }
+                )
 
         if scatter:
             for x in xs:
                 jitter = np.random.normal(0, 0.005, size=len(raw_points[(layer, act_key, cat)].get(x, [])))
                 if len(jitter):
                     try:
-                        plt.scatter([x + j for j in jitter],
-                                    raw_points[(layer, act_key, cat)].get(x, []),
-                                    alpha=0.5, s=10, color=color, marker=marker)
+                        main_ax.scatter([x + j for j in jitter],
+                                        raw_points[(layer, act_key, cat)].get(x, []),
+                                        alpha=0.5, s=10, color=color, marker=marker)
                     except Exception:
-                        plt.scatter([x + j for j in jitter],
-                                    raw_points[(layer, act_key, cat)].get(x, []),
-                                    alpha=0.5, s=10, marker=marker)
+                        main_ax.scatter([x + j for j in jitter],
+                                        raw_points[(layer, act_key, cat)].get(x, []),
+                                        alpha=0.5, s=10, marker=marker)
 
-    plt.xlabel("Damage parameter")
-    plt.ylabel(_categ_corr_ylabel(data_type, metric, percentage))
-    plt.title(f"{data_type} vs damage — {damage_type}")
-    if ylim: plt.ylim(ylim)
-    plt.legend()
+    if side_summary:
+        if not side_summary_rows:
+            side_ax.set_visible(False)
+        else:
+            side_input = pd.DataFrame(side_summary_rows)
+            side_df = compute_relative_drop_summary(
+                side_input,
+                "_summary_group",
+                "damage_level",
+                "differentiation",
+                summary=side_summary_metric,
+                baseline_x=side_summary_baseline,
+                baseline_tolerance=side_summary_tolerance,
+            )
+            side_style = (
+                side_input.groupby("_summary_group", as_index=False)
+                .agg(_summary_order=("_summary_order", "min"), _summary_color=("_summary_color", "first"))
+            )
+            side_df = side_df.merge(side_style, on="_summary_group", how="left")
+            _draw_relative_drop_sideplot(
+                side_ax,
+                side_df,
+                "_summary_group",
+                color_col="_summary_color",
+                order_col="_summary_order",
+                xlabel=_summary_axis_label(side_summary_metric),
+            )
+
+    main_ax.set_xlabel("Damage parameter")
+    main_ax.set_ylabel(_categ_corr_ylabel(data_type, metric, percentage))
+    main_ax.set_title(f"{data_type} vs damage — {damage_type}")
+    if ylim: main_ax.set_ylim(ylim)
+    main_ax.legend()
 
     if flip_x_axis:
-        plt.gca().invert_xaxis()
+        main_ax.invert_xaxis()
 
-    plt.tight_layout()
+    if not side_summary:
+        fig.tight_layout()
     os.makedirs(plot_dir, exist_ok=True)
     name_parts = [_lineplot_model_tag(main_dir),
                   damage_type.replace("/", "-"),
@@ -2339,22 +3322,24 @@ def categ_corr_lineplot(
         name_parts.append("percentage")
     if selectivity_fraction is not None:
         name_parts.append(f"top{selectivity_fraction:.2f}-{selection_mode}")
+    if side_summary:
+        name_parts.append(f"side-{side_summary_metric}")
     plot_base_path = os.path.join(plot_dir, "_".join(name_parts))
     save_mode = _normalize_plot_save_mode(save_mode)
     saved_paths = []
     if "png" in save_mode:
         png_path = plot_base_path + ".png"
-        plt.savefig(png_path, dpi=500, format="png")
+        fig.savefig(png_path, dpi=500, format="png")
         saved_paths.append(png_path)
     if "svg" in save_mode:
         svg_path = plot_base_path + ".svg"
-        plt.savefig(svg_path, format="svg")
+        fig.savefig(svg_path, format="svg")
         saved_paths.append(svg_path)
     if verbose:
         print(f"[PLOT] saved to {', '.join(saved_paths)}")
         plt.show()
     else:
-        plt.close()
+        plt.close(fig)
 
 
 def grouped_categ_corr_lineplot(
