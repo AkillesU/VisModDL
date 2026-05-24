@@ -2692,6 +2692,186 @@ def _category_relative_drop_from_df(
     return summary, merged
 
 
+def _category_scaled_percent_from_df(
+    df,
+    damage_type="connections",
+    damage_level=0.5,
+    layer="IT",
+    category_col="category",
+    y_col="differentiation",
+    damage_type_col="damage_type",
+    damage_level_col="damage_level",
+    layer_col="layer",
+    activation_layer=None,
+    activation_layer_col=None,
+    tolerance=1e-6,
+    category_order=("object", "place", "face", "animal"),
+    match_cols=None,
+    replicate_col="replicate",
+    verbose=0,
+):
+    category_col = _resolve_existing_column(
+        df, category_col, ("category", "cat", "stimulus_category"), "category"
+    )
+    y_col = _resolve_existing_column(
+        df,
+        y_col,
+        ("differentiation", "observed_difference", "value", "mean_selectivity", "score"),
+        "differentiation/value",
+    )
+    damage_type_col = _resolve_existing_column(
+        df, damage_type_col, ("damage_type", "damage", "damage_kind"), "damage type"
+    )
+    damage_level_col = _resolve_existing_column(
+        df, damage_level_col, ("damage_level", "damage_intensity", "intensity", "level"), "damage level"
+    )
+    layer_col = _resolve_existing_column(
+        df, layer_col, ("damage_layer", "damaged_layer", "layer", "area", "region"), "damaged layer"
+    )
+
+    work = df.copy()
+    work["_category_normalized"] = work[category_col].map(_normalize_category_name)
+    work[damage_level_col] = pd.to_numeric(work[damage_level_col], errors="coerce")
+    work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
+    filtered = work[
+        (work[damage_type_col].astype(str) == str(damage_type))
+        & (work[layer_col].astype(str) == str(layer))
+    ].copy()
+
+    if activation_layer is not None:
+        activation_layer_col = _resolve_existing_column(
+            filtered,
+            activation_layer_col or "activation_layer",
+            ("activation_layer", "act_layer", "activations_layer", "layer_name"),
+            "activation layer",
+        )
+        filtered = filtered[filtered[activation_layer_col].astype(str) == str(activation_layer)].copy()
+
+    filtered = filtered.dropna(subset=[damage_level_col, y_col, "_category_normalized"])
+    if filtered.empty:
+        raise ValueError(
+            f"No rows found for damage_type={damage_type!r}, layer={layer!r}. "
+            "Check the requested condition and column names."
+        )
+
+    selected_level = _nearest_numeric_level(
+        filtered[damage_level_col], damage_level, tolerance=tolerance,
+        label=damage_level_col, verbose=verbose
+    )
+    baseline_level = _nearest_numeric_level(
+        filtered[damage_level_col], 0.0, tolerance=tolerance,
+        label=f"{damage_level_col} baseline", verbose=verbose
+    )
+
+    if match_cols is None:
+        candidate_match_cols = (
+            "model_variant",
+            "model",
+            "model_name",
+            "include_bias",
+            "activation_layer",
+            "act_layer",
+            "activations_layer",
+            "data_type",
+            "metric",
+            "selectivity_fraction",
+            "selection_mode",
+        )
+        match_cols = [
+            col for col in candidate_match_cols
+            if col in filtered.columns
+            and col not in {category_col, y_col, damage_type_col, damage_level_col, layer_col}
+        ]
+    else:
+        match_cols = [col for col in match_cols if col in filtered.columns]
+
+    base_match_cols = [damage_type_col, layer_col, *match_cols, "_category_normalized"]
+    if replicate_col in filtered.columns:
+        base_match_cols.append(replicate_col)
+
+    base_mask = np.isclose(filtered[damage_level_col], baseline_level, atol=tolerance, rtol=0.0)
+    level_mask = np.isclose(filtered[damage_level_col], selected_level, atol=tolerance, rtol=0.0)
+    baseline = filtered[base_mask].copy()
+    damaged = filtered[level_mask].copy()
+    if baseline.empty:
+        raise ValueError(f"No baseline rows found at {damage_level_col}=0.")
+    if damaged.empty:
+        raise ValueError(f"No rows found at selected {damage_level_col}={selected_level:g}.")
+
+    if replicate_col in filtered.columns:
+        # Match each damaged replicate to the category-specific baseline replicate.
+        baseline = baseline.groupby(base_match_cols, dropna=False, as_index=False)[y_col].mean()
+        damaged = damaged.groupby(base_match_cols, dropna=False, as_index=False)[y_col].mean()
+        matched = baseline.merge(
+            damaged,
+            on=base_match_cols,
+            suffixes=("_baseline", "_damaged"),
+            how="inner",
+        )
+        matched["scaled_percent"] = 100.0 * (
+            matched[f"{y_col}_damaged"] / matched[f"{y_col}_baseline"]
+        )
+        matched.loc[np.isclose(matched[f"{y_col}_baseline"], 0.0), "scaled_percent"] = np.nan
+    else:
+        # If no replicate id exists, pair raw values by sorted order within each condition,
+        # mirroring the legacy percentage-scaling behavior used by the other bar plots.
+        matched_rows = []
+        group_cols = [damage_type_col, layer_col, *match_cols, "_category_normalized"]
+        for group_key, base_group in baseline.groupby(group_cols, dropna=False):
+            dmg_group = damaged
+            group_key_tuple = group_key if isinstance(group_key, tuple) else (group_key,)
+            for col, value in zip(group_cols, group_key_tuple):
+                dmg_group = dmg_group[dmg_group[col] == value]
+            if dmg_group.empty:
+                continue
+            base_vals = base_group[y_col].to_numpy(dtype=float)
+            dmg_vals = dmg_group[y_col].to_numpy(dtype=float)
+            n_vals = min(len(base_vals), len(dmg_vals))
+            for idx in range(n_vals):
+                baseline_value = base_vals[idx]
+                scaled = np.nan if np.isclose(baseline_value, 0.0) else 100.0 * (dmg_vals[idx] / baseline_value)
+                row = dict(zip(group_cols, group_key_tuple))
+                row.update({
+                    f"{y_col}_baseline": baseline_value,
+                    f"{y_col}_damaged": dmg_vals[idx],
+                    "scaled_percent": scaled,
+                    replicate_col: idx,
+                })
+                matched_rows.append(row)
+        matched = pd.DataFrame(matched_rows)
+        if matched.empty:
+            raise ValueError(
+                "Baseline and damaged rows could not be matched by category/condition."
+            )
+
+    summary = (
+        matched.groupby("_category_normalized", as_index=False)["scaled_percent"]
+        .agg(
+            scaled_percent="mean",
+            ci95=lambda v: float(np.nanstd(v) * 1.96) if np.sum(~pd.isna(v)) > 1 else 0.0,
+            n="count",
+            raw_values=lambda v: [float(x) for x in pd.Series(v).dropna().tolist()],
+        )
+    )
+
+    order = [_normalize_category_name(c) for c in category_order]
+    present = [cat for cat in order if cat in set(summary["_category_normalized"])]
+    extras = [cat for cat in summary["_category_normalized"].tolist() if cat not in present]
+    ordered_cats = present + extras
+    summary["_order"] = summary["_category_normalized"].map({cat: i for i, cat in enumerate(ordered_cats)})
+    summary = summary.sort_values("_order").drop(columns="_order")
+    summary["category"] = summary["_category_normalized"]
+    summary["category_label"] = summary["category"].map(_category_display_label)
+    summary["damage_type"] = damage_type
+    summary["damage_level_requested"] = float(damage_level)
+    summary["damage_level_used"] = selected_level
+    summary["baseline_level_used"] = baseline_level
+    summary["layer"] = layer
+    if activation_layer is not None:
+        summary["activation_layer"] = activation_layer
+    return summary, matched
+
+
 def plot_category_relative_drop_bar(
     df=None,
     damage_type="connections",
@@ -2726,6 +2906,8 @@ def plot_category_relative_drop_bar(
     save_mode="png",
     verbose=0,
     return_data=False,
+    value_mode="relative_drop",
+    scatter=False,
 ):
     """
     Plot category-specific relative differentiation drop at one damage level.
@@ -2737,7 +2919,7 @@ def plot_category_relative_drop_bar(
         if main_dir is None:
             raise ValueError("plot_category_relative_drop_bar requires either df or main_dir.")
         collector_categories = tuple(_normalize_category_name(c) for c in categories)
-        data, _ = _collect_categ_corr_lineplot_data(
+        data, raw_points = _collect_categ_corr_lineplot_data(
             damage_layers=[layer],
             activations_layers=[activation_layer],
             damage_type=damage_type,
@@ -2756,17 +2938,23 @@ def plot_category_relative_drop_bar(
         rows = []
         for cat in collector_categories:
             frac_dict = data.get((layer, activation_layer, cat), {})
+            raw_dict = raw_points.get((layer, activation_layer, cat), {})
             for lvl, rec in frac_dict.items():
-                rows.append(
-                    {
-                        "damage_type": damage_type,
-                        "damage_layer": layer,
-                        "activation_layer": activation_layer,
-                        "damage_level": lvl,
-                        "category": cat,
-                        "differentiation": rec[0],
-                    }
-                )
+                vals = raw_dict.get(lvl, [])
+                if not vals:
+                    vals = [rec[0]]
+                for replicate, val in enumerate(vals):
+                    rows.append(
+                        {
+                            "damage_type": damage_type,
+                            "damage_layer": layer,
+                            "activation_layer": activation_layer,
+                            "damage_level": lvl,
+                            "category": cat,
+                            "replicate": replicate,
+                            "differentiation": val,
+                        }
+                    )
         if not rows:
             raise RuntimeError(
                 "No category-level differentiation data could be collected. "
@@ -2780,24 +2968,51 @@ def plot_category_relative_drop_bar(
         y_col = "differentiation"
         activation_layer_col = "activation_layer"
 
-    summary_df, matched_df = _category_relative_drop_from_df(
-        df,
-        damage_type=damage_type,
-        damage_level=damage_level,
-        layer=layer,
-        category_col=category_col,
-        y_col=y_col,
-        damage_type_col=damage_type_col,
-        damage_level_col=damage_level_col,
-        layer_col=layer_col,
-        activation_layer=activation_layer if activation_layer_col is not None else None,
-        activation_layer_col=activation_layer_col,
-        percent=percent,
-        tolerance=tolerance,
-        category_order=categories,
-        match_cols=match_cols,
-        verbose=verbose,
-    )
+    if value_mode == "scaled_percent":
+        summary_df, matched_df = _category_scaled_percent_from_df(
+            df,
+            damage_type=damage_type,
+            damage_level=damage_level,
+            layer=layer,
+            category_col=category_col,
+            y_col=y_col,
+            damage_type_col=damage_type_col,
+            damage_level_col=damage_level_col,
+            layer_col=layer_col,
+            activation_layer=activation_layer if activation_layer_col is not None else None,
+            activation_layer_col=activation_layer_col,
+            tolerance=tolerance,
+            category_order=categories,
+            match_cols=match_cols,
+            verbose=verbose,
+        )
+        value_col = "scaled_percent"
+        err_col = "ci95"
+        ylabel = "Differentiation (scaled %)"
+        file_value_tag = "scaled-percent"
+    else:
+        summary_df, matched_df = _category_relative_drop_from_df(
+            df,
+            damage_type=damage_type,
+            damage_level=damage_level,
+            layer=layer,
+            category_col=category_col,
+            y_col=y_col,
+            damage_type_col=damage_type_col,
+            damage_level_col=damage_level_col,
+            layer_col=layer_col,
+            activation_layer=activation_layer if activation_layer_col is not None else None,
+            activation_layer_col=activation_layer_col,
+            percent=percent,
+            tolerance=tolerance,
+            category_order=categories,
+            match_cols=match_cols,
+            verbose=verbose,
+        )
+        value_col = "relative_drop"
+        err_col = "sem"
+        ylabel = "Relative differentiation drop (%)" if percent else "Relative differentiation drop"
+        file_value_tag = "relative-drop-percent" if percent else "relative-drop"
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(4.5, 4))
@@ -2815,20 +3030,37 @@ def plot_category_relative_drop_bar(
 
     x_pos = np.arange(len(summary_df))
     colors = [palette.get(cat, f"C{i}") for i, cat in enumerate(summary_df["category"])]
-    yerr = summary_df["sem"].to_numpy(dtype=float) if "sem" in summary_df else None
+    yerr = summary_df[err_col].to_numpy(dtype=float) if err_col in summary_df else None
     finite_yerr = yerr[np.isfinite(yerr)] if yerr is not None else np.asarray([])
     ax.bar(
         x_pos,
-        summary_df["relative_drop"].to_numpy(dtype=float),
+        summary_df[value_col].to_numpy(dtype=float),
         yerr=yerr,
         capsize=4 if finite_yerr.size and np.nanmax(finite_yerr) > 0 else 0,
-        color=colors,
+        facecolor="none",
+        edgecolor=colors,
+        linewidth=2,
     )
+    if scatter:
+        for idx, row in summary_df.reset_index(drop=True).iterrows():
+            vals = row.get("raw_values", [])
+            if not vals:
+                continue
+            jitter = np.random.normal(0, 0.05, size=len(vals))
+            ax.scatter(
+                x_pos[idx] + jitter,
+                vals,
+                alpha=0.4,
+                s=20,
+                zorder=0,
+                color=colors[idx],
+                marker="o",
+            )
     if add_zero_line:
         ax.axhline(0, color="0.35", linewidth=0.8)
     ax.set_xticks(x_pos)
     ax.set_xticklabels(summary_df["category_label"], rotation=0)
-    ax.set_ylabel("Relative differentiation drop (%)" if percent else "Relative differentiation drop")
+    ax.set_ylabel(ylabel)
     ax.set_xlabel("Category")
     if ylim is not None:
         ax.set_ylim(ylim)
@@ -2847,10 +3079,9 @@ def plot_category_relative_drop_bar(
     if plot_dir is not None:
         os.makedirs(plot_dir, exist_ok=True)
         model_part = _lineplot_model_tag(main_dir) if main_dir is not None else "dataframe"
-        pct_part = "percent" if percent else "fraction"
         base = os.path.join(
             plot_dir,
-            f"{model_part}_category-relative-drop_{str(damage_type).replace('/', '-')}_{layer}_dmg{summary_df['damage_level_used'].iloc[0]:g}_{pct_part}",
+            f"{model_part}_category-{file_value_tag}_{str(damage_type).replace('/', '-')}_{layer}_dmg{summary_df['damage_level_used'].iloc[0]:g}",
         )
         mode = _normalize_plot_save_mode(save_mode)
         if "png" in mode:
@@ -3006,7 +3237,14 @@ def plot_total_differentiation_bar(
     fig, ax = plt.subplots(figsize=(4.6, 4))
     x_pos = np.arange(len(records))
     means = [rec["mean"] for rec in records]
-    errs = [rec["std"] for rec in records]
+    errs = []
+    for rec in records:
+        vals = np.asarray(rec["raw"], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) > 1:
+            errs.append(float(np.std(vals) * 1.96))
+        else:
+            errs.append(float(rec["std"]) * 1.96)
     colors = []
     markers = []
     labels = []
@@ -3022,7 +3260,15 @@ def plot_total_differentiation_bar(
         markers.append(marker if marker is not None else "o")
         labels.append(rec["label"])
 
-    ax.bar(x_pos, means, yerr=errs, capsize=4, color=colors)
+    ax.bar(
+        x_pos,
+        means,
+        yerr=errs,
+        capsize=4,
+        facecolor="none",
+        edgecolor=colors,
+        linewidth=2,
+    )
     if scatter:
         for idx, rec in enumerate(records):
             vals = rec["raw"]
@@ -3032,11 +3278,11 @@ def plot_total_differentiation_bar(
             ax.scatter(
                 x_pos[idx] + jitter,
                 vals,
-                alpha=0.35,
-                s=18,
+                alpha=0.4,
+                s=20,
                 color=colors[idx],
                 marker=markers[idx],
-                zorder=3,
+                zorder=0,
             )
 
     ax.axhline(0, color="0.35", linewidth=0.8)
