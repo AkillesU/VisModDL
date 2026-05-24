@@ -2185,6 +2185,21 @@ def _summary_axis_label(summary):
     return labels.get(summary, str(summary))
 
 
+def _ci95_mean(values):
+    """Approximate 95% CI half-width around the mean for finite replicate values."""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if len(arr) <= 1:
+        return 0.0
+    return float(1.96 * np.std(arr, ddof=1) / np.sqrt(len(arr)))
+
+
+def _ci95_from_summary(std_value, n):
+    if n is None or int(n) <= 1 or not np.isfinite(std_value):
+        return 0.0
+    return float(1.96 * float(std_value) / np.sqrt(int(n)))
+
+
 def _resolve_existing_column(df, requested, candidates, purpose):
     """Use an explicit column if present; otherwise try known local variants."""
     if requested in df.columns:
@@ -2665,7 +2680,12 @@ def _category_relative_drop_from_df(
 
     summary = (
         merged.groupby("_category_normalized", as_index=False)["relative_drop"]
-        .agg(relative_drop="mean", sem=lambda v: float(np.nanstd(v, ddof=1) / np.sqrt(np.sum(~pd.isna(v)))) if np.sum(~pd.isna(v)) > 1 else 0.0, n="count")
+        .agg(
+            relative_drop="mean",
+            ci95=lambda v: _ci95_mean(v),
+            sem=lambda v: float(np.nanstd(v, ddof=1) / np.sqrt(np.sum(~pd.isna(v)))) if np.sum(~pd.isna(v)) > 1 else 0.0,
+            n="count",
+        )
     )
 
     order = [_normalize_category_name(c) for c in category_order]
@@ -2848,7 +2868,7 @@ def _category_scaled_percent_from_df(
         matched.groupby("_category_normalized", as_index=False)["scaled_percent"]
         .agg(
             scaled_percent="mean",
-            ci95=lambda v: float(np.nanstd(v) * 1.96) if np.sum(~pd.isna(v)) > 1 else 0.0,
+            ci95=lambda v: _ci95_mean(v),
             n="count",
             raw_values=lambda v: [float(x) for x in pd.Series(v).dropna().tolist()],
         )
@@ -3010,7 +3030,7 @@ def plot_category_relative_drop_bar(
             verbose=verbose,
         )
         value_col = "relative_drop"
-        err_col = "sem"
+        err_col = "ci95"
         ylabel = "Relative differentiation drop (%)" if percent else "Relative differentiation drop"
         file_value_tag = "relative-drop-percent" if percent else "relative-drop"
 
@@ -3242,9 +3262,9 @@ def plot_total_differentiation_bar(
         vals = np.asarray(rec["raw"], dtype=float)
         vals = vals[np.isfinite(vals)]
         if len(vals) > 1:
-            errs.append(float(np.std(vals) * 1.96))
+            errs.append(_ci95_mean(vals))
         else:
-            errs.append(float(rec["std"]) * 1.96)
+            errs.append(_ci95_from_summary(rec["std"], rec["n"]))
     colors = []
     markers = []
     labels = []
@@ -3461,7 +3481,13 @@ def categ_corr_lineplot(
             continue
         xs = sorted(frac_dict.keys())
         ys = [frac_dict[x][0] for x in xs]
-        err= [frac_dict[x][1] for x in xs]
+        err = []
+        for x in xs:
+            vals = raw_points.get((layer, act_key, cat), {}).get(x, [])
+            if vals:
+                err.append(_ci95_mean(vals))
+            else:
+                err.append(_ci95_from_summary(frac_dict[x][1], frac_dict[x][2]))
         lbl = f"{layer}-{act_key}-{cat}"
         series_key = (layer, act_key, cat)
         category_candidates = []
@@ -3776,7 +3802,13 @@ def grouped_categ_corr_lineplot(
 
             xs = sorted(frac_dict.keys())
             ys = [frac_dict[x][0] for x in xs]
-            err = [frac_dict[x][1] for x in xs]
+            err = []
+            for x in xs:
+                vals = raw_dict.get(x, [])
+                if vals:
+                    err.append(_ci95_mean(vals))
+                else:
+                    err.append(_ci95_from_summary(frac_dict[x][1], frac_dict[x][2]))
             line_records.append(
                 {
                     "spec": spec,
@@ -4512,7 +4544,7 @@ def plot_categ_differences(
             for oc in other_cats:
                 arr = np.array(accum[cat][oc])
                 mean_vals.append(arr.mean())
-                std_vals.append(arr.std() * 1.96)  # 95% CI
+                std_vals.append(_ci95_mean(arr))
                 raw_arrays.append(arr)
             diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
         return diffs_dict
@@ -4558,7 +4590,7 @@ def plot_categ_differences(
             for oc in other_cats:
                 arr = np.array(accum[cat][oc])
                 mean_vals.append(arr.mean())
-                std_vals.append(arr.std() * 1.96)  # 95% CI
+                std_vals.append(_ci95_mean(arr))
                 raw_arrays.append(arr)
             diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
         return diffs_dict
@@ -4623,7 +4655,7 @@ def plot_categ_differences(
 
                 ratio_arr = np.array(ratio_arr)
                 new_mean_vals.append(np.nanmean(ratio_arr))
-                new_std_vals.append(np.nanstd(ratio_arr) * 1.96)
+                new_std_vals.append(_ci95_mean(ratio_arr))
                 new_raw_arrays.append(ratio_arr.tolist())
 
             scaled_dict[cat] = (scaled_oc_list, new_mean_vals, new_std_vals, new_raw_arrays)
@@ -5004,7 +5036,7 @@ def plot_categ_differences(
                 for raw_arr in raw_arrays:
                     arr_np = np.array(raw_arr)
                     mean_vals.append(np.mean(arr_np))
-                    std_vals.append(np.std(arr_np) * 1.96)  # 95% CI
+                    std_vals.append(_ci95_mean(arr_np))
                 final_diffs_dict[cat] = (oc_list, mean_vals, std_vals, raw_arrays)
             
             all_results_agg.append(
