@@ -105,6 +105,96 @@ def _ttest(a_values, b_values):
     return {"method": "Welch z approx", "stat": float(stat), "p": p, "diff": diff}
 
 
+def _permutation_test(a_values, b_values, n_permutations=10000, rng=None):
+    """
+    Two-sided permutation p-value for the mean difference.
+
+    Equal-length arrays are treated as paired replicate-level measurements and
+    tested with sign flips of the within-replicate differences. Unequal-length
+    arrays use an unpaired label-shuffle test. P-values use the +1 correction to
+    avoid returning zero from finite Monte Carlo samples.
+    """
+    a = _finite(a_values)
+    b = _finite(b_values)
+    if len(a) < 2 or len(b) < 2:
+        return {
+            "method": "insufficient_n",
+            "stat": np.nan,
+            "p": np.nan,
+            "diff": np.nan,
+            "iterations": 0,
+        }
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    paired = len(a) == len(b)
+    observed = float(np.mean(a) - np.mean(b))
+    if paired and np.allclose(a, b, equal_nan=False):
+        return {
+            "method": "paired sign-flip permutation",
+            "stat": 0.0,
+            "p": 1.0,
+            "diff": 0.0,
+            "iterations": int(n_permutations),
+        }
+
+    if paired:
+        diffs = a - b
+        diffs = diffs[np.isfinite(diffs)]
+        if len(diffs) < 2:
+            return {
+                "method": "insufficient_n",
+                "stat": np.nan,
+                "p": np.nan,
+                "diff": observed,
+                "iterations": 0,
+            }
+        count = 0
+        done = 0
+        batch_size = min(1000, int(n_permutations))
+        while done < int(n_permutations):
+            current = min(batch_size, int(n_permutations) - done)
+            signs = rng.choice((-1.0, 1.0), size=(current, len(diffs)))
+            null_stats = np.mean(signs * diffs, axis=1)
+            count += int(np.sum(np.abs(null_stats) >= (abs(observed) - 1e-12)))
+            done += current
+        p_value = (count + 1.0) / (int(n_permutations) + 1.0)
+        return {
+            "method": "paired sign-flip permutation",
+            "stat": observed,
+            "p": float(p_value),
+            "diff": observed,
+            "iterations": int(n_permutations),
+        }
+
+    combined = np.concatenate([a, b])
+    n_a = len(a)
+    if np.isclose(observed, 0.0) and np.isclose(np.var(a), 0.0) and np.isclose(np.var(b), 0.0):
+        return {
+            "method": "unpaired label permutation",
+            "stat": 0.0,
+            "p": 1.0,
+            "diff": 0.0,
+            "iterations": int(n_permutations),
+        }
+
+    null_stats = np.empty(int(n_permutations), dtype=float)
+    for idx in range(int(n_permutations)):
+        shuffled = rng.permutation(combined)
+        null_stats[idx] = float(np.mean(shuffled[:n_a]) - np.mean(shuffled[n_a:]))
+
+    count = int(np.sum(np.abs(null_stats) >= (abs(observed) - 1e-12)))
+    p_value = (count + 1.0) / (int(n_permutations) + 1.0)
+    return {
+        "method": "unpaired label permutation",
+        "stat": observed,
+        "p": float(p_value),
+        "diff": observed,
+        "iterations": int(n_permutations),
+    }
+
+
 def _print_group_header(title):
     print()
     print("=" * 80)
@@ -121,15 +211,24 @@ def _print_series_summary(series_values):
         print(f"  {label}: n={len(arr)}, mean={mean:.6g}, 95% CI half-width={ci95:.6g}")
 
 
-def _print_pairwise(series_values):
+def _print_pairwise(series_values, n_permutations=10000, rng=None):
     print("Pairwise comparisons:")
     labels = list(series_values.keys())
     for a_label, b_label in itertools.combinations(labels, 2):
-        result = _ttest(series_values[a_label], series_values[b_label])
+        t_result = _ttest(series_values[a_label], series_values[b_label])
+        perm_result = _permutation_test(
+            series_values[a_label],
+            series_values[b_label],
+            n_permutations=n_permutations,
+            rng=rng,
+        )
         print(
             f"  {a_label} vs {b_label}: "
-            f"diff={result['diff']:.6g}, "
-            f"{result['method']}, stat={result['stat']:.6g}, p={result['p']:.6g}"
+            f"diff={t_result['diff']:.6g}; "
+            f"parametric={t_result['method']}, stat={t_result['stat']:.6g}, p={t_result['p']:.6g}; "
+            f"permutation={perm_result['method']}, "
+            f"iterations={perm_result['iterations']}, "
+            f"stat={perm_result['stat']:.6g}, p={perm_result['p']:.6g}"
         )
 
 
@@ -139,7 +238,7 @@ def _line_label(layer, act, cat, categories, activations_layers):
     return f"{layer}-{act}-{cat}"
 
 
-def _lineplot_auc_stats(task_index, params):
+def _lineplot_auc_stats(task_index, params, n_permutations=10000, rng=None):
     categories = params.get("categories", ("overall",))
     activations_layers = params.get("activations_layers", ())
     data, raw_points = _collect_categ_corr_lineplot_data(
@@ -182,7 +281,7 @@ def _lineplot_auc_stats(task_index, params):
         f"Lineplot AUC stats | task={task_index} | damage_type={params.get('damage_type')}"
     )
     _print_series_summary(series_values)
-    _print_pairwise(series_values)
+    _print_pairwise(series_values, n_permutations=n_permutations, rng=rng)
 
 
 def _collect_total_bar_values(params):
@@ -235,14 +334,14 @@ def _collect_total_bar_values(params):
     return series_values
 
 
-def _total_bar_stats(task_index, params):
+def _total_bar_stats(task_index, params, n_permutations=10000, rng=None):
     series_values = _collect_total_bar_values(params)
     if len(series_values) < 2:
         print("  [SKIP] Fewer than two total bar series.")
         return
     _print_group_header(f"Total bar stats | task={task_index}")
     _print_series_summary(series_values)
-    _print_pairwise(series_values)
+    _print_pairwise(series_values, n_permutations=n_permutations, rng=rng)
 
 
 def _collect_category_scaled_values(params):
@@ -309,7 +408,7 @@ def _collect_category_scaled_values(params):
     }
 
 
-def _category_bar_stats(task_index, params):
+def _category_bar_stats(task_index, params, n_permutations=10000, rng=None):
     series_values = _collect_category_scaled_values(params)
     if len(series_values) < 2:
         print("  [SKIP] Fewer than two category bar series.")
@@ -319,16 +418,18 @@ def _category_bar_stats(task_index, params):
         f"damage_type={params.get('damage_type')} | level={params.get('damage_level')}"
     )
     _print_series_summary(series_values)
-    _print_pairwise(series_values)
+    _print_pairwise(series_values, n_permutations=n_permutations, rng=rng)
 
 
-def run_stats(config_path):
+def run_stats(config_path, n_permutations=10000, seed=12345):
     config_path = Path(config_path)
     with config_path.open("r") as handle:
         config = yaml.safe_load(handle)
 
+    rng = np.random.default_rng(seed)
     tasks = config.get("tasks", [])
     print(f"Loaded {len(tasks)} tasks from {config_path}")
+    print(f"Permutation tests: n_permutations={int(n_permutations)}, seed={seed}")
 
     for idx, task in enumerate(tasks):
         function = task.get("function")
@@ -337,11 +438,11 @@ def run_stats(config_path):
         if function == "categ_corr_lineplot":
             if params.get("side_summary_metric") not in (None, "auc_loss"):
                 continue
-            _lineplot_auc_stats(idx, params)
+            _lineplot_auc_stats(idx, params, n_permutations=n_permutations, rng=rng)
         elif function == "plot_total_differentiation_bar":
-            _total_bar_stats(idx, params)
+            _total_bar_stats(idx, params, n_permutations=n_permutations, rng=rng)
         elif function == "plot_category_relative_drop_bar":
-            _category_bar_stats(idx, params)
+            _category_bar_stats(idx, params, n_permutations=n_permutations, rng=rng)
 
 
 def main():
@@ -352,8 +453,20 @@ def main():
         default="configs/plots/plot_paper_figs.yaml",
         help="Plot YAML config to mirror for statistical tests.",
     )
+    parser.add_argument(
+        "--n-permutations",
+        type=int,
+        default=10000,
+        help="Number of Monte Carlo permutations/sign flips per pairwise test.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=12345,
+        help="Random seed for permutation tests.",
+    )
     args = parser.parse_args()
-    run_stats(args.config)
+    run_stats(args.config, n_permutations=args.n_permutations, seed=args.seed)
 
 
 if __name__ == "__main__":
