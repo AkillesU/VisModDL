@@ -2185,19 +2185,89 @@ def _summary_axis_label(summary):
     return labels.get(summary, str(summary))
 
 
-def _ci95_mean(values):
-    """Approximate 95% CI half-width around the mean for finite replicate values."""
+BOOTSTRAP_CI_ITERATIONS = 10000
+BOOTSTRAP_CI_PERCENTILE = 95.0
+
+
+def _stable_bootstrap_seed(values):
     arr = np.asarray(values, dtype=float)
     arr = arr[np.isfinite(arr)]
-    if len(arr) <= 1:
-        return 0.0
-    return float(1.96 * np.std(arr, ddof=1) / np.sqrt(len(arr)))
+    digest = hashlib.md5(arr.tobytes()).hexdigest()
+    return int(digest[:8], 16)
+
+
+def _bootstrap_mean_ci(values, n_bootstrap=BOOTSTRAP_CI_ITERATIONS, ci=BOOTSTRAP_CI_PERCENTILE, seed=None):
+    """Percentile bootstrap CI for the mean of finite replicate values."""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if len(arr) == 0:
+        return np.nan, np.nan, np.nan
+
+    center = float(np.mean(arr))
+    if len(arr) == 1:
+        return center, center, center
+
+    rng = np.random.default_rng(_stable_bootstrap_seed(arr) if seed is None else seed)
+    boot_means = np.empty(int(n_bootstrap), dtype=float)
+    done = 0
+    batch_size = min(1000, int(n_bootstrap))
+    while done < int(n_bootstrap):
+        current = min(batch_size, int(n_bootstrap) - done)
+        idx = rng.integers(0, len(arr), size=(current, len(arr)))
+        boot_means[done:done + current] = np.mean(arr[idx], axis=1)
+        done += current
+
+    alpha = (100.0 - float(ci)) / 2.0
+    lower, upper = np.percentile(boot_means, [alpha, 100.0 - alpha])
+    return center, float(lower), float(upper)
+
+
+def _bootstrap_mean_error(values, center=None):
+    boot_center, lower, upper = _bootstrap_mean_ci(values)
+    if center is None:
+        center = boot_center
+    if not np.isfinite(center) or not np.isfinite(lower) or not np.isfinite(upper):
+        return 0.0, 0.0
+    return max(float(center) - lower, 0.0), max(upper - float(center), 0.0)
+
+
+def _ci95_mean(values):
+    """Bootstrap 95% CI half-width around the mean for finite replicate values."""
+    lower_err, upper_err = _bootstrap_mean_error(values)
+    return max(lower_err, upper_err)
 
 
 def _ci95_from_summary(std_value, n):
     if n is None or int(n) <= 1 or not np.isfinite(std_value):
         return 0.0
     return float(1.96 * float(std_value) / np.sqrt(int(n)))
+
+
+def _error_values_to_yerr(error_values):
+    if error_values is None:
+        return None
+    if len(error_values) == 0:
+        return None
+    first = error_values[0]
+    if isinstance(first, (list, tuple, np.ndarray)) and len(first) == 2:
+        lower = [float(e[0]) for e in error_values]
+        upper = [float(e[1]) for e in error_values]
+        return np.asarray([lower, upper], dtype=float)
+    return error_values
+
+
+def _summary_yerr(summary_df, value_col, lower_col="ci95_lower", upper_col="ci95_upper"):
+    if lower_col not in summary_df.columns or upper_col not in summary_df.columns:
+        return None
+    values = summary_df[value_col].to_numpy(dtype=float)
+    lower = summary_df[lower_col].to_numpy(dtype=float)
+    upper = summary_df[upper_col].to_numpy(dtype=float)
+    if not (np.isfinite(lower).any() and np.isfinite(upper).any()):
+        return None
+    return np.vstack([
+        np.maximum(values - lower, 0.0),
+        np.maximum(upper - values, 0.0),
+    ])
 
 
 def _resolve_existing_column(df, requested, candidates, purpose):
@@ -2231,6 +2301,88 @@ def _nearest_numeric_level(levels, requested, tolerance=1e-6, label="damage_leve
     if verbose and not np.isclose(chosen, requested, atol=0.0, rtol=0.0):
         print(f"[INFO] Using nearest available {label}={chosen:g} for requested {requested:g}.")
     return chosen
+
+
+def _integrate_trapezoid(y, x):
+    integrate = getattr(np, "trapezoid", None)
+    if integrate is None:
+        integrate = np.trapz
+    return float(integrate(y, x))
+
+
+def _relative_drop_summary_value(xs, ys, summary="auc_loss", baseline_x=0.0, baseline_tolerance=1e-8):
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    finite = np.isfinite(xs) & np.isfinite(ys)
+    xs = xs[finite]
+    ys = ys[finite]
+    if len(xs) == 0:
+        return np.nan
+
+    order = np.argsort(xs)
+    xs = xs[order]
+    ys = ys[order]
+    base_idx = int(np.argmin(np.abs(xs - float(baseline_x))))
+    actual_baseline_x = float(xs[base_idx])
+    if abs(actual_baseline_x - float(baseline_x)) > baseline_tolerance:
+        return np.nan
+
+    baseline_y = float(ys[base_idx])
+    if not np.isfinite(baseline_y) or np.isclose(baseline_y, 0.0):
+        return np.nan
+
+    relative_drop = 1.0 - (ys / baseline_y)
+    finite_drop = np.isfinite(relative_drop)
+    xs = xs[finite_drop]
+    relative_drop = relative_drop[finite_drop]
+
+    if summary == "auc_loss":
+        if len(xs) < 2:
+            return np.nan
+        damage_range = float(xs[-1] - xs[0])
+        if damage_range <= 0:
+            return np.nan
+        return _integrate_trapezoid(relative_drop, xs) / damage_range
+
+    non_baseline = np.abs(xs - actual_baseline_x) > baseline_tolerance
+    if not np.any(non_baseline):
+        return np.nan
+    return float(np.nanmean(relative_drop[non_baseline]))
+
+
+def _relative_drop_summary_replicate_values(
+    x_to_values,
+    summary="auc_loss",
+    baseline_x=0.0,
+    baseline_tolerance=1e-8,
+):
+    levels = sorted(float(x) for x in x_to_values.keys())
+    if not levels:
+        return []
+
+    value_lists = []
+    for level in levels:
+        vals = np.asarray(x_to_values.get(level, []), dtype=float)
+        vals = vals[np.isfinite(vals)]
+        value_lists.append(vals)
+
+    if any(len(vals) == 0 for vals in value_lists):
+        return []
+    n_reps = min(len(vals) for vals in value_lists)
+
+    summary_values = []
+    for idx in range(n_reps):
+        ys = [vals[idx] for vals in value_lists]
+        value = _relative_drop_summary_value(
+            levels,
+            ys,
+            summary=summary,
+            baseline_x=baseline_x,
+            baseline_tolerance=baseline_tolerance,
+        )
+        if np.isfinite(value):
+            summary_values.append(float(value))
+    return summary_values
 
 
 def compute_relative_drop_summary(
@@ -2289,37 +2441,13 @@ def compute_relative_drop_summary(
             )
 
         baseline_y = float(ys[base_idx])
-        if not np.isfinite(baseline_y) or np.isclose(baseline_y, 0.0):
-            value = np.nan
-        else:
-            relative_drop = 1.0 - (ys / baseline_y)
-            finite = np.isfinite(xs) & np.isfinite(relative_drop)
-            xs_f = xs[finite]
-            drops_f = relative_drop[finite]
-
-            if summary == "auc_loss":
-                if len(xs_f) < 2:
-                    value = np.nan
-                else:
-                    order = np.argsort(xs_f)
-                    xs_f = xs_f[order]
-                    drops_f = drops_f[order]
-                    damage_range = float(xs_f[-1] - xs_f[0])
-                    integrate = getattr(np, "trapezoid", None)
-                    if integrate is None:
-                        integrate = np.trapz
-                    value = (
-                        float(integrate(drops_f, xs_f) / damage_range)
-                        if damage_range > 0
-                        else np.nan
-                    )
-            else:
-                non_baseline = np.abs(xs_f - actual_baseline_x) > baseline_tolerance
-                value = (
-                    float(np.nanmean(drops_f[non_baseline]))
-                    if np.any(non_baseline)
-                    else np.nan
-                )
+        value = _relative_drop_summary_value(
+            xs,
+            ys,
+            summary=summary,
+            baseline_x=baseline_x,
+            baseline_tolerance=baseline_tolerance,
+        )
 
         row = {
             "summary": summary,
@@ -2336,6 +2464,71 @@ def compute_relative_drop_summary(
         rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def compute_relative_drop_summary_bootstrap(
+    df,
+    group_col,
+    x_col,
+    y_col,
+    summary="auc_loss",
+    baseline_x=0.0,
+    baseline_tolerance=1e-8,
+    replicate_col=None,
+):
+    summary_df = compute_relative_drop_summary(
+        df,
+        group_col,
+        x_col,
+        y_col,
+        summary=summary,
+        baseline_x=baseline_x,
+        baseline_tolerance=baseline_tolerance,
+    )
+    if summary_df.empty:
+        return summary_df
+
+    group_cols = _normalize_group_cols(group_col)
+    required = [*group_cols, x_col, y_col]
+    if replicate_col is not None and replicate_col in df.columns:
+        required.append(replicate_col)
+
+    work = df[required].copy()
+    work[x_col] = pd.to_numeric(work[x_col], errors="coerce")
+    work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
+    work = work.dropna(subset=[x_col, y_col])
+
+    rows = []
+    groupby_arg = group_cols[0] if len(group_cols) == 1 else group_cols
+    for group_key, group_df in work.groupby(groupby_arg, dropna=False):
+        x_to_values = {}
+        for x, x_df in group_df.groupby(x_col, dropna=False):
+            if replicate_col is not None and replicate_col in x_df.columns:
+                x_df = x_df.sort_values(replicate_col)
+            x_to_values[float(x)] = x_df[y_col].to_numpy(dtype=float).tolist()
+
+        replicate_values = _relative_drop_summary_replicate_values(
+            x_to_values,
+            summary=summary,
+            baseline_x=baseline_x,
+            baseline_tolerance=baseline_tolerance,
+        )
+        center, lower, upper = _bootstrap_mean_ci(replicate_values)
+        row = {
+            "ci95_lower": lower,
+            "ci95_upper": upper,
+            "summary_values": replicate_values,
+            "n_summary_values": len(replicate_values),
+        }
+        if len(group_cols) == 1:
+            row[group_cols[0]] = group_key
+        else:
+            for col, value_part in zip(group_cols, group_key):
+                row[col] = value_part
+        rows.append(row)
+
+    ci_df = pd.DataFrame(rows)
+    return summary_df.merge(ci_df, on=group_cols, how="left")
 
 
 def _draw_relative_drop_sideplot(
@@ -2358,13 +2551,22 @@ def _draw_relative_drop_sideplot(
     labels = plot_df[label_col].astype(str).tolist()
     values = plot_df[value_col].astype(float).to_numpy()
     positions = np.arange(len(plot_df))
+    xerr = _summary_yerr(plot_df, value_col)
 
     if color_col and color_col in plot_df.columns:
         colors = plot_df[color_col].tolist()
     else:
         colors = None
 
-    ax.barh(positions, values, color=colors, alpha=0.9)
+    ax.barh(
+        positions,
+        values,
+        xerr=xerr,
+        capsize=3 if xerr is not None else 0,
+        color=colors,
+        alpha=0.9,
+        error_kw={"elinewidth": 1, "ecolor": "0.25"},
+    )
     ax.axvline(0, color="0.35", linewidth=0.8)
     ax.set_yticks(positions)
     ax.set_yticklabels(labels)
@@ -2441,10 +2643,19 @@ def plot_lineplot_with_side_summary(
         line_df = line_df.sort_values(x_col)
         color = palette.get(group, f"C{idx}")
         if yerr_col is not None and yerr_col in line_df.columns:
+            yerr = line_df[yerr_col]
+        else:
+            errors = []
+            for x in line_df[x_col]:
+                vals = group_df[group_df[x_col] == x][y_col].to_numpy(dtype=float)
+                errors.append(_bootstrap_mean_error(vals, center=line_df.loc[line_df[x_col] == x, y_col].iloc[0]))
+            yerr = _error_values_to_yerr(errors)
+
+        if yerr is not None:
             ax.errorbar(
                 line_df[x_col],
                 line_df[y_col],
-                yerr=line_df[yerr_col],
+                yerr=yerr,
                 fmt="-o",
                 capsize=4,
                 color=color,
@@ -2452,20 +2663,22 @@ def plot_lineplot_with_side_summary(
             )
         else:
             ax.plot(line_df[x_col], line_df[y_col], "-o", color=color, label=str(group))
-        summary_rows.extend(
-            {
-                "_summary_group": group,
-                x_col: row[x_col],
-                y_col: row[y_col],
-                "_summary_order": idx,
-                "_summary_color": color,
-            }
-            for _, row in line_df.iterrows()
-        )
+        for x_value, x_raw_df in group_df.groupby(x_col, dropna=False):
+            for replicate_idx, (_, row) in enumerate(x_raw_df.iterrows()):
+                summary_rows.append(
+                    {
+                        "_summary_group": group,
+                        x_col: x_value,
+                        y_col: row[y_col],
+                        "_summary_replicate": replicate_idx,
+                        "_summary_order": idx,
+                        "_summary_color": color,
+                    }
+                )
 
     if summary_rows:
         summary_input = pd.DataFrame(summary_rows)
-        summary_df = compute_relative_drop_summary(
+        summary_df = compute_relative_drop_summary_bootstrap(
             summary_input,
             "_summary_group",
             x_col,
@@ -2473,6 +2686,7 @@ def plot_lineplot_with_side_summary(
             summary=summary,
             baseline_x=baseline_x,
             baseline_tolerance=baseline_tolerance,
+            replicate_col="_summary_replicate",
         )
         style_df = (
             summary_input.groupby("_summary_group", as_index=False)
@@ -2685,7 +2899,11 @@ def _category_relative_drop_from_df(
             ci95=lambda v: _ci95_mean(v),
             sem=lambda v: float(np.nanstd(v, ddof=1) / np.sqrt(np.sum(~pd.isna(v)))) if np.sum(~pd.isna(v)) > 1 else 0.0,
             n="count",
+            raw_values=lambda v: [float(x) for x in pd.Series(v).dropna().tolist()],
         )
+    )
+    summary[["ci95_center", "ci95_lower", "ci95_upper"]] = summary["raw_values"].apply(
+        lambda vals: pd.Series(_bootstrap_mean_ci(vals))
     )
 
     order = [_normalize_category_name(c) for c in category_order]
@@ -2873,6 +3091,9 @@ def _category_scaled_percent_from_df(
             raw_values=lambda v: [float(x) for x in pd.Series(v).dropna().tolist()],
         )
     )
+    summary[["ci95_center", "ci95_lower", "ci95_upper"]] = summary["raw_values"].apply(
+        lambda vals: pd.Series(_bootstrap_mean_ci(vals))
+    )
 
     order = [_normalize_category_name(c) for c in category_order]
     present = [cat for cat in order if cat in set(summary["_category_normalized"])]
@@ -3050,7 +3271,7 @@ def plot_category_relative_drop_bar(
 
     x_pos = np.arange(len(summary_df))
     colors = [palette.get(cat, f"C{i}") for i, cat in enumerate(summary_df["category"])]
-    yerr = summary_df[err_col].to_numpy(dtype=float) if err_col in summary_df else None
+    yerr = _summary_yerr(summary_df, value_col)
     finite_yerr = yerr[np.isfinite(yerr)] if yerr is not None else np.asarray([])
     ax.bar(
         x_pos,
@@ -3262,9 +3483,10 @@ def plot_total_differentiation_bar(
         vals = np.asarray(rec["raw"], dtype=float)
         vals = vals[np.isfinite(vals)]
         if len(vals) > 1:
-            errs.append(_ci95_mean(vals))
+            errs.append(_bootstrap_mean_error(vals, center=rec["mean"]))
         else:
             errs.append(_ci95_from_summary(rec["std"], rec["n"]))
+    yerr = _error_values_to_yerr(errs)
     colors = []
     markers = []
     labels = []
@@ -3283,7 +3505,7 @@ def plot_total_differentiation_bar(
     ax.bar(
         x_pos,
         means,
-        yerr=errs,
+        yerr=yerr,
         capsize=4,
         facecolor="none",
         edgecolor=colors,
@@ -3485,9 +3707,10 @@ def categ_corr_lineplot(
         for x in xs:
             vals = raw_points.get((layer, act_key, cat), {}).get(x, [])
             if vals:
-                err.append(_ci95_mean(vals))
+                err.append(_bootstrap_mean_error(vals, center=frac_dict[x][0]))
             else:
                 err.append(_ci95_from_summary(frac_dict[x][1], frac_dict[x][2]))
+        yerr = _error_values_to_yerr(err)
         lbl = f"{layer}-{act_key}-{cat}"
         series_key = (layer, act_key, cat)
         category_candidates = []
@@ -3518,10 +3741,10 @@ def categ_corr_lineplot(
         try:
             if color is None:
                 color = get_color_for_triple(layer, color_act, str(color_cat))
-            main_ax.errorbar(xs, ys, yerr=err, fmt='-', marker=marker, capsize=4, label=lbl, color=color)
+            main_ax.errorbar(xs, ys, yerr=yerr, fmt='-', marker=marker, capsize=4, label=lbl, color=color)
         except Exception:
             color = None
-            main_ax.errorbar(xs, ys, yerr=err, fmt='-', marker=marker, capsize=4, label=lbl)
+            main_ax.errorbar(xs, ys, yerr=yerr, fmt='-', marker=marker, capsize=4, label=lbl)
 
         if side_summary:
             if len(categories) == 1 and len(activations_layers) == 1:
@@ -3529,15 +3752,20 @@ def categ_corr_lineplot(
             else:
                 summary_label = lbl
             for x, y in zip(xs, ys):
-                side_summary_rows.append(
-                    {
-                        "_summary_group": summary_label,
-                        "damage_level": x,
-                        "differentiation": y,
-                        "_summary_order": series_index,
-                        "_summary_color": color if color is not None else f"C{series_index}",
-                    }
-                )
+                vals = raw_points.get((layer, act_key, cat), {}).get(x, [])
+                if not vals:
+                    vals = [y]
+                for replicate_idx, val in enumerate(vals):
+                    side_summary_rows.append(
+                        {
+                            "_summary_group": summary_label,
+                            "damage_level": x,
+                            "differentiation": val,
+                            "_summary_replicate": replicate_idx,
+                            "_summary_order": series_index,
+                            "_summary_color": color if color is not None else f"C{series_index}",
+                        }
+                    )
 
         if scatter:
             for x in xs:
@@ -3557,7 +3785,7 @@ def categ_corr_lineplot(
             side_ax.set_visible(False)
         else:
             side_input = pd.DataFrame(side_summary_rows)
-            side_df = compute_relative_drop_summary(
+            side_df = compute_relative_drop_summary_bootstrap(
                 side_input,
                 "_summary_group",
                 "damage_level",
@@ -3565,6 +3793,7 @@ def categ_corr_lineplot(
                 summary=side_summary_metric,
                 baseline_x=side_summary_baseline,
                 baseline_tolerance=side_summary_tolerance,
+                replicate_col="_summary_replicate",
             )
             side_style = (
                 side_input.groupby("_summary_group", as_index=False)
@@ -3806,7 +4035,7 @@ def grouped_categ_corr_lineplot(
             for x in xs:
                 vals = raw_dict.get(x, [])
                 if vals:
-                    err.append(_ci95_mean(vals))
+                    err.append(_bootstrap_mean_error(vals, center=frac_dict[x][0]))
                 else:
                     err.append(_ci95_from_summary(frac_dict[x][1], frac_dict[x][2]))
             line_records.append(
@@ -3887,7 +4116,7 @@ def grouped_categ_corr_lineplot(
         plt.errorbar(
             rec["xs"],
             rec["ys"],
-            yerr=rec["err"],
+            yerr=_error_values_to_yerr(rec["err"]),
             fmt="-",
             marker=marker,
             capsize=4,
@@ -4544,7 +4773,7 @@ def plot_categ_differences(
             for oc in other_cats:
                 arr = np.array(accum[cat][oc])
                 mean_vals.append(arr.mean())
-                std_vals.append(_ci95_mean(arr))
+                std_vals.append(_bootstrap_mean_error(arr, center=mean_vals[-1]))
                 raw_arrays.append(arr)
             diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
         return diffs_dict
@@ -4590,7 +4819,7 @@ def plot_categ_differences(
             for oc in other_cats:
                 arr = np.array(accum[cat][oc])
                 mean_vals.append(arr.mean())
-                std_vals.append(_ci95_mean(arr))
+                std_vals.append(_bootstrap_mean_error(arr, center=mean_vals[-1]))
                 raw_arrays.append(arr)
             diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
         return diffs_dict
@@ -4655,7 +4884,7 @@ def plot_categ_differences(
 
                 ratio_arr = np.array(ratio_arr)
                 new_mean_vals.append(np.nanmean(ratio_arr))
-                new_std_vals.append(_ci95_mean(ratio_arr))
+                new_std_vals.append(_bootstrap_mean_error(ratio_arr, center=new_mean_vals[-1]))
                 new_raw_arrays.append(ratio_arr.tolist())
 
             scaled_dict[cat] = (scaled_oc_list, new_mean_vals, new_std_vals, new_raw_arrays)
@@ -5036,7 +5265,7 @@ def plot_categ_differences(
                 for raw_arr in raw_arrays:
                     arr_np = np.array(raw_arr)
                     mean_vals.append(np.mean(arr_np))
-                    std_vals.append(_ci95_mean(arr_np))
+                    std_vals.append(_bootstrap_mean_error(arr_np, center=mean_vals[-1]))
                 final_diffs_dict[cat] = (oc_list, mean_vals, std_vals, raw_arrays)
             
             all_results_agg.append(
@@ -5103,7 +5332,7 @@ def plot_categ_differences(
                 # bars
                 ax.bar(
                     x_pos, mean_vals,
-                    yerr=std_vals,
+                    yerr=_error_values_to_yerr(std_vals),
                     capsize=4,
                     color=bar_colors,
                 )
@@ -5256,7 +5485,7 @@ def plot_categ_differences(
                 ax.bar(
                     x_pos + offset,
                     new_mean_vals,
-                    yerr=new_std_vals,
+                    yerr=_error_values_to_yerr(new_std_vals),
                     width=bar_width,
                     label=label,
                     capsize=4,
