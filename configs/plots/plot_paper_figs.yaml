@@ -281,6 +281,9 @@ tasks:
       verbose: 0
       ylim: [-0.05,0.4]
       scatter: True
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
       percentage: False
       selectivity_fraction: 0.05
       selection_mode: "percentage"
@@ -311,6 +314,9 @@ tasks:
       verbose: 0
       value_mode: "scaled_percent"
       scatter: True
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
       percent: False
       ylim: [-20,110]
       data_type: "selectivity"
@@ -335,6 +341,9 @@ tasks:
       verbose: 0
       value_mode: "scaled_percent"
       scatter: True
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
       percent: False
       ylim: [-20,110]
       data_type: "selectivity"
@@ -359,6 +368,9 @@ tasks:
       verbose: 0
       value_mode: "scaled_percent"
       scatter: True
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
       percent: False
       ylim: [-20,110]
       data_type: "selectivity"
@@ -381,6 +393,9 @@ tasks:
       ylim: [-0.05,1]
       comparison: True
       scatter: True
+      bar_width: 0.18
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
       percentage: False
       selectivity_fraction: 0.05
       selection_mode: "percentage"
@@ -408,6 +423,9 @@ tasks:
       ylim: [-0.05,1]
       comparison: True
       scatter: True
+      bar_width: 0.18
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
       percentage: False
       selectivity_fraction: 0.05
       selection_mode: "percentage"
@@ -435,6 +453,9 @@ tasks:
       ylim: [-0.05,1]
       comparison: True
       scatter: True
+      bar_width: 0.18
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
       percentage: False
       selectivity_fraction: 0.05
       selection_mode: "percentage"
@@ -462,6 +483,9 @@ tasks:
       ylim: [-0.05,1]
       comparison: True
       scatter: True
+      bar_width: 0.18
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
       percentage: False
       selectivity_fraction: 0.05
       selection_mode: "percentage"

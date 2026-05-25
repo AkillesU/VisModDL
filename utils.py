@@ -2270,6 +2270,70 @@ def _summary_yerr(summary_df, value_col, lower_col="ci95_lower", upper_col="ci95
     ])
 
 
+DEFAULT_BARPLOT_WIDTH = 0.8
+DEFAULT_BARPLOT_SCATTER_ALPHA = 0.25
+DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION = 0.8
+BARPLOT_AXIS_WIDTH = 2.2
+BARPLOT_AXIS_HEIGHT = 4.4
+BARPLOT_AXIS_BOX_ASPECT = BARPLOT_AXIS_HEIGHT / BARPLOT_AXIS_WIDTH
+
+
+def _resolve_bar_width(bar_width, default=DEFAULT_BARPLOT_WIDTH, name="bar_width"):
+    value = default if bar_width is None else bar_width
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a positive finite number.")
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive finite number.")
+    return value
+
+
+def _resolve_alpha(alpha, default=DEFAULT_BARPLOT_SCATTER_ALPHA, name="scatter_alpha"):
+    value = default if alpha is None else alpha
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a finite number between 0 and 1.")
+    if not np.isfinite(value) or value < 0 or value > 1:
+        raise ValueError(f"{name} must be a finite number between 0 and 1.")
+    return value
+
+
+def _barplot_figsize(ncols=1, nrows=1):
+    return (
+        BARPLOT_AXIS_WIDTH * max(int(ncols), 1),
+        BARPLOT_AXIS_HEIGHT * max(int(nrows), 1),
+    )
+
+
+def _apply_barplot_axis_aspect(ax):
+    set_box_aspect = getattr(ax, "set_box_aspect", None)
+    if set_box_aspect is not None:
+        set_box_aspect(BARPLOT_AXIS_BOX_ASPECT)
+
+
+def _barplot_scatter_jitter(bar_width, n_points, width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION):
+    n_points = int(n_points)
+    if n_points <= 0:
+        return np.asarray([])
+    width_fraction = _resolve_bar_width(
+        width_fraction,
+        default=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
+        name="scatter_width_fraction",
+    )
+    half_width = float(bar_width) * width_fraction / 2.0
+    return np.random.uniform(-half_width, half_width, size=n_points)
+
+
+def _set_barplot_xlim(ax, x_pos, bar_width, bars_per_slot=1):
+    if len(x_pos) == 0:
+        return
+    half_group_width = float(bar_width) * max(int(bars_per_slot), 1) / 2.0
+    margin = max(0.5, half_group_width + 0.05)
+    ax.set_xlim(float(np.min(x_pos)) - margin, float(np.max(x_pos)) + margin)
+
+
 def _resolve_existing_column(df, requested, candidates, purpose):
     """Use an explicit column if present; otherwise try known local variants."""
     if requested in df.columns:
@@ -3149,6 +3213,9 @@ def plot_category_relative_drop_bar(
     return_data=False,
     value_mode="relative_drop",
     scatter=False,
+    bar_width=None,
+    scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
+    scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
 ):
     """
     Plot category-specific relative differentiation drop at one damage level.
@@ -3255,10 +3322,14 @@ def plot_category_relative_drop_bar(
         ylabel = "Relative differentiation drop (%)" if percent else "Relative differentiation drop"
         file_value_tag = "relative-drop-percent" if percent else "relative-drop"
 
+    resolved_bar_width = _resolve_bar_width(bar_width)
+    resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
+
     if ax is None:
-        fig, ax = plt.subplots(figsize=(4.5, 4))
+        fig, ax = plt.subplots(figsize=_barplot_figsize())
     else:
         fig = ax.figure
+    _apply_barplot_axis_aspect(ax)
 
     if palette is None:
         palette = _CATEGORY_DROP_PALETTE
@@ -3277,6 +3348,7 @@ def plot_category_relative_drop_bar(
         x_pos,
         summary_df[value_col].to_numpy(dtype=float),
         yerr=yerr,
+        width=resolved_bar_width,
         capsize=4 if finite_yerr.size and np.nanmax(finite_yerr) > 0 else 0,
         facecolor="none",
         edgecolor=colors,
@@ -3287,11 +3359,15 @@ def plot_category_relative_drop_bar(
             vals = row.get("raw_values", [])
             if not vals:
                 continue
-            jitter = np.random.normal(0, 0.05, size=len(vals))
+            jitter = _barplot_scatter_jitter(
+                resolved_bar_width,
+                len(vals),
+                width_fraction=scatter_width_fraction,
+            )
             ax.scatter(
                 x_pos[idx] + jitter,
                 vals,
-                alpha=0.4,
+                alpha=resolved_scatter_alpha,
                 s=20,
                 zorder=0,
                 color=colors[idx],
@@ -3301,6 +3377,7 @@ def plot_category_relative_drop_bar(
         ax.axhline(0, color="0.35", linewidth=0.8)
     ax.set_xticks(x_pos)
     ax.set_xticklabels(summary_df["category_label"], rotation=0)
+    _set_barplot_xlim(ax, x_pos, resolved_bar_width)
     ax.set_ylabel(ylabel)
     ax.set_xlabel("Category")
     if ylim is not None:
@@ -3368,6 +3445,9 @@ def plot_total_differentiation_bar(
     point_shape=None,
     point_marker=None,
     scatter=False,
+    bar_width=None,
+    scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
+    scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
     tolerance=1e-6,
 ):
     """
@@ -3475,7 +3555,11 @@ def plot_total_differentiation_bar(
     if not records:
         raise RuntimeError("plot_total_differentiation_bar found no plottable conditions.")
 
-    fig, ax = plt.subplots(figsize=(4.6, 4))
+    resolved_bar_width = _resolve_bar_width(bar_width)
+    resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
+
+    fig, ax = plt.subplots(figsize=_barplot_figsize())
+    _apply_barplot_axis_aspect(ax)
     x_pos = np.arange(len(records))
     means = [rec["mean"] for rec in records]
     errs = []
@@ -3506,6 +3590,7 @@ def plot_total_differentiation_bar(
         x_pos,
         means,
         yerr=yerr,
+        width=resolved_bar_width,
         capsize=4,
         facecolor="none",
         edgecolor=colors,
@@ -3516,11 +3601,15 @@ def plot_total_differentiation_bar(
             vals = rec["raw"]
             if not vals:
                 continue
-            jitter = np.random.normal(0, 0.035, size=len(vals))
+            jitter = _barplot_scatter_jitter(
+                resolved_bar_width,
+                len(vals),
+                width_fraction=scatter_width_fraction,
+            )
             ax.scatter(
                 x_pos[idx] + jitter,
                 vals,
-                alpha=0.4,
+                alpha=resolved_scatter_alpha,
                 s=20,
                 color=colors[idx],
                 marker=markers[idx],
@@ -3530,6 +3619,7 @@ def plot_total_differentiation_bar(
     ax.axhline(0, color="0.35", linewidth=0.8)
     ax.set_xticks(x_pos)
     ax.set_xticklabels(labels, rotation=35, ha="right")
+    _set_barplot_xlim(ax, x_pos, resolved_bar_width)
     ax.set_ylabel(_categ_corr_ylabel(data_type, metric, percentage))
     title_layer = f"{damage_layer}->{activation_layer}" if damage_layer != activation_layer else str(damage_layer)
     ax.set_title(f"Total differentiation — {title_layer}")
@@ -4630,6 +4720,9 @@ def plot_categ_differences(
     point_markers=None,
     point_shape=None,
     point_marker=None,
+    bar_width=None,
+    scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
+    scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
 ):
     """
     Plot either:
@@ -4648,6 +4741,10 @@ def plot_categ_differences(
     data_type:
        "selectivity" -> correlation-based data from ".../RDM/<act_layer>"
        "svm_..." -> classification accuracy from ".../svm_15/<act_layer>".
+
+    bar_width:
+       Width of a single bar in x-axis units. When comparison=True and no
+       value is supplied, bars are auto-sized to occupy 80% of each group.
     """
     # ---------- Normalize main_dir to a list (for fallback dirs) ----------
     if isinstance(main_dir, str):
@@ -4663,6 +4760,7 @@ def plot_categ_differences(
     marker_overrides = _coalesce_style_overrides(
         point_shapes, point_markers, point_shape, point_marker
     )
+    resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
     
     # ---------------- NEW COMMON IO HELPERS --------------------------
 
@@ -5287,9 +5385,10 @@ def plot_categ_differences(
         # One row per (dmg_layer, act_layer, suffix, item_path)
         # columns = categories
         num_rows = len(all_results)
+        resolved_bar_width = _resolve_bar_width(bar_width)
         fig, axes = plt.subplots(
             num_rows, n_categories,
-            figsize=(3*n_categories, 3*num_rows),
+            figsize=_barplot_figsize(n_categories, num_rows),
             sharey=True
         )
         axes = np.array(axes, ndmin=2)  # ensure 2D
@@ -5297,6 +5396,7 @@ def plot_categ_differences(
         for i, (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in enumerate(all_results):
             for j, cat in enumerate(categories_list):
                 ax = axes[i, j]
+                _apply_barplot_axis_aspect(ax)
                 if cat not in diffs_dict:
                     ax.set_visible(False)
                     continue
@@ -5333,6 +5433,7 @@ def plot_categ_differences(
                 ax.bar(
                     x_pos, mean_vals,
                     yerr=_error_values_to_yerr(std_vals),
+                    width=resolved_bar_width,
                     capsize=4,
                     color=bar_colors,
                 )
@@ -5342,17 +5443,22 @@ def plot_categ_differences(
                     for idx_oc, arr in enumerate(raw_diffs):
                         if len(arr) == 0:
                             continue
-                        jitter = np.random.normal(0, 0.05, size=len(arr))
+                        jitter = _barplot_scatter_jitter(
+                            resolved_bar_width,
+                            len(arr),
+                            width_fraction=scatter_width_fraction,
+                        )
                         ax.scatter(
                             x_pos[idx_oc] + jitter,
                             arr,
-                            alpha=0.4, s=20, zorder=0,
+                            alpha=resolved_scatter_alpha, s=20, zorder=0,
                             color=bar_colors[idx_oc],
                             marker=point_markers_for_cat[idx_oc],
                         )
 
                 ax.set_xticks(x_pos)
                 ax.set_xticklabels(other_cats, rotation=45, ha='right')
+                _set_barplot_xlim(ax, x_pos, resolved_bar_width)
                 if ylim is not None:
                     ax.set_ylim(ylim)
 
@@ -5400,7 +5506,7 @@ def plot_categ_differences(
     else:
         # comparison=True => group all combos in fewer subplots
         # (1 subplot per category, grouped bars for each combo).
-        fig, axes = plt.subplots(1, n_categories, figsize=(4*n_categories, 4), sharey=True)
+        fig, axes = plt.subplots(1, n_categories, figsize=_barplot_figsize(n_categories), sharey=True)
         if n_categories == 1:
             axes = [axes]
 
@@ -5424,9 +5530,17 @@ def plot_categ_differences(
                     continue
                 results_by_cat[cat][combo_key] = diffs_dict.get(cat, ([], [], [], []))
 
-        bar_width = 0.8 / max(len(combos), 1)
+        combo_count = max(len(combos), 1)
+        resolved_bar_width = _resolve_bar_width(
+            bar_width,
+            default=DEFAULT_BARPLOT_WIDTH / combo_count,
+        )
+        bar_offsets = (
+            np.arange(combo_count, dtype=float) - (combo_count - 1) / 2.0
+        ) * resolved_bar_width
         for idx_cat, cat in enumerate(categories_list):
             ax = axes[idx_cat]
+            _apply_barplot_axis_aspect(ax)
             if data_type.startswith("svm"):
                 ylabel = "Classification Accuracy"
             else:
@@ -5455,7 +5569,7 @@ def plot_categ_differences(
                 x_pos = np.arange(len(new_oc_list))
                 cat_x_pos = x_pos
                 cat_labels = new_oc_list
-                offset = i * bar_width
+                offset = bar_offsets[i]
                 label = _combo_label(combo_key)
                 resolved_color = _resolve_categ_diff_style(
                     color_overrides,
@@ -5486,7 +5600,7 @@ def plot_categ_differences(
                     x_pos + offset,
                     new_mean_vals,
                     yerr=_error_values_to_yerr(new_std_vals),
-                    width=bar_width,
+                    width=resolved_bar_width,
                     label=label,
                     capsize=4,
                     facecolor="none",
@@ -5498,18 +5612,23 @@ def plot_categ_differences(
                     for idx_oc, arr in enumerate(new_raw_diffs):
                         if len(arr) == 0:
                             continue
-                        jitter = np.random.normal(0, bar_width/6, size=len(arr))
+                        jitter = _barplot_scatter_jitter(
+                            resolved_bar_width,
+                            len(arr),
+                            width_fraction=scatter_width_fraction,
+                        )
                         ax.scatter(
                             (x_pos[idx_oc] + offset) + jitter,
                             arr,
-                            alpha=0.15, s=20, zorder=0,
+                            alpha=resolved_scatter_alpha, s=20, zorder=0,
                             color=color_id,
                             marker=point_marker_value,
                         )
 
             if cat_x_pos is not None and cat_labels is not None:
-                ax.set_xticks(cat_x_pos + bar_width*(len(combos)/2 - 0.5))
+                ax.set_xticks(cat_x_pos)
                 ax.set_xticklabels(cat_labels, rotation=45, ha='right')
+                _set_barplot_xlim(ax, cat_x_pos, resolved_bar_width, bars_per_slot=combo_count)
             else:
                 ax.set_visible(False)
             if ylim is not None:
