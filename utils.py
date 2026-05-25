@@ -2300,7 +2300,23 @@ def _resolve_alpha(alpha, default=DEFAULT_BARPLOT_SCATTER_ALPHA, name="scatter_a
     return value
 
 
-def _barplot_figsize(ncols=1, nrows=1):
+def _barplot_figsize(ncols=1, nrows=1, figsize=None):
+    if figsize is not None:
+        if isinstance(figsize, str):
+            raise ValueError("figsize must contain exactly two values: [width, height].")
+        try:
+            values = list(figsize)
+        except TypeError:
+            raise ValueError("figsize must contain exactly two values: [width, height].")
+        if len(values) != 2:
+            raise ValueError("figsize must contain exactly two values: [width, height].")
+        try:
+            width, height = (float(values[0]), float(values[1]))
+        except (TypeError, ValueError):
+            raise ValueError("figsize values must be positive finite numbers.")
+        if not all(np.isfinite(v) and v > 0 for v in (width, height)):
+            raise ValueError("figsize values must be positive finite numbers.")
+        return width, height
     return (
         BARPLOT_AXIS_WIDTH * max(int(ncols), 1),
         BARPLOT_AXIS_HEIGHT * max(int(nrows), 1),
@@ -3216,6 +3232,7 @@ def plot_category_relative_drop_bar(
     bar_width=None,
     scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
     scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
+    figsize=None,
 ):
     """
     Plot category-specific relative differentiation drop at one damage level.
@@ -3326,7 +3343,7 @@ def plot_category_relative_drop_bar(
     resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=_barplot_figsize())
+        fig, ax = plt.subplots(figsize=_barplot_figsize(figsize=figsize))
     else:
         fig = ax.figure
     _apply_barplot_axis_aspect(ax)
@@ -3448,6 +3465,7 @@ def plot_total_differentiation_bar(
     bar_width=None,
     scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
     scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
+    figsize=None,
     tolerance=1e-6,
 ):
     """
@@ -3558,7 +3576,7 @@ def plot_total_differentiation_bar(
     resolved_bar_width = _resolve_bar_width(bar_width)
     resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
 
-    fig, ax = plt.subplots(figsize=_barplot_figsize())
+    fig, ax = plt.subplots(figsize=_barplot_figsize(figsize=figsize))
     _apply_barplot_axis_aspect(ax)
     x_pos = np.arange(len(records))
     means = [rec["mean"] for rec in records]
@@ -4723,6 +4741,7 @@ def plot_categ_differences(
     bar_width=None,
     scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
     scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
+    figsize=None,
 ):
     """
     Plot either:
@@ -5388,7 +5407,7 @@ def plot_categ_differences(
         resolved_bar_width = _resolve_bar_width(bar_width)
         fig, axes = plt.subplots(
             num_rows, n_categories,
-            figsize=_barplot_figsize(n_categories, num_rows),
+            figsize=_barplot_figsize(n_categories, num_rows, figsize=figsize),
             sharey=True
         )
         axes = np.array(axes, ndmin=2)  # ensure 2D
@@ -5506,7 +5525,12 @@ def plot_categ_differences(
     else:
         # comparison=True => group all combos in fewer subplots
         # (1 subplot per category, grouped bars for each combo).
-        fig, axes = plt.subplots(1, n_categories, figsize=_barplot_figsize(n_categories), sharey=True)
+        fig, axes = plt.subplots(
+            1,
+            n_categories,
+            figsize=_barplot_figsize(n_categories, figsize=figsize),
+            sharey=True,
+        )
         if n_categories == 1:
             axes = [axes]
 
