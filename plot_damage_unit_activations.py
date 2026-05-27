@@ -15,6 +15,7 @@ image-by-unit matrix per file.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import pickle
 import re
@@ -400,6 +401,44 @@ def sd(values: Sequence[float]) -> float:
     return float(np.std(arr, ddof=1))
 
 
+def stable_seed(key: Any, base_seed: int) -> int:
+    digest = hashlib.md5(repr(key).encode("utf-8")).hexdigest()
+    return int((int(digest[:8], 16) + int(base_seed)) % (2**32 - 1))
+
+
+def bootstrap_mean_ci(
+    values: Sequence[float],
+    weights: Optional[Sequence[float]] = None,
+    n_boot: int = 2000,
+    ci: float = 95.0,
+    seed: int = 0,
+) -> Tuple[float, float]:
+    values_arr = np.asarray(values, dtype=float)
+    if weights is None:
+        weights_arr = np.ones_like(values_arr, dtype=float)
+    else:
+        weights_arr = np.asarray(weights, dtype=float)
+
+    valid = np.isfinite(values_arr) & np.isfinite(weights_arr) & (weights_arr > 0)
+    values_arr = values_arr[valid]
+    weights_arr = weights_arr[valid]
+    if len(values_arr) == 0:
+        return float("nan"), float("nan")
+    if len(values_arr) == 1 or n_boot <= 0:
+        mean = float(np.average(values_arr, weights=weights_arr))
+        return mean, mean
+
+    rng = np.random.default_rng(int(seed))
+    boot_means = np.empty(int(n_boot), dtype=float)
+    for i in range(int(n_boot)):
+        idx = rng.integers(0, len(values_arr), size=len(values_arr))
+        boot_means[i] = float(np.average(values_arr[idx], weights=weights_arr[idx]))
+
+    alpha = (100.0 - float(ci)) / 2.0
+    low, high = np.percentile(boot_means, [alpha, 100.0 - alpha])
+    return float(low), float(high)
+
+
 def collect_iteration_summaries(
     config: Mapping[str, Any],
     selected_units: pd.DataFrame,
@@ -485,7 +524,13 @@ def collect_iteration_summaries(
     return pd.DataFrame(activation_rows), pd.DataFrame(mw_rows)
 
 
-def pooled_activation_summary(rows: pd.DataFrame, group_cols: Sequence[str]) -> pd.DataFrame:
+def pooled_activation_summary(
+    rows: pd.DataFrame,
+    group_cols: Sequence[str],
+    bootstrap_iterations: int,
+    bootstrap_ci: float,
+    bootstrap_seed: int,
+) -> pd.DataFrame:
     if rows.empty:
         return rows.copy()
 
@@ -506,10 +551,20 @@ def pooled_activation_summary(rows: pd.DataFrame, group_cols: Sequence[str]) -> 
         else:
             ss = ((n - 1) * (sds ** 2) + n * ((means - mean) ** 2)).sum()
             pooled_sd = float(math.sqrt(max(ss / (total_n - 1), 0.0)))
+        group_key = tuple(group[col].iloc[0] for col in group_cols if col in group.columns)
+        ci_low, ci_high = bootstrap_mean_ci(
+            means,
+            weights=n,
+            n_boot=int(bootstrap_iterations),
+            ci=float(bootstrap_ci),
+            seed=stable_seed(group_key, bootstrap_seed),
+        )
         return pd.Series(
             {
                 "mean": mean,
                 "sd": pooled_sd,
+                "ci_low": ci_low,
+                "ci_high": ci_high,
                 "n": int(total_n),
                 "n_permutations": int(group.loc[valid, "perm"].nunique()),
             }
@@ -518,20 +573,38 @@ def pooled_activation_summary(rows: pd.DataFrame, group_cols: Sequence[str]) -> 
     return rows.groupby(list(group_cols)).apply(pool).reset_index()
 
 
-def mw_summary(rows: pd.DataFrame, group_cols: Sequence[str]) -> pd.DataFrame:
+def mw_summary(
+    rows: pd.DataFrame,
+    group_cols: Sequence[str],
+    bootstrap_iterations: int,
+    bootstrap_ci: float,
+    bootstrap_seed: int,
+) -> pd.DataFrame:
     if rows.empty:
         return rows.copy()
-    summary = (
-        rows.groupby(list(group_cols), as_index=False)
-        .agg(
-            mean=("mannwhitney_u", "mean"),
-            sd=("mannwhitney_u", lambda values: sd(values)),
-            n=("mannwhitney_u", "count"),
-            n_permutations=("perm", "nunique"),
+
+    def summarise(group: pd.DataFrame) -> pd.Series:
+        values = pd.to_numeric(group["mannwhitney_u"], errors="coerce").to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        group_key = tuple(group[col].iloc[0] for col in group_cols if col in group.columns)
+        ci_low, ci_high = bootstrap_mean_ci(
+            values,
+            n_boot=int(bootstrap_iterations),
+            ci=float(bootstrap_ci),
+            seed=stable_seed(group_key, bootstrap_seed),
         )
-        .sort_values(list(group_cols))
-    )
-    return summary.reset_index(drop=True)
+        return pd.Series(
+            {
+                "mean": float(np.mean(values)) if len(values) else np.nan,
+                "sd": sd(values),
+                "ci_low": ci_low,
+                "ci_high": ci_high,
+                "n": int(len(values)),
+                "n_permutations": int(group["perm"].nunique()),
+            }
+        )
+
+    return rows.groupby(list(group_cols)).apply(summarise).reset_index().sort_values(list(group_cols)).reset_index(drop=True)
 
 
 def configure_plot_style() -> None:
@@ -558,6 +631,24 @@ def save_figure(fig: plt.Figure, out_base: Path, dpi: int) -> None:
     plt.close(fig)
 
 
+def errorbar_values(summary: pd.DataFrame, mode: str) -> Any:
+    if mode == "sd":
+        return summary["sd"].to_numpy(dtype=float)
+    if mode == "bootstrap_ci":
+        lower = summary["mean"].to_numpy(dtype=float) - summary["ci_low"].to_numpy(dtype=float)
+        upper = summary["ci_high"].to_numpy(dtype=float) - summary["mean"].to_numpy(dtype=float)
+        return np.vstack([np.clip(lower, 0, None), np.clip(upper, 0, None)])
+    raise ValueError(f"Unsupported error bar mode: {mode}")
+
+
+def errorbar_label(mode: str, ci: float) -> str:
+    if mode == "sd":
+        return "SD"
+    if mode == "bootstrap_ci":
+        return f"{ci:g}% bootstrap CI"
+    return str(mode)
+
+
 def plot_activation_summary(
     summary: pd.DataFrame,
     title: str,
@@ -565,6 +656,8 @@ def plot_activation_summary(
     output_base: Path,
     dpi: int,
     figure_size: Sequence[float],
+    error_bar_mode: str,
+    bootstrap_ci: float,
 ) -> None:
     fig, ax = plt.subplots(figsize=tuple(figure_size))
     for status, linestyle, label in [("target", "-", "Target images"), ("non_target", "--", "Non-target images")]:
@@ -575,7 +668,7 @@ def plot_activation_summary(
         ax.errorbar(
             sub["damage_level"],
             sub["mean"],
-            yerr=sub["sd"],
+            yerr=errorbar_values(sub, error_bar_mode),
             marker="o",
             linestyle=linestyle,
             linewidth=2.0,
@@ -584,7 +677,7 @@ def plot_activation_summary(
             color=line_color,
             label=label,
         )
-    ax.set_title(title)
+    ax.set_title(f"{title} | {errorbar_label(error_bar_mode, bootstrap_ci)}")
     ax.set_xlabel("Damage level")
     ax.set_ylabel("Activation")
     ax.grid(True, axis="y", color="#dee2e6", linewidth=0.8)
@@ -601,13 +694,15 @@ def plot_mw_summary(
     dpi: int,
     figure_size: Sequence[float],
     normalize: bool,
+    error_bar_mode: str,
+    bootstrap_ci: float,
 ) -> None:
     sub = summary.sort_values("damage_level")
     fig, ax = plt.subplots(figsize=tuple(figure_size))
     ax.errorbar(
         sub["damage_level"],
         sub["mean"],
-        yerr=sub["sd"],
+        yerr=errorbar_values(sub, error_bar_mode),
         marker="o",
         linestyle="-",
         linewidth=2.0,
@@ -615,7 +710,7 @@ def plot_mw_summary(
         capsize=3,
         color=color,
     )
-    ax.set_title(title)
+    ax.set_title(f"{title} | {errorbar_label(error_bar_mode, bootstrap_ci)}")
     ax.set_xlabel("Damage level")
     ax.set_ylabel("Normalized Mann-Whitney U" if normalize else "Mann-Whitney U")
     ax.grid(True, axis="y", color="#dee2e6", linewidth=0.8)
@@ -632,14 +727,30 @@ def plot_all(config: Mapping[str, Any], activation_rows: pd.DataFrame, mw_rows: 
     plot_individual = bool(config.get("plot_individual_units", True))
     plot_category_average = bool(config.get("plot_category_averages", True))
     plot_joint_average = bool(config.get("plot_joint_average", True))
+    error_bar_modes = list(config.get("error_bars", ["sd", "bootstrap_ci"]))
+    bootstrap_iterations = int(config.get("bootstrap_iterations", 2000))
+    bootstrap_ci = float(config.get("bootstrap_ci", 95.0))
+    bootstrap_seed = int(config.get("bootstrap_seed", 1234))
 
     combo_cols = ["damage_type", "damage_layer", "activation_layer"]
     combos = activation_rows[combo_cols].drop_duplicates().sort_values(combo_cols)
 
     base_activation_group = combo_cols + ["target_category", "rank", "unit", "target_status", "damage_level"]
     base_mw_group = combo_cols + ["target_category", "rank", "unit", "damage_level"]
-    activation_unit_summary = pooled_activation_summary(activation_rows, base_activation_group)
-    mw_unit_summary = mw_summary(mw_rows, base_mw_group)
+    activation_unit_summary = pooled_activation_summary(
+        activation_rows,
+        base_activation_group,
+        bootstrap_iterations,
+        bootstrap_ci,
+        bootstrap_seed,
+    )
+    mw_unit_summary = mw_summary(
+        mw_rows,
+        base_mw_group,
+        bootstrap_iterations,
+        bootstrap_ci,
+        bootstrap_seed,
+    )
 
     for _, combo in combos.iterrows():
         combo_filter = np.ones(len(activation_rows), dtype=bool)
@@ -676,81 +787,108 @@ def plot_all(config: Mapping[str, Any], activation_rows: pd.DataFrame, mw_rows: 
                 ]
                 label = f"{category} rank {rank}, unit {unit}"
                 file_stub = f"{combo_name}_{sanitize_filename(category)}_rank{rank}_unit{unit}"
-                plot_activation_summary(
-                    act_sub,
-                    f"Activation | {label} | damage {combo['damage_layer']}",
-                    color,
-                    output_dir / "activation" / "individual_units" / file_stub,
-                    dpi,
-                    figure_size,
-                )
-                plot_mw_summary(
-                    mw_sub,
-                    f"Selectivity | {label} | damage {combo['damage_layer']}",
-                    color,
-                    output_dir / "mannwhitney_u" / "individual_units" / file_stub,
-                    dpi,
-                    figure_size,
-                    normalize_u,
-                )
+                for error_bar_mode in error_bar_modes:
+                    plot_activation_summary(
+                        act_sub,
+                        f"Activation | {label} | damage {combo['damage_layer']}",
+                        color,
+                        output_dir / "activation" / error_bar_mode / "individual_units" / file_stub,
+                        dpi,
+                        figure_size,
+                        error_bar_mode,
+                        bootstrap_ci,
+                    )
+                    plot_mw_summary(
+                        mw_sub,
+                        f"Selectivity | {label} | damage {combo['damage_layer']}",
+                        color,
+                        output_dir / "mannwhitney_u" / error_bar_mode / "individual_units" / file_stub,
+                        dpi,
+                        figure_size,
+                        normalize_u,
+                        error_bar_mode,
+                        bootstrap_ci,
+                    )
 
         if plot_category_average:
             act_cat_summary = pooled_activation_summary(
                 activation_rows.loc[combo_filter],
                 combo_cols + ["target_category", "target_status", "damage_level"],
+                bootstrap_iterations,
+                bootstrap_ci,
+                bootstrap_seed,
             )
             mw_cat_summary = mw_summary(
                 mw_rows.loc[mw_filter],
                 combo_cols + ["target_category", "damage_level"],
+                bootstrap_iterations,
+                bootstrap_ci,
+                bootstrap_seed,
             )
             for category in sorted(act_cat_summary["target_category"].unique(), key=natural_key):
                 color = CATEGORY_COLORS.get(category, "#1f77b4")
                 file_stub = f"{combo_name}_{sanitize_filename(category)}_top{top_n}_average"
-                plot_activation_summary(
-                    act_cat_summary[act_cat_summary["target_category"] == category],
-                    f"Activation | {category} top {top_n} average | damage {combo['damage_layer']}",
-                    color,
-                    output_dir / "activation" / "category_average" / file_stub,
-                    dpi,
-                    figure_size,
-                )
-                plot_mw_summary(
-                    mw_cat_summary[mw_cat_summary["target_category"] == category],
-                    f"Selectivity | {category} top {top_n} average | damage {combo['damage_layer']}",
-                    color,
-                    output_dir / "mannwhitney_u" / "category_average" / file_stub,
-                    dpi,
-                    figure_size,
-                    normalize_u,
-                )
+                for error_bar_mode in error_bar_modes:
+                    plot_activation_summary(
+                        act_cat_summary[act_cat_summary["target_category"] == category],
+                        f"Activation | {category} top {top_n} average | damage {combo['damage_layer']}",
+                        color,
+                        output_dir / "activation" / error_bar_mode / "category_average" / file_stub,
+                        dpi,
+                        figure_size,
+                        error_bar_mode,
+                        bootstrap_ci,
+                    )
+                    plot_mw_summary(
+                        mw_cat_summary[mw_cat_summary["target_category"] == category],
+                        f"Selectivity | {category} top {top_n} average | damage {combo['damage_layer']}",
+                        color,
+                        output_dir / "mannwhitney_u" / error_bar_mode / "category_average" / file_stub,
+                        dpi,
+                        figure_size,
+                        normalize_u,
+                        error_bar_mode,
+                        bootstrap_ci,
+                    )
 
         if plot_joint_average:
             act_joint = pooled_activation_summary(
                 activation_rows.loc[combo_filter],
                 combo_cols + ["target_status", "damage_level"],
+                bootstrap_iterations,
+                bootstrap_ci,
+                bootstrap_seed,
             )
             mw_joint = mw_summary(
                 mw_rows.loc[mw_filter],
                 combo_cols + ["damage_level"],
+                bootstrap_iterations,
+                bootstrap_ci,
+                bootstrap_seed,
             )
             file_stub = f"{combo_name}_joint_top{top_n}_average"
-            plot_activation_summary(
-                act_joint,
-                f"Activation | joint top {top_n} average | damage {combo['damage_layer']}",
-                CATEGORY_COLORS["joint"],
-                output_dir / "activation" / "joint_average" / file_stub,
-                dpi,
-                figure_size,
-            )
-            plot_mw_summary(
-                mw_joint,
-                f"Selectivity | joint top {top_n} average | damage {combo['damage_layer']}",
-                CATEGORY_COLORS["joint"],
-                output_dir / "mannwhitney_u" / "joint_average" / file_stub,
-                dpi,
-                figure_size,
-                normalize_u,
-            )
+            for error_bar_mode in error_bar_modes:
+                plot_activation_summary(
+                    act_joint,
+                    f"Activation | joint top {top_n} average | damage {combo['damage_layer']}",
+                    CATEGORY_COLORS["joint"],
+                    output_dir / "activation" / error_bar_mode / "joint_average" / file_stub,
+                    dpi,
+                    figure_size,
+                    error_bar_mode,
+                    bootstrap_ci,
+                )
+                plot_mw_summary(
+                    mw_joint,
+                    f"Selectivity | joint top {top_n} average | damage {combo['damage_layer']}",
+                    CATEGORY_COLORS["joint"],
+                    output_dir / "mannwhitney_u" / error_bar_mode / "joint_average" / file_stub,
+                    dpi,
+                    figure_size,
+                    normalize_u,
+                    error_bar_mode,
+                    bootstrap_ci,
+                )
 
     table_dir = output_dir / "tables"
     table_dir.mkdir(parents=True, exist_ok=True)

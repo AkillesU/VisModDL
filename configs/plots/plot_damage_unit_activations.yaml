@@ -10,12 +10,16 @@ unit_layer: "module.IT"
 
 categories: ["animal", "face", "object", "place"]
 ranking_score_prefix: "hg"
-top_n_units: 1
+top_n_units: 10
 mannwhitney_normalize: false
+error_bars: ["sd", "bootstrap_ci"]
+bootstrap_iterations: 2000
+bootstrap_ci: 95
+bootstrap_seed: 1234
 
 plot_individual_units: true
 plot_category_averages: true
 plot_joint_average: true
 
-figure_size: [6, 6]
+figure_size: [3, 3]
 dpi: 400
