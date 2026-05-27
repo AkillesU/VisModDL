@@ -1,14 +1,10 @@
 ﻿#!/usr/bin/env python3
 """
-it2v1_input_contrib.py  ·  V1-to-input contributon with PFI
+V1-to-input contribution analysis for top IT units.
 
-For a top-fraction of IT units: 
-1. Compute their activation-based loss.
-2. Backpropagate to V1 feature-map outputs to get per-unit gradients.
-3. Weight each V1 activation by its gradient (|grad * activation|) → per-unit importance.
-4. Project each V1 spatial unit back to input-pixel coordinates via receptive-field centroids.
-5. Splat per-unit importance into a 224×224 input-space importance map, normalize.
-6. Compute Peripheral–Foveal Index of that map and plot a heatmap.
+For each configured top fraction of IT units, compute V1 gradient maps for
+selective units and random unit samples, then save per-feature-map statistics,
+summary plots, diagnostic histograms, and configured per-image overlays.
 """
 
 from __future__ import annotations
@@ -16,10 +12,8 @@ from __future__ import annotations
 import sys
 import yaml
 import pathlib
-import math
 import torch
 import torch.nn as nn
-import torchvision.transforms as T
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -27,92 +21,36 @@ from PIL import Image
 from tqdm import tqdm
 from scipy.stats import mannwhitneyu, ttest_ind
 import os
-from scipy.ndimage import gaussian_filter
 import random
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from statsmodels.stats.multitest import multipletests
-from typing import List, Iterable
+from typing import List
 import threading
-import gc, uuid
+import gc
+from utils import (
+    build_imagenet_transform,
+    cliffs_delta,
+    hedges_g,
+    iter_image_paths,
+    iter_rgb_images,
+    load_rgb_image,
+    load_model as load_project_model,
+    mann_whitney_u_stat,
+)
 
-_thread_cache = threading.local()      # each executor thread gets its own slot
+_thread_cache = threading.local()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Utility helpers – unchanged
-# ──────────────────────────────────────────────────────────────────────────────
-# ------------------------------------------------------------------
-# Globals initialised once in main()
-# ------------------------------------------------------------------
-GLOBAL_TFM   : T.Compose | None = None   # image pre-processing
+GLOBAL_TFM = None
 GLOBAL_DEVICE: torch.device | None = None
-
-
-def permutation_test(sel_vals, rand_vals, n_permutations=1000, alternative='two-sided', random_state=None):
-    """
-    Permutation test for difference in means between two groups.
-    Returns (observed_stat, p_value).
-    """
-    rng = np.random.default_rng(random_state)
-    sel_vals = np.asarray(sel_vals)
-    rand_vals = np.asarray(rand_vals)
-    n_sel = len(sel_vals)
-    n_rand = len(rand_vals)
-    all_vals = np.concatenate([sel_vals, rand_vals])
-    group_labels = np.array([0]*n_sel + [1]*n_rand)
-    observed = np.mean(sel_vals) - np.mean(rand_vals)
-    perm_stats = []
-    for _ in range(n_permutations):
-        rng.shuffle(group_labels)
-        perm_sel = all_vals[group_labels == 0]
-        perm_rand = all_vals[group_labels == 1]
-        # If group sizes change due to shuffling, skip this permutation
-        if len(perm_sel) != n_sel or len(perm_rand) != n_rand:
-            continue
-        stat = np.mean(perm_sel) - np.mean(perm_rand)
-        perm_stats.append(stat)
-    perm_stats = np.array(perm_stats)
-    if alternative == 'two-sided':
-        p = np.mean(np.abs(perm_stats) >= np.abs(observed))
-    elif alternative == 'greater':
-        p = np.mean(perm_stats >= observed)
-    else:
-        p = np.mean(perm_stats <= observed)
-    return observed, p
-
-# ------------------------------------------------------------------
-def mw_u(a: np.ndarray, b: np.ndarray) -> float:
-    """
-    Mann–Whitney U statistic for the first sample (two-sided test call).
-    Range: 0 .. (len(a)*len(b)). Larger ⇒ sample a tends to be greater than b.
-    """
-    return mannwhitneyu(a, b, alternative='two-sided').statistic
-
-def hedges_g(a: np.ndarray, b: np.ndarray) -> float:
-    """
-    Hedges’ g (bias‑corrected pooled‑SD Cohen’s d).
-    Works with unequal sample sizes & variances.
-    """
-    n1, n2   = len(a), len(b)
-    s1, s2   = a.std(ddof=1), b.std(ddof=1)
-    sp       = math.sqrt(((n1-1)*s1**2 + (n2-1)*s2**2) / (n1 + n2 - 2) + 1e-12)
-    d        = (a.mean() - b.mean()) / sp
-    J        = 1 - (3 / (4*(n1 + n2) - 9))      # bias‑correction
-    return d * J
-# ------------------------------------------------------------------
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Model & image helpers
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 def _slice_rand_for_index(rand_all: np.ndarray, idx: int, N_expected: int | None) -> np.ndarray:
     """
     Return the per-image random tensor for index `idx` from a container that may be:
-      [R, N, C, H, W]  → returns [R, C, H, W]
-      [N, C, H, W]     → returns [C, H, W]
-      [R, H, W, N]     → returns [R, H, W]   (discouraged but handled)
-      [N, H, W]        → returns [H, W]      (fully channel-collapsed; caller should guard)
-      [C, H, W]        → returns [C, H, W]   (already per-image)
+      [R, N, C, H, W]  -> returns [R, C, H, W]
+      [N, C, H, W]     -> returns [C, H, W]
+      [R, H, W, N]     -> returns [R, H, W]   (discouraged but handled)
+      [N, H, W]        -> returns [H, W]      (fully channel-collapsed; caller should guard)
+      [C, H, W]        -> returns [C, H, W]   (already per-image)
     We prefer to use `N_expected` (from the selective array shape) to disambiguate.
     """
     nd = rand_all.ndim
@@ -137,7 +75,7 @@ def _slice_rand_for_index(rand_all: np.ndarray, idx: int, N_expected: int | None
     if nd == 3:
         # Could be [N, H, W] (bad for overlays) or [C, H, W] (already per-image)
         if N_expected is not None and rand_all.shape[0] == N_expected:
-            # [N, H, W] → returns [H, W] (caller may reject)
+            # [N, H, W] -> returns [H, W] (caller may reject)
             return rand_all[idx]
         # Assume [C, H, W]
         return rand_all
@@ -147,93 +85,87 @@ def _slice_rand_for_index(rand_all: np.ndarray, idx: int, N_expected: int | None
 
 
 def load_model(mcfg, device):
-    import cornet
-    ctor = {
-        "cornet_rt": cornet.cornet_rt,
-        "cornet_s" : cornet.cornet_s,
-        "cornet_z" : cornet.cornet_z
-    }[mcfg["name"].lower()]
-    
-    # Map "pretrained" string to True, everything else to False
-    is_pretrained = (mcfg.get("weights", "pretrained").lower() == "pretrained")
-    
-    kwargs = {"pretrained": is_pretrained}
-    kwargs["map_location"] = (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
-    
-    if mcfg["name"].lower() == "cornet_rt":
-        kwargs["times"] = mcfg.get("time_steps", 5)
-    
-    return ctor(**kwargs).to(device).eval()
+    model_info = {
+        "source": mcfg.get("source", "cornet"),
+        "repo": mcfg.get("repo", "-"),
+        "name": mcfg["name"],
+        "weights": mcfg.get("weights", ""),
+    }
+    if "time_steps" in mcfg:
+        model_info["time_steps"] = mcfg["time_steps"]
+
+    pretrained = str(mcfg.get("weights", "pretrained")).lower() == "pretrained"
+    model, _ = load_project_model(model_info, pretrained=pretrained)
+    return model.to(device).eval()
 
 
-def build_transform():
-    return T.Compose([
-        T.Resize(256), T.CenterCrop(224), T.ToTensor(),
-        T.Normalize([0.485,0.456,0.406], [0.229,0.224,0.225]),
-    ])
+def _as_list(value) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if v not in (None, "")]
+    return [str(value)]
 
 
-def iter_imgs(folder: pathlib.Path) -> Iterable[Image.Image]:
-    """Yield all RGB images in *folder* (jpg/jpeg/png), sorted alphabetically."""
-    for p in sorted(folder.iterdir()):
-        if p.suffix.lower() in {".jpg", ".jpeg", ".png"}:
-            yield Image.open(p).convert("RGB")
+def _category_stems(category: str) -> set[str]:
+    category = str(category).strip().lower()
+    stems = {category}
+    if category.endswith("s"):
+        stems.add(category[:-1])
+    return {stem for stem in stems if stem}
 
-# ──────────────────────────────────────────────────────────────────────────────
-# NEW helper – gather images from (possibly) multiple categories
-# ──────────────────────────────────────────────────────────────────────────────
+
+def _matches_category(path: pathlib.Path, category: str) -> bool:
+    stem = path.stem.lower()
+    return any(stem.startswith(prefix) for prefix in _category_stems(category))
+
+
+def _load_images_from_folder(folder: pathlib.Path, categories: list[str] | None = None) -> list[Image.Image]:
+    paths = list(iter_image_paths(folder))
+    if categories:
+        paths = [
+            path for path in paths
+            if any(_matches_category(path, category) for category in categories)
+        ]
+    return [load_rgb_image(path) for path in paths]
+
 
 def gather_images(cfg: dict) -> tuple[List[Image.Image], str]:
-    """Return (images, category_tag) according to the new config logic."""
+    """Return the configured image set and a compact category tag."""
 
     max_imgs = cfg.get("max_images", 20)
-    img_folders: List[pathlib.Path] = []
 
-    # Priority 1 – explicit directory list
     if cfg.get("image_category_dirs"):
-        img_folders = [pathlib.Path(d).expanduser() for d in cfg["image_category_dirs"]]
-        categories = [f.name for f in img_folders]
-
-    elif cfg.get("image_categories"):
-        # Priority 2 – sibling category names
-        base = pathlib.Path(cfg["category_images"]).expanduser().resolve()
-        if not base.parent.exists():
-            raise FileNotFoundError(f"Base directory {base.parent} not found")
-        categories = list(cfg["image_categories"])
-        img_folders = [base.parent / c for c in categories]
-
+        folders = [pathlib.Path(d).expanduser().resolve() for d in cfg["image_category_dirs"]]
+        categories = [folder.name for folder in folders]
+        source_label = ", ".join(str(folder) for folder in folders)
+        imgs = []
+        for folder in folders:
+            if not folder.exists():
+                print(f"[WARN] Folder {folder} missing - skipped.")
+                continue
+            imgs.extend(iter_rgb_images(folder))
     else:
-        # Fallback – original single folder
         base = pathlib.Path(cfg["category_images"]).expanduser().resolve()
+        source_label = str(base)
         if not base.exists():
             raise FileNotFoundError(f"Image directory {base} does not exist")
-        img_folders = [base]
-        categories = [cfg["category"]]
 
-    # Build a compact tag: first letter of each category, sorted & uniq‑preserve
-    cat_tag = "".join(sorted({c[0].lower() for c in categories}))
+        categories = _as_list(cfg.get("image_categories")) or [str(cfg["category"])]
+        category_dirs = [base / category for category in categories if (base / category).is_dir()]
+        if category_dirs:
+            imgs = []
+            for folder in category_dirs:
+                imgs.extend(iter_rgb_images(folder))
+        else:
+            imgs = _load_images_from_folder(base, categories)
 
-    imgs: List[Image.Image] = []
-    for folder in img_folders:
-        if not folder.exists():
-            print(f"[WARN] Folder {folder} missing – skipped.")
-            continue
-        imgs.extend(iter_imgs(folder))
+    cat_tag = "".join(sorted({category[0].lower() for category in categories if category}))
 
     if not imgs:
-        raise RuntimeError("No images found across the requested categories.")
+        raise RuntimeError(f"No images found for categories {categories} in {source_label}.")
 
     return imgs[:max_imgs], cat_tag
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Receptive‑field utility (unchanged)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def rf_px(fy, fx, stride, padding, kernel):
-    # center = (fy * stride + (kernel-1)/2 - padding)
-    cy = fy * stride + (kernel-1)/2 - padding
-    cx = fx * stride + (kernel-1)/2 - padding
-    return cy, cx
 
 
 class HookBuffers:
@@ -250,10 +182,9 @@ def setup_hooks(model: nn.Module) -> HookBuffers:
     bufs = HookBuffers()
     mods = dict(model.named_modules())
 
-    v1 = mods["module.V1.nonlin_input"]    # will receive grad-hook later
+    v1 = mods["module.V1.nonlin_input"]
     target_names = {"module.IT", "module.V1.nonlin_input"}
 
-    # forward hooks – save activations
     def make_fwd_hook(name):
         def f(_m, _in, out): bufs.out[name] = out
         return f
@@ -262,15 +193,13 @@ def setup_hooks(model: nn.Module) -> HookBuffers:
         if name in target_names:
             mod.register_forward_hook(make_fwd_hook(name))
 
-    # gradient hook on V1 output
     def v1_grad_hook(grad): bufs.grad["module.V1.nonlin_input"] = grad
     def v1_fwd_hook(_m, _i, out):
-        out.register_hook(v1_grad_hook)   # attach the gradient hook
-        # DO NOT return anything → return value is None
+        out.register_hook(v1_grad_hook)
 
     v1.register_forward_hook(v1_fwd_hook)
 
-    return bufs       # <-- one buffers object per model
+    return bufs
 
 
 def flat_to_cyx(idx, C, H, W):
@@ -333,7 +262,7 @@ def collapse_random(arr: np.ndarray, method: str | None):
     arr shape: [R, N_img, C, H, W]
     returns (collapsed_arr, collapsed_flag)
       - if collapsed: shape [N_img, C, H, W]
-      - else: original arr
+      - otherwise: unchanged input array
     """
     if method is None:
         return arr, False
@@ -353,7 +282,7 @@ def _resize_map_to_img(eff_map: np.ndarray, target_hw: tuple[int,int]) -> np.nda
     return np.array(pil, dtype=np.float32)
 
 def _ensure_uint8_rgb(img: np.ndarray) -> np.ndarray:
-    """Accepts HxW, HxWx1, or HxWx3 in [0..1] or [0..255] → returns HxWx3 uint8."""
+    """Accept HxW, HxWx1, or HxWx3 data and return HxWx3 uint8."""
     if img.dtype != np.uint8:
         if img.max() <= 1.0:
             img = (np.clip(img, 0, 1) * 255.0).astype(np.uint8)
@@ -373,10 +302,9 @@ def _compute_effect_map_for_image(sel_img: np.ndarray,
     sel_img:  [C, H, W]
     rand_img: [R, C, H, W]  (not collapsed)
               [C, H, W]     (collapsed across repeats)
-              [H, W]        (fully collapsed across repeats and channels)  ← defensive support
+              [H, W]        (fully collapsed across repeats and channels)
     Returns eff_map: [H, W]
     """
-    # --- shapes ---
     if sel_img.ndim != 3:
         raise ValueError(f"Expected sel_img as [C,H,W], got shape {sel_img.shape}")
     C, H, W = sel_img.shape
@@ -384,18 +312,18 @@ def _compute_effect_map_for_image(sel_img: np.ndarray,
     # build a function to compute the effect between two 1-D vectors
     def _eff(a: np.ndarray, b: np.ndarray) -> float:
         if effect_size == "hedges_g":
-            return hedges_g(a, b)
+            return hedges_g(a, b, eps=1e-12)
         elif effect_size == "cliffs_delta":
             return cliffs_delta(a, b)
         elif effect_size == "mw_u":
-            return mw_u(a, b)
+            return mann_whitney_u_stat(a, b)
         else:
             raise ValueError(f"Unknown effect_size: {effect_size}")
 
     eff_map = np.empty((H, W), dtype=np.float32)
 
     if rand_img.ndim == 4:
-        # [R, C, H, W] → flatten repeats×channels per voxel
+        # [R, C, H, W]: flatten repeats and channels per voxel.
         for y in range(H):
             for x in range(W):
                 a = sel_img[:, y, x]                      # len = C
@@ -403,7 +331,7 @@ def _compute_effect_map_for_image(sel_img: np.ndarray,
                 eff_map[y, x] = _eff(a, b)
 
     elif rand_img.ndim == 3:
-        # [C, H, W] → channel-wise comparison per voxel
+        # [C, H, W]: channel-wise comparison per voxel.
         if rand_img.shape[0] != C:
             raise ValueError(f"rand_img first dim (C={rand_img.shape[0]}) "
                              f"does not match sel_img C={C}")
@@ -414,9 +342,8 @@ def _compute_effect_map_for_image(sel_img: np.ndarray,
                 eff_map[y, x] = _eff(a, b)
 
     elif rand_img.ndim == 2:
-        # [H, W] → fully collapsed random map. We can only compare each voxel’s
-        # scalar to the selective channel distribution by repeating that scalar.
-        # This preserves directionality for Hedges g & MW U; Cliff’s δ is defined
+        # [H, W]: compare each scalar voxel to the selective channel distribution.
+        # This preserves directionality for Hedges g and MW U; Cliff's delta is defined
         # between two samples and still works with a constant sample for b.
         import warnings
         warnings.warn("[per_image_overlay] rand_img is 2-D [H,W]; "
@@ -456,17 +383,6 @@ def _normalise_for_viz(eff_map: np.ndarray,
     return eff_map, {}
 
 
-def cliffs_delta(a: np.ndarray, b: np.ndarray) -> float:
-    """
-    Cliff’s δ for two 1‑D vectors (uses pairwise compare, still fast for <10⁴ items).
-    Range −1‥+1.  Positive ⇒ selective > random.
-    """
-    a = a.ravel();  b = b.ravel()
-    gt = (a[:, None] > b).sum()
-    lt = (a[:, None] < b).sum()
-    return (gt - lt) / (len(a) * len(b) + 1e-12)
-
-
 def run_per_image_overlays(
     all_v1_grads_sel: np.ndarray,             # [N, C, H, W]
     all_v1_grads_rand: np.ndarray,            # [R, N, C, H, W] or [N, C, H, W] if collapsed
@@ -494,13 +410,8 @@ def run_per_image_overlays(
     overlay_dir.mkdir(parents=True, exist_ok=True)
 
     N, C, H, W = all_v1_grads_sel.shape
-    overlay_collapse_method = per_img_cfg.get("collapse_method", "mean")  # "mean" | "median" | None
+    overlay_collapse_method = per_img_cfg.get("collapse_method", "mean")
     rand_local = all_v1_grads_rand
-    print("\n[TRACE-RAND] ---- Enter run_per_image_overlays ----")
-    print("   rand_local shape :", np.shape(rand_local))
-    print("   selective shape  :", np.shape(all_v1_grads_sel))
-    print("   overlay collapse_method:", overlay_collapse_method)
-
     if rand_local.ndim == 5 and overlay_collapse_method is not None:
         m = str(overlay_collapse_method).lower()
         if m in {"mean", "avg", "average"}:
@@ -512,13 +423,7 @@ def run_per_image_overlays(
     else:
         # Keep as-is: [N,C,H,W] or [R,N,C,H,W]
         pass
-    rand_collapsed = (rand_local.ndim == 4)   # [N, C, H, W]
-    if not rand_collapsed:
-        R = all_v1_grads_rand.shape[0]
-    else:
-        R = 1  # semantically “one random sample set” for bookkeeping
-
-    # ---------- Pass 1: compute global min/max if requested ----------
+    # Compute shared color limits before rendering when requested.
     global_min = None
     global_max = None
     if viz_norm == "global":
@@ -529,7 +434,6 @@ def run_per_image_overlays(
                 continue
             sel_img  = all_v1_grads_sel[idx]                        # [C,H,W]
             rand_img = _slice_rand_for_index(rand_local, idx, N_expected=N)
-            print(f"[overlay] idx={idx}  sel_img={sel_img.shape}  rand_img={np.shape(rand_img)}")
             eff_map  = _compute_effect_map_for_image(sel_img, rand_img, effect_size)
             mins.append(np.nanmin(eff_map))
             maxs.append(np.nanmax(eff_map))
@@ -537,25 +441,19 @@ def run_per_image_overlays(
             global_min = float(np.nanmin(mins))
             global_max = float(np.nanmax(maxs))
 
-    # ---------- Pass 2: render overlays ----------
     for idx in indices:
         if not (0 <= idx < N):
             print(f"[per_image_overlay] Skipping idx {idx} (out of range 0..{N-1})")
             continue
 
-        # compute effect map (H x W)
         sel_img  = all_v1_grads_sel[idx]                        # [C,H,W]
         rand_img = _slice_rand_for_index(rand_local, idx, N_expected=N)
-        print(f"[TRACE-RAND] idx={idx} | rand_img shape={np.shape(rand_img)} "
-          f"| sel_img shape={np.shape(sel_img)}")
 
         eff_map  = _compute_effect_map_for_image(sel_img, rand_img, effect_size)
 
-        # save raw per-image map (before any visual scaling)
         if save_raw:
             np.save(overlay_dir / f"img{idx:05d}_{effect_size}_map.npy", eff_map)
 
-        # figure out sample sizes (for U normalisation if chosen)
         n_a = sel_img.shape[0]  # C
         if rand_img.ndim == 4:          # [R, C, H, W]
             n_b = rand_img.shape[0] * rand_img.shape[1]  # R*C
@@ -565,13 +463,9 @@ def run_per_image_overlays(
             raise ValueError(f"rand_img must be [R,C,H,W] or [C,H,W], got {rand_img.shape}")
 
 
-        # get the preprocessed image (must align with the gradients)
         if get_preprocessed_image is not None:
-            base_img = get_preprocessed_image(idx)                  # expected HxWx3 in 0..1 or 0..255
+            base_img = get_preprocessed_image(idx)
         else:
-            # ---- TODO: Replace with your project’s image-fetch logic ----
-            # For example, if you keep preprocessed tensors in memory:
-            #   base_img = (preprocessed_imgs[idx].permute(1,2,0).cpu().numpy())  # HxWx3 in [0..1]
             raise RuntimeError(
                 "Please provide `get_preprocessed_image` to `run_per_image_overlays` "
                 "so we can overlay on the correctly preprocessed (aligned) image."
@@ -580,22 +474,17 @@ def run_per_image_overlays(
         base_img = _ensure_uint8_rgb(np.asarray(base_img))
         H_img, W_img = base_img.shape[:2]
 
-        # Optionally convert base image to greyscale before overlay
         if bool(per_img_cfg.get("make_greyscale", False)):
             base_img = np.dot(base_img[..., :3], [0.2989, 0.5870, 0.1140])  # luminance weighting
             base_img = np.stack([base_img] * 3, axis=-1).astype(np.uint8)
 
-
-        # visual normalisation (optional)
         eff_viz, norm_kwargs = _normalise_for_viz(
             eff_map, viz_norm=viz_norm, effect_size=effect_size,
             n_a=n_a, n_b=n_b, global_min=global_min, global_max=global_max
         )
 
-        # resize effect map to the image dimensions
         eff_up = _resize_map_to_img(eff_viz, (H_img, W_img))
 
-        # plot overlay
         fig = plt.figure(figsize=(6, 6))
         plt.imshow(base_img)
         im = plt.imshow(eff_up, cmap=cmap, alpha=alpha, interpolation="bilinear", **norm_kwargs)
@@ -608,15 +497,10 @@ def run_per_image_overlays(
         plt.savefig(out_png, dpi=300, bbox_inches="tight", pad_inches=0)
         plt.close(fig)
 
-        # also store globally scaled map if requested and viz_norm==global/u_unit
         if save_raw and (viz_norm in {"global", "u_unit"}):
             np.save(overlay_dir / f"img{idx:05d}_{effect_size}_map_vizscaled.npy", eff_viz)
 
         print(f"[per_image_overlay] Saved {out_png}")
-
-# ──────────────────────────────────────────────────────────────────────────────
-#                                 MAIN
-# ──────────────────────────────────────────────────────────────────────────────
 
 def main(cfg_path: str | pathlib.Path):
     random.seed(1234)
@@ -631,32 +515,27 @@ def main(cfg_path: str | pathlib.Path):
 
     global GLOBAL_DEVICE, GLOBAL_TFM
     GLOBAL_DEVICE = device
-    GLOBAL_TFM    = build_transform()        # replaces local tfm
-    # Thread handling (unchanged)
+    GLOBAL_TFM = build_imagenet_transform()
+
     if torch.cuda.is_available() is False:
         try:
             num_threads = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
         except TypeError:
             num_threads = 1
         torch.set_num_threads(num_threads)
-        print(f"✅ PyTorch intra‑op parallelism set to {torch.get_num_threads()} threads.")
+        print(f"PyTorch intra-op parallelism set to {torch.get_num_threads()} threads.")
     else:
         print("Using CUDA")
 
-    # Detect weight status for naming
     model_name = cfg["model"].get("name", "cornet_rt").lower()
     is_pretrained = (cfg["model"].get("weights", "pretrained").lower() == "pretrained")
     ut_suffix = "_ut" if not is_pretrained else ""
 
-    # Figure out which image categories to evaluate --------------
     imgs, cat_tag = gather_images(cfg)
     print(f"Loaded {len(imgs)} images; category‑tag = '{cat_tag}'.")
 
     outdir = pathlib.Path(cfg.get("output_dir", "it2v1_analysis"))
     outdir.mkdir(parents=True, exist_ok=True)
-
-    # Everything below remains *functionally* identical – only the name of the
-    # `imgs` list changed from the original single‑folder logic.  ───────────
 
     top_frac_cfg = cfg.get("top_frac", 0.1)
     if isinstance(top_frac_cfg, (float, int)):
@@ -667,14 +546,12 @@ def main(cfg_path: str | pathlib.Path):
     for top_frac in top_frac_list:
         mode = cfg.get("top_unit_selection", "percentage").lower()
         cat = cfg["category"].lower()
-        # Add model_suffix to the prefix to differentiate folders and CSVs
         prefix = f"{cat}_{cat_tag}_{mode}_{top_frac}{ut_suffix}"
         activ_dir = outdir / f"activations_{prefix}_grad"
         diff_csv_path = outdir / f"{prefix}_v1_featuremap_selective_vs_random_grad.csv"
 
         print(f"\n=== Processing top_frac={top_frac} ===")
         
-        # Load selectivity file using the suffix if untrained
         sel_filename = f"{model_name}{ut_suffix}_all_layers_units_mannwhitneyu.pkl"
         sel_path = pathlib.Path(cfg["selectivity_csv_dir"]) / sel_filename
         sel      = pd.read_pickle(sel_path)
@@ -709,8 +586,6 @@ def main(cfg_path: str | pathlib.Path):
                 t = o[0] if isinstance(o, tuple) else o
                 feature_shapes[name] = t.shape[1:]   # drop batch dim
             return fn
-        probe_model = model                 # keep a reference
-
         for lname in it_layer_names:
             hooks.append(mods[lname].register_forward_hook(shape_hook(lname)))
         with torch.no_grad():
@@ -730,10 +605,6 @@ def main(cfg_path: str | pathlib.Path):
         else:
             print(f"Selected {len(top_units)} IT units (top {top_frac:.0%}).")
         
-        imgs = list(iter_imgs(pathlib.Path(cfg["category_images"])))[:cfg.get("max_images",20)]
-        img_tuples  = [img for img in imgs]
-        
-        # --- get all IT units for random selection ---
         all_it_units = []
         for _, row in it_rows.iterrows():
             lay   = row.layer
@@ -742,28 +613,17 @@ def main(cfg_path: str | pathlib.Path):
             c, y, x = flat_to_cyx(idx, C, H, W)
             all_it_units.append((lay, c, y, x))
 
-        # === Check for existing results ===
         have_grad_files = activ_dir.exists()
         if os.path.exists(diff_csv_path):
             print(f"Found existing results at {diff_csv_path}, loading…")
             df = pd.read_csv(diff_csv_path)
-            
 
             Hf = df["fy"].max() + 1
             Wf = df["fx"].max() + 1
-            if 'hedges_g' in df.columns:
-                delta_map = df['hedges_g'].values.reshape(Hf, Wf)
-            elif 'cliffs_delta' in df.columns:      # legacy support
-                delta_map = df['cliffs_delta'].values.reshape(Hf, Wf)
-            else:
-                delta_map = None
-            
 
-            # ---- mandatory column ----
             obs_map = df["mean_diff"].values.reshape(Hf, Wf)
             mean_diff_vec  = obs_map.ravel()  
 
-            # ---- effect-size map selection (respect config if present) ----
             delta_map = None
             if effect_size == "mw_u" and "mw_u" in df.columns:
                 delta_arr = pd.to_numeric(df["mw_u"], errors="coerce").astype(np.float32)
@@ -775,24 +635,21 @@ def main(cfg_path: str | pathlib.Path):
                 delta_arr = pd.to_numeric(df["hedges_g"], errors="coerce").astype(np.float32)
                 delta_map = delta_arr.values.reshape(Hf, Wf)
             else:
-                # backward-compatible fallback: try any known column, priority mw_u > cliffs_delta > hedges_g
                 for col in ("mw_u", "cliffs_delta", "hedges_g"):
                     if col in df.columns:
                         delta_arr = pd.to_numeric(df[col], errors="coerce").astype(np.float32)
                         delta_map = delta_arr.values.reshape(Hf, Wf)
                         break
 
-
-            # ---- significance / p‑value handling -------------------------
-            if "fdr_q_value" in df.columns:          # FDR‑corrected p values exist
+            if "fdr_q_value" in df.columns:
                 q_map = df["fdr_q_value"].values.reshape(Hf, Wf)
 
-                if "significant_fdr" in df.columns:  # column present (new files)
+                if "significant_fdr" in df.columns:
                     sig_mask = df["significant_fdr"].astype(bool).values.reshape(Hf, Wf)
-                else:                                # older files → derive the mask
+                else:
                     sig_mask = (q_map < 0.05)
 
-            elif "bonferroni_p_value" in df.columns: # very old schema
+            elif "bonferroni_p_value" in df.columns:
                 q_map    = df["bonferroni_p_value"].values.reshape(Hf, Wf)
                 sig_mask = (q_map < 0.05)
 
@@ -809,38 +666,22 @@ def main(cfg_path: str | pathlib.Path):
             all_v1_grads_rand = [np.load(activ_dir / f"grads_random_{rep}.npy") for rep in range(n_random_repeats)]
             print(f"Loaded {len(all_v1_grads_rand)} random repeats.")
             all_v1_grads_rand = np.stack(all_v1_grads_rand)
-            
-            print("\n[TRACE-RAND] Initial random gradients shape loaded/stacked:",
-                np.shape(all_v1_grads_rand))
 
-            if (activ_dir / "grads_random_stacked.npy").exists():
-                all_v1_grads_rand_base = np.load(activ_dir / "grads_random_stacked.npy", mmap_mode="r")
-                print("[TRACE-RAND] Loaded preserved grads_random_stacked.npy, shape:",
-                np.shape(np.load(activ_dir / "grads_random_stacked.npy", mmap_mode='r')))
-            else:
-                # Fall back to per-rep files
+            if not (activ_dir / "grads_random_stacked.npy").exists():
                 print("No random stacked file found; stacking from individual repeats.")
-                all_v1_grads_rand_base = np.stack([
+                stacked_random = np.stack([
                     np.load(activ_dir / f"grads_random_{rep}.npy")
                     for rep in range(n_random_repeats)
-                ])  # [R, N, C, H, W]
-                # Save for future runs
-                np.save(activ_dir / "grads_random_stacked.npy", all_v1_grads_rand_base)
+                ])
+                np.save(activ_dir / "grads_random_stacked.npy", stacked_random)
 
             N, C, Hf, Wf = all_v1_grads_sel.shape
-            R = n_random_repeats
-
-            # Optionally collapse random repeats so N matches selective
             all_v1_grads_rand, _rand_collapsed = collapse_random(all_v1_grads_rand, collapse_method)
-            print("[TRACE-RAND] After collapse_random →", np.shape(all_v1_grads_rand),
-              "| collapse_method:", collapse_method)
 
             if _rand_collapsed:
-                # Now shapes match: random is [N, C, H, W], same as selective
                 sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)    # [N*C, H*W]
                 rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)   # [N*C, H*W]
             else:
-                # Keep existing behavior (all repeats count as samples)
                 sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)    # [N*C, H*W]
                 rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)   # [R*N*C, H*W]
 
@@ -856,54 +697,46 @@ def main(cfg_path: str | pathlib.Path):
 
                 mean_diff_vec[i] = a.mean() - b.mean()
                 if effect_size == "hedges_g":
-                    g_vec[i] = hedges_g(a, b)
+                    g_vec[i] = hedges_g(a, b, eps=1e-12)
                 elif effect_size == "mw_u":
-                    g_vec[i] = mw_u(a, b)
+                    g_vec[i] = mann_whitney_u_stat(a, b)
                 else:
-                    # keep parity if someone requests cliffs on parametric path, or raise
-                    g_vec[i] = hedges_g(a, b)
-                _, p_val   = ttest_ind(a, b, equal_var=False, nan_policy='omit') # Welch's t-test
+                    g_vec[i] = hedges_g(a, b, eps=1e-12)
+                _, p_val   = ttest_ind(a, b, equal_var=False, nan_policy='omit')
                 p_vec[i]   = p_val
 
-            # FDR (Benjamini‑Hochberg) correction ------------------------------
             rej, q_vec, _, _ = multipletests(p_vec, alpha=0.05, method='fdr_bh')
 
-            # reshape back to (H, W) ------------------------------------------
             obs_map   = mean_diff_vec.reshape(Hf, Wf)
-            effect_map = g_vec.reshape(Hf, Wf)       # Hedges g map
-            delta_map  = effect_map                  # keeps old variable name used in plots
+            effect_map = g_vec.reshape(Hf, Wf)
+            delta_map  = effect_map
             q_map     = q_vec.reshape(Hf, Wf)
             sig_mask  = rej.reshape(Hf, Wf)
 
-            # ─────────── save CSV (so future runs can reuse) ────────────────
             df = pd.DataFrame({
                 'fy'            : np.repeat(np.arange(Hf), Wf),
                 'fx'            : np.tile  (np.arange(Wf), Hf),
                 'mean_diff'     : mean_diff_vec,
-                'hedges_g'      : g_vec,            # ← new 
+                'hedges_g'      : g_vec,
                 'mw_u'      : (g_vec if effect_size == "mw_u"      else np.full_like(g_vec, np.nan)),
-                'welch_p_value' : p_vec,            # ← new column name
+                'welch_p_value' : p_vec,
                 'fdr_q_value'   : q_vec,
                 'significant'   : rej.astype(int)
             })
 
             df.to_csv(diff_csv_path, index=False)
-            print("Saved Cliff’s δ & FDR stats →", diff_csv_path)
-
-            
+            print("Saved feature-map statistics to", diff_csv_path)
 
 
         else:
-            
-            print("Computing mean |gradient| for selective IT units (parallelized)...")
-            all_v1_grads_sel = []
+            print("Computing mean |gradient| for selective IT units...")
             activ_dir.mkdir(parents=True, exist_ok=True)
 
             model, bufs = get_thread_model_and_bufs(cfg)
 
             all_v1_grads_sel = []
             for img in tqdm(imgs, desc="Images (selective)"):
-                grads = grads_per_image(img, model, bufs, top_units).mean(axis=0) # Mean V1 gradient across IT units
+                grads = grads_per_image(img, model, bufs, top_units).mean(axis=0)
                 all_v1_grads_sel.append(grads)
 
             all_v1_grads_sel = np.stack(all_v1_grads_sel)
@@ -911,15 +744,14 @@ def main(cfg_path: str | pathlib.Path):
             del all_v1_grads_sel
             gc.collect()
 
-            # -------- many random repeats ------------------
             all_v1_grads_rand = []
             for rep in tqdm(range(n_random_repeats), desc="Random repeats"):
                 rand_units = random.sample(all_it_units, len(top_units))
 
                 rep_arr = []
                 for img in imgs:
-                    rep_arr.append(grads_per_image(img, model, bufs, rand_units).mean(axis=0)) # Append mean IT unit gradient per V1 unit
-                rep_arr = np.stack(rep_arr)                         # [N_img, S, C, H, W]
+                    rep_arr.append(grads_per_image(img, model, bufs, rand_units).mean(axis=0))
+                rep_arr = np.stack(rep_arr)
 
                 np.save(str(activ_dir / f"grads_random_{rep}.npy"), rep_arr)
                 del rep_arr
@@ -931,45 +763,14 @@ def main(cfg_path: str | pathlib.Path):
             print(f"Loaded {len(all_v1_grads_rand)} random repeats.")
             all_v1_grads_rand = np.stack(all_v1_grads_rand)
 
-            print("\n[TRACE-RAND] Initial random gradients shape loaded/stacked:",
-                np.shape(all_v1_grads_rand))
-
-            all_v1_grads_rand_base = all_v1_grads_rand.copy()
-            np.save(activ_dir / "grads_random_stacked.npy", all_v1_grads_rand_base)
-
-            if (activ_dir / "grads_random_stacked.npy").exists():
-                print("[TRACE-RAND] Loaded preserved grads_random_stacked.npy, shape:",
-                      np.shape(np.load(activ_dir / "grads_random_stacked.npy", mmap_mode='r')))
-            else:
-                print("[TRACE-RAND] No pre-stacked random gradients file found.")
-
+            np.save(activ_dir / "grads_random_stacked.npy", all_v1_grads_rand)
 
             print("Mean selective gradient magnitude:", np.mean(all_v1_grads_sel))
             print("Mean random gradient magnitude:", np.mean(all_v1_grads_rand))
 
             all_v1_grads_rand, _rand_collapsed = collapse_random(all_v1_grads_rand, collapse_method)
-            print("[TRACE-RAND] After collapse_random →", np.shape(all_v1_grads_rand),
-              "| collapse_method:", collapse_method)
-
-            
-
-            # ──────────────────────────────────────────────────────────────────
-            # NEW voxel‑wise statistics: mean‑difference, Cliff’s δ, M‑W + FDR
-            # ──────────────────────────────────────────────────────────────────
-            
-
-            def cliffs_delta(a: np.ndarray, b: np.ndarray) -> float:
-                """
-                Cliff’s δ for two 1‑D vectors (uses pairwise compare, still fast for <10⁴ items).
-                Range −1‥+1.  Positive ⇒ selective > random.
-                """
-                a = a.ravel();  b = b.ravel()
-                gt = (a[:, None] > b).sum()
-                lt = (a[:, None] < b).sum()
-                return (gt - lt) / (len(a) * len(b) + 1e-12)
 
             N, C, Hf, Wf = all_v1_grads_sel.shape
-            R = n_random_repeats
             if _rand_collapsed:
                 sel_flat  = all_v1_grads_sel.reshape(-1, Hf * Wf)    # [N*C, H*W]
                 rand_flat = all_v1_grads_rand.reshape(-1, Hf * Wf)   # [N*C, H*W]
@@ -990,22 +791,18 @@ def main(cfg_path: str | pathlib.Path):
                 if effect_size == "cliffs_delta":
                     cliff_vec[i] = cliffs_delta(a, b)
                 elif effect_size == "mw_u":
-                    cliff_vec[i] = mw_u(a, b)
+                    cliff_vec[i] = mann_whitney_u_stat(a, b)
                 else:
-                    # default to cliffs on the NP branch
                     cliff_vec[i] = cliffs_delta(a, b)
                 p_vec[i]         = mannwhitneyu(a, b, alternative='two-sided').pvalue
 
-            # FDR (Benjamini‑Hochberg) correction ------------------------------
             rej, q_vec, _, _ = multipletests(p_vec, alpha=0.05, method='fdr_bh')
 
-            # reshape back to (H, W) ------------------------------------------
             obs_map   = mean_diff_vec.reshape(Hf, Wf)
             delta_map = cliff_vec.reshape(Hf, Wf)
             q_map     = q_vec.reshape(Hf, Wf)
             sig_mask  = rej.reshape(Hf, Wf)
 
-            # ─────────── save CSV (so future runs can reuse) ────────────────
             df = pd.DataFrame({
                 'fy'               : np.repeat(np.arange(Hf), Wf),
                 'fx'               : np.tile  (np.arange(Wf), Hf),
@@ -1017,13 +814,8 @@ def main(cfg_path: str | pathlib.Path):
                 'significant_fdr'  : rej.astype(int)
             })
             df.to_csv(diff_csv_path, index=False)
-            print("Saved Cliff’s δ & FDR stats →", diff_csv_path)
+            print("Saved feature-map statistics to", diff_csv_path)
 
-           
-
-            print(f"Saved histograms ➜ {outdir}")
-
-        # ──────────────── PLOTS ─────────────────────────────────────────
         plt.figure(figsize=(6,5))
         plt.imshow(obs_map, cmap="bwr", interpolation='nearest')
         plt.title(f"Mean |grad| diff  (sel−rand, top_frac={top_frac})")
@@ -1031,7 +823,6 @@ def main(cfg_path: str | pathlib.Path):
         plt.colorbar(label="Δ |grad|")
         plt.savefig(outdir / f"{prefix}_A_mean_diff.png", dpi=300)
 
-        # Cliff’s δ – show only significant voxels (others as NaN/white)
         delta_plot = np.where(sig_mask, delta_map, np.nan)
         plt.figure(figsize=(6,5))
         plt.imshow(delta_plot, cmap="bwr", interpolation='nearest')
@@ -1043,7 +834,6 @@ def main(cfg_path: str | pathlib.Path):
         plt.colorbar(label=eff_label)
         plt.savefig(outdir / f"{prefix}_B_{file_suffix}.png", dpi=300)
 
-        # –log10(q) significance map, same mask
         q = q_map
         q[~sig_mask] = np.nan
         plt.figure(figsize=(6,5))
@@ -1053,16 +843,13 @@ def main(cfg_path: str | pathlib.Path):
         plt.colorbar(label="q")
         plt.savefig(outdir / f"{prefix}_C_q.png", dpi=300)
 
-        # ───────── DIAGNOSTIC HISTOGRAMS ───────────────────────
-        # How many voxels to visualise
-
         if ("all_v1_grads_sel" not in locals() or all_v1_grads_sel is None) and have_grad_files:
-                print("Loading raw gradient arrays for histogram plotting …")
-                all_v1_grads_sel = np.load(activ_dir / "grads_selective.npy")
-                all_v1_grads_rand = np.stack([
-                    np.load(activ_dir / f"grads_random_{rep}.npy")
-                    for rep in range(n_random_repeats)
-                ])
+            print("Loading raw gradient arrays for histogram plotting …")
+            all_v1_grads_sel = np.load(activ_dir / "grads_selective.npy")
+            all_v1_grads_rand = np.stack([
+                np.load(activ_dir / f"grads_random_{rep}.npy")
+                for rep in range(n_random_repeats)
+            ])
         if "all_v1_grads_sel" in locals() and all_v1_grads_sel is not None:
             num_voxels_to_plot = 10
             flat_idx = np.argsort(-np.abs(mean_diff_vec))[:num_voxels_to_plot]
@@ -1070,9 +857,9 @@ def main(cfg_path: str | pathlib.Path):
 
             for (y, x) in coords_to_plot:
                 sel_vals  = all_v1_grads_sel[:, :, y, x].ravel()
-                if all_v1_grads_rand.ndim == 4:   # collapsed → [N, C, H, W]
+                if all_v1_grads_rand.ndim == 4:
                     rand_vals = all_v1_grads_rand[:, :, y, x].ravel()
-                else:                              # not collapsed → [R, N, C, H, W]
+                else:
                     rand_vals = all_v1_grads_rand[:, :, :, y, x].ravel()
 
 
@@ -1099,13 +886,10 @@ def main(cfg_path: str | pathlib.Path):
                 plt.savefig(fname, dpi=300)
                 plt.close()
 
-            print(f"Saved {num_voxels_to_plot} voxel histograms ➜ {outdir}")
+            print(f"Saved {num_voxels_to_plot} voxel histograms to {outdir}")
 
-
-                # ─────────────── PER-IMAGE EFFECT OVERLAYS (optional) ───────────────
         per_img_cfg = cfg.get("per_image_overlay", {})
         if per_img_cfg.get("enabled", False) and per_img_cfg.get("indices"):
-            # Ensure we have the raw gradient arrays in memory (load if needed)
             if ("all_v1_grads_sel" not in locals()) or ("all_v1_grads_rand" not in locals()):
                 if activ_dir.exists():
                     all_v1_grads_sel = np.load(activ_dir / "grads_selective.npy")
@@ -1119,40 +903,31 @@ def main(cfg_path: str | pathlib.Path):
                         f"Expected arrays under {activ_dir}."
                     )
 
-            # Provide a preprocessed-image getter that matches the exact transform
             def get_preprocessed_image(idx: int) -> np.ndarray:
                 """
-                Return the *preprocessed* image that aligns with the V1 maps for image idx.
-                Output: HxWx3 in [0..1] float (uint8 also OK).
+                Return the displayed image aligned with the transformed tensor.
                 """
-                pil_img = imgs[idx]  # imgs is the list used for the analysis above
-                # Use the *exact* transform used during forward pass (GLOBAL_TFM),
-                # then de-normalize back to display space so colors look right.
-                x = GLOBAL_TFM(pil_img)  # [3,224,224] normalized
-                # De-normalize (ImageNet stats)
+                pil_img = imgs[idx]
+                x = GLOBAL_TFM(pil_img)
                 mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
                 std  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-                x = (x * std + mean).clamp(0, 1)  # back to [0..1]
-                x = x.permute(1, 2, 0).cpu().numpy()  # HxWx3
+                x = (x * std + mean).clamp(0, 1)
+                x = x.permute(1, 2, 0).cpu().numpy()
                 return x
 
-            # Always use the preserved base random tensor for overlays (channels intact)
             if (activ_dir / "grads_random_stacked.npy").exists():
                 all_v1_grads_rand_base = np.load(activ_dir / "grads_random_stacked.npy", mmap_mode="r")
             else:
-                # Fallback: rebuild from per-rep files (keeps [R,N,C,H,W])
                 all_v1_grads_rand_base = np.stack([
                     np.load(activ_dir / f"grads_random_{rep}.npy")
                     for rep in range(n_random_repeats)
                 ])
                 np.save(activ_dir / "grads_random_stacked.npy", all_v1_grads_rand_base)
-                print("[TRACE-RAND] Saved stacked random grads (overlay path):",
-                      (activ_dir / "grads_random_stacked.npy"), all_v1_grads_rand_base.shape)
+                print("Saved stacked random gradients:", activ_dir / "grads_random_stacked.npy")
 
-            # Run the overlay generator (it will handle optional repeat collapse locally)
             run_per_image_overlays(
-                all_v1_grads_sel=all_v1_grads_sel,            # [N,C,H,W]
-                all_v1_grads_rand=all_v1_grads_rand_base,     # [R,N,C,H,W] ← the preserved master
+                all_v1_grads_sel=all_v1_grads_sel,
+                all_v1_grads_rand=all_v1_grads_rand_base,
                 effect_size=effect_size,
                 per_img_cfg=per_img_cfg,
                 outdir=outdir,

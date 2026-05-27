@@ -3,13 +3,18 @@ import sys
 import pathlib
 import yaml
 import torch
-import torchvision.transforms as T
-from PIL import Image
 import pandas as pd
 from tqdm import tqdm
 import numpy as np
 from scipy.stats import mannwhitneyu
-from utils import get_layer_from_path, load_model, normalize_module_name
+from utils import (
+    build_imagenet_transform,
+    get_layer_from_path,
+    hedges_g,
+    iter_rgb_images,
+    load_model,
+    normalize_module_name,
+)
 
 
 def as_list(value) -> list[str]:
@@ -130,51 +135,12 @@ def safe_file_tag(tag: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", tag).strip("_")
 
 
-def build_transform():
-    return T.Compose([
-        T.Resize(256),
-        T.CenterCrop(224),
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
-
-def iter_imgs(folder):
-    for p in sorted(folder.iterdir()):
-        if p.suffix.lower() in {".jpg", ".jpeg", ".png"}:
-            yield p.name, Image.open(p).convert("RGB")
-
-# --- NEW: Hedges' g with small-sample correction ---
-def hedges_g(x: np.ndarray, y: np.ndarray) -> float:
-    """
-    Compute Hedges' g for two independent samples x (target) and y (other).
-    Uses unbiased small-sample correction J.
-    Returns np.nan on degenerate cases.
-    """
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    nx, ny = x.size, y.size
-    if nx < 2 or ny < 2:
-        return np.nan
-    mx, my = np.mean(x), np.mean(y)
-    vx = np.var(x, ddof=1)
-    vy = np.var(y, ddof=1)
-    df = nx + ny - 2
-    if df <= 0:
-        return np.nan
-    sp = np.sqrt(((nx - 1) * vx + (ny - 1) * vy) / df)
-    if not np.isfinite(sp) or sp == 0:
-        return np.nan
-    d = (mx - my) / sp
-    J = 1.0 - (3.0 / (4.0 * df - 1.0))  # Hedges & Olkin correction
-    return J * d
-
 def run_config(cfg_path, output_prefix=None):
     cfg_path = pathlib.Path(cfg_path)
     cfg = load_yaml(cfg_path)
     if output_prefix is not None and "output_prefix" not in cfg:
         cfg["output_prefix"] = output_prefix
 
-    # metrics selection (default to Mann–Whitney U) ---
     raw_metrics = cfg.get("metrics", ["mannwhitneyu"])
     if isinstance(raw_metrics, str):
         metrics = [raw_metrics.lower()]
@@ -183,26 +149,23 @@ def run_config(cfg_path, output_prefix=None):
     use_mw = "mannwhitneyu" in metrics
     use_hg = "hedgesg" in metrics
 
-    # Load model
-    model_info = {}
-    model_info["source"] = cfg.get("model_source", "pytorch_hub")
-    model_info["repo"] = cfg.get("model_repo", "-")
-    model_info["name"] = cfg.get("model_name", "cornet_z")
-    model_info["weights"] = cfg.get("model_weights", "")
+    model_info = {
+        "source": cfg.get("model_source", "pytorch_hub"),
+        "repo": cfg.get("model_repo", "-"),
+        "name": cfg.get("model_name", "cornet_z"),
+        "weights": cfg.get("model_weights", ""),
+    }
     if "model_time_steps" in cfg:
         model_info["time_steps"] = cfg["model_time_steps"]
     pretrained = cfg.get("pretrained", True)
 
-
     model, _ = load_model(model_info=model_info, pretrained=pretrained)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    transform = build_imagenet_transform()
 
-    transform = build_transform()
-
-    # Model tag for filenames
     model_tag = build_model_tag(model_info, pretrained)
     output_tag = safe_file_tag(cfg.get("output_prefix", model_tag))
 
-    # Select layers to process
     block_layers = select_block_layers(model, cfg, cfg_path)
     if not block_layers:
         raise ValueError(
@@ -213,7 +176,6 @@ def run_config(cfg_path, output_prefix=None):
     act_dict = {layer: {} for layer in block_layers}
     layer_tags = {layer: safe_file_tag(layer) for layer in block_layers}
 
-    # 2) Register hooks to capture block outputs
     current_img_key = None
 
     def make_hook(layer_name):
@@ -233,7 +195,6 @@ def run_config(cfg_path, output_prefix=None):
             ) from exc
         hook_handles.append(target_layer.register_forward_hook(make_hook(layer)))
 
-    # 3) Process all images, save activations
     root = pathlib.Path(cfg.get("data_root", "categ_images"))
     if not root.is_dir():
         raise FileNotFoundError(
@@ -244,20 +205,18 @@ def run_config(cfg_path, output_prefix=None):
     if not categories:
         raise ValueError(f"No category subfolders found in '{root}'.")
     img_to_cat = {}
-    # Build a map of unique keys to categories (avoid filename collisions)
     for cat in categories:
-        for img_name, _ in iter_imgs(root / cat):
+        for img_name, _ in iter_rgb_images(root / cat, include_names=True):
             img_key = f"{cat}/{img_name}"
             img_to_cat[img_key] = cat
 
     for cat in categories:
-        for img_name, img in tqdm(iter_imgs(root / cat), desc=f"Cat={cat}"):
+        for img_name, img in tqdm(iter_rgb_images(root / cat, include_names=True), desc=f"Cat={cat}"):
             current_img_key = f"{cat}/{img_name}"
-            x = transform(img).unsqueeze(0).to(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            x = transform(img).unsqueeze(0).to(device)
             with torch.no_grad():
                 model(x)
 
-    # 4) Save activations for each block (materialize act_dict -> PKL/CSV)
     out_dir = pathlib.Path(cfg.get("out_dir", "unit_selectivity"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -271,10 +230,8 @@ def run_config(cfg_path, output_prefix=None):
 
         print(f"Wrote activations for {layer}: {df.shape}")
 
-    # 5) Compute selectivity metrics for each unit and category
-    combined_stats = []
-    all_unit_cat_stats_mw = []  # MW for combined file
-    all_unit_cat_stats_hg = []  # HG for combined file
+    all_unit_cat_stats_mw = []
+    all_unit_cat_stats_hg = []
 
     for layer in tqdm(block_layers, desc="Layers"):
         layer_tag = layer_tags[layer]
@@ -285,8 +242,8 @@ def run_config(cfg_path, output_prefix=None):
 
         unit_ids = df.columns
         results = []
-        unit_cat_to_mw = {}  # for combined file
-        unit_cat_to_hg = {}  
+        unit_cat_to_mw = {}
+        unit_cat_to_hg = {}
 
         for unit in tqdm(unit_ids, desc=f"{layer}: units", leave=False, position=1):
             for cat in categories:
@@ -321,11 +278,10 @@ def run_config(cfg_path, output_prefix=None):
                     unit_cat_to_mw.setdefault((layer, unit), {})[cat] = mw_stat
                 if use_hg:
                     row["hedgesg_stat"] = hg_stat
-                    unit_cat_to_hg.setdefault((layer, unit), {})[cat] = hg_stat  # <-- ADD THIS
+                    unit_cat_to_hg.setdefault((layer, unit), {})[cat] = hg_stat
 
                 results.append(row)
 
-        # save per-layer file (unchanged)
         res_df = pd.DataFrame(results)
         res_df.to_csv(out_dir / f"{output_tag}_{layer_tag}_block_selectivity_mw.csv", index=False)
         res_df.to_pickle(out_dir / f"{output_tag}_{layer_tag}_block_selectivity_mw.pkl")
@@ -338,9 +294,7 @@ def run_config(cfg_path, output_prefix=None):
             for (layer_name, unit), cat_stats in unit_cat_to_hg.items():
                 all_unit_cat_stats_hg.append((layer_name, unit, cat_stats))
 
-    # Combined file: write mw_* and hg_* columns (whichever are enabled)
     if (use_mw and all_unit_cat_stats_mw) or (use_hg and all_unit_cat_stats_hg):
-        # Build dicts keyed by (layer, unit) -> {cat: stat}
         mw_map = {}
         for layer, unit, cat_stats in all_unit_cat_stats_mw:
             mw_map[(layer, unit)] = cat_stats
@@ -349,18 +303,15 @@ def run_config(cfg_path, output_prefix=None):
         for layer, unit, cat_stats in all_unit_cat_stats_hg:
             hg_map[(layer, unit)] = cat_stats
 
-        # Union of keys from both metrics
         keys = set(mw_map.keys()) | set(hg_map.keys())
 
         combined_rows = []
         for (layer, unit) in tqdm(sorted(keys), desc="Combining all layers"):
             row = {"layer": layer, "unit": unit}
-            # MW columns
             if use_mw:
                 stats = mw_map.get((layer, unit), {})
                 for cat in categories:
                     row[f"mw_{cat}"] = stats.get(cat, np.nan)
-            # HG columns
             if use_hg:
                 stats = hg_map.get((layer, unit), {})
                 for cat in categories:
@@ -368,7 +319,6 @@ def run_config(cfg_path, output_prefix=None):
             combined_rows.append(row)
 
         all_stats_df = pd.DataFrame(combined_rows)
-        # Keep legacy filename, now includes hg_* columns when enabled
         all_stats_df.to_csv(out_dir / f"{output_tag}_all_layers_units_mannwhitneyu.csv", index=False)
         all_stats_df.to_pickle(out_dir / f"{output_tag}_all_layers_units_mannwhitneyu.pkl")
         print(f"Wrote combined stats (mw_* and hg_* if enabled) to {out_dir /f'{output_tag}_all_layers_units_mannwhitneyu.csv'}")

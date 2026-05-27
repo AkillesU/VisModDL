@@ -12,6 +12,7 @@ from tqdm import tqdm
 import math
 import torch.nn as nn
 import pickle
+from scipy.stats import mannwhitneyu
 from sklearn.svm import SVC
 from itertools import combinations, product
 import random
@@ -29,6 +30,7 @@ import numcodecs
 
 PLOT_FONT_FAMILY = "Times New Roman"
 PLOT_FONT_FALLBACKS = [PLOT_FONT_FAMILY, "Times", "DejaVu Serif"]
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 plt.rcParams.update({
     "font.family": "serif",
@@ -185,6 +187,72 @@ def _collect_weight_target_paths(
     for path in _as_list(layer_paths):
         targets.extend(collector(get_layer_from_path(model, path), path, include_bias))
     return targets
+
+
+def build_imagenet_transform():
+    return transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
+
+
+def iter_image_paths(folder: str | os.PathLike, extensions=IMAGE_EXTENSIONS):
+    for path in sorted(Path(folder).iterdir()):
+        if path.suffix.lower() in extensions:
+            yield path
+
+
+def load_rgb_image(path: str | os.PathLike) -> Image.Image:
+    return Image.open(path).convert("RGB")
+
+
+def iter_rgb_images(folder: str | os.PathLike, *, include_names=False):
+    for path in iter_image_paths(folder):
+        img = load_rgb_image(path)
+        yield (path.name, img) if include_names else img
+
+
+def mann_whitney_u_stat(a: np.ndarray, b: np.ndarray) -> float:
+    """
+    Return the Mann-Whitney U statistic for the first sample.
+    """
+    return mannwhitneyu(a, b, alternative="two-sided").statistic
+
+
+def hedges_g(a: np.ndarray, b: np.ndarray, *, eps: float = 0.0) -> float:
+    """
+    Bias-corrected pooled-SD Cohen's d for two independent samples.
+    """
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    n1, n2 = a.size, b.size
+    if n1 < 2 or n2 < 2:
+        return np.nan
+
+    df = n1 + n2 - 2
+    if df <= 0:
+        return np.nan
+
+    pooled_var = (((n1 - 1) * np.var(a, ddof=1)) + ((n2 - 1) * np.var(b, ddof=1))) / df
+    sp = np.sqrt(pooled_var + eps)
+    if not np.isfinite(sp) or sp == 0:
+        return np.nan
+
+    correction = 1.0 - (3.0 / (4.0 * df - 1.0))
+    return correction * ((np.mean(a) - np.mean(b)) / sp)
+
+
+def cliffs_delta(a: np.ndarray, b: np.ndarray) -> float:
+    """
+    Cliff's delta for two one-dimensional samples.
+    """
+    a = np.asarray(a).ravel()
+    b = np.asarray(b).ravel()
+    gt = (a[:, None] > b).sum()
+    lt = (a[:, None] < b).sum()
+    return (gt - lt) / (len(a) * len(b) + 1e-12)
 
 
 def is_conv_like(layer):
@@ -2087,6 +2155,21 @@ def _normalize_plot_save_mode(save_mode):
     return mode
 
 
+def _save_figure_formats(fig, base_path, save_mode="png", dpi=500):
+    mode = _normalize_plot_save_mode(save_mode)
+    base_path = str(base_path)
+    saved_paths = []
+    if "png" in mode:
+        path = base_path + ".png"
+        fig.savefig(path, dpi=dpi, format="png")
+        saved_paths.append(path)
+    if "svg" in mode:
+        path = base_path + ".svg"
+        fig.savefig(path, format="svg")
+        saved_paths.append(path)
+    return saved_paths
+
+
 def _normalize_group_cols(group_col):
     if isinstance(group_col, (list, tuple)):
         return list(group_col)
@@ -3334,15 +3417,7 @@ def plot_category_relative_drop_bar(
             plot_dir,
             f"{model_part}_category-{file_value_tag}_{str(damage_type).replace('/', '-')}_{layer}_dmg{summary_df['damage_level_used'].iloc[0]:g}",
         )
-        mode = _normalize_plot_save_mode(save_mode)
-        if "png" in mode:
-            path = base + ".png"
-            fig.savefig(path, dpi=500, format="png")
-            saved_paths.append(path)
-        if "svg" in mode:
-            path = base + ".svg"
-            fig.savefig(path, format="svg")
-            saved_paths.append(path)
+        saved_paths = _save_figure_formats(fig, base, save_mode, dpi=500)
         if verbose:
             print(f"[PLOT] saved to {', '.join(saved_paths)}")
 
@@ -3580,16 +3655,7 @@ def plot_total_differentiation_bar(
     if selectivity_fraction is not None:
         name_parts.append(f"top{selectivity_fraction:.2f}-{selection_mode}")
     plot_base_path = os.path.join(plot_dir, "_".join(name_parts))
-    mode = _normalize_plot_save_mode(save_mode)
-    saved_paths = []
-    if "png" in mode:
-        path = plot_base_path + ".png"
-        fig.savefig(path, dpi=500, format="png")
-        saved_paths.append(path)
-    if "svg" in mode:
-        path = plot_base_path + ".svg"
-        fig.savefig(path, format="svg")
-        saved_paths.append(path)
+    saved_paths = _save_figure_formats(fig, plot_base_path, save_mode, dpi=500)
     if verbose:
         print(f"[PLOT] saved to {', '.join(saved_paths)}")
         plt.show()
@@ -3679,9 +3745,8 @@ def categ_corr_lineplot(
       same line colours and summarise baseline-relative drop with either
       "auc_loss" or "mean_drop".
 
-    Enhancement:
-      - If selectivity RDMs are missing at RDM_{fraction}_{selection_mode}/<act>/<cat>_selective/,
-        compute them from activation .zarr files on the fly, save to disk, and proceed.
+    Selective RDMs are generated from activation .zarr files when the requested
+    RDM_{fraction}_{selection_mode}/<act>/<cat>_selective files are missing.
     """
     data, raw_points = _collect_categ_corr_lineplot_data(
         damage_layers=damage_layers,
@@ -3707,7 +3772,6 @@ def categ_corr_lineplot(
         point_shapes, point_markers, point_shape, point_marker
     )
 
-    # ------------ 6. plotting ----------------------
     if side_summary:
         fig, (main_ax, side_ax) = plt.subplots(
             1,
@@ -3860,16 +3924,7 @@ def categ_corr_lineplot(
     if side_summary:
         name_parts.append(f"side-{side_summary_metric}")
     plot_base_path = os.path.join(plot_dir, "_".join(name_parts))
-    save_mode = _normalize_plot_save_mode(save_mode)
-    saved_paths = []
-    if "png" in save_mode:
-        png_path = plot_base_path + ".png"
-        fig.savefig(png_path, dpi=500, format="png")
-        saved_paths.append(png_path)
-    if "svg" in save_mode:
-        svg_path = plot_base_path + ".svg"
-        fig.savefig(svg_path, format="svg")
-        saved_paths.append(svg_path)
+    saved_paths = _save_figure_formats(fig, plot_base_path, save_mode, dpi=500)
     if verbose:
         print(f"[PLOT] saved to {', '.join(saved_paths)}")
         plt.show()
@@ -4256,10 +4311,10 @@ def grouped_categ_corr_lineplot(
         name_parts.append("percentage")
     if selectivity_fraction is not None:
         name_parts.append(f"top{selectivity_fraction:.2f}-{selection_mode}")
-    plot_path = os.path.join(plot_dir, "_".join(name_parts) + ".png")
-    plt.savefig(plot_path, dpi=500)
+    plot_base_path = os.path.join(plot_dir, "_".join(name_parts))
+    saved_paths = _save_figure_formats(plt.gcf(), plot_base_path, "png", dpi=500)
     if verbose:
-        print(f"[PLOT] saved to {plot_path}")
+        print(f"[PLOT] saved to {', '.join(saved_paths)}")
         plt.show()
     else:
         plt.close()
@@ -4268,7 +4323,7 @@ def grouped_categ_corr_lineplot(
 def plot_avg_corr_mat(
     main_dir,
     damage_layers=None,
-    layers=None,  # legacy alias
+    layers=None,
     activations_layers=None,
     damage_type=None,
 
@@ -4277,10 +4332,9 @@ def plot_avg_corr_mat(
     selection_mode="percentage",
     categories=("total",),
 
-    # NEW
-    selectivity_categories_used=None,   # e.g. ["animals","faces"]
-    selectivity_mode="smart_mean",      # "smart_mean" or "panel"
-    vmin=None,                          # NEW
+    selectivity_categories_used=None,
+    selectivity_mode="smart_mean",
+    vmin=None,
     vmax=1.0,
 
     plot_dir="plots/",
@@ -4309,7 +4363,6 @@ def plot_avg_corr_mat(
         raise RuntimeError("plot_avg_corr_mat requires load_all_corr_mats() in utils.py.")
     _load = globals()["load_all_corr_mats"]
 
-    # ---- normalize category names ----
     base = ["animal", "face", "object", "place"]
     alias = {
         "animals": "animal", "animal": "animal",
@@ -4327,11 +4380,9 @@ def plot_avg_corr_mat(
             if k not in alias:
                 raise ValueError(f"Unknown selectivity category '{c}'. Use animals/faces/objects/places.")
             used_sel.append(alias[k])
-        # de-dup preserve order
         seen = set()
         used_sel = [x for x in used_sel if not (x in seen or seen.add(x))]
 
-    # ---- helpers ----
     def _discover_levels(root: Path) -> list[float]:
         pat = re.compile(subdir_regex)
         lvls = set()
@@ -4359,15 +4410,12 @@ def plot_avg_corr_mat(
         Works with e.g. 'animal1.jpg', 'faces/xxx.png', etc.
         """
         s = str(name).lower()
-        # path component checks
         for key in ["animal", "face", "object", "place"]:
             if f"/{key}" in s or f"\\{key}" in s:
                 return key
-        # prefix checks
         for key in ["animal", "face", "object", "place"]:
             if s.startswith(key):
                 return key
-        # contains checks (fallback)
         for key in ["animal", "face", "object", "place"]:
             if key in s:
                 return key
@@ -4387,7 +4435,6 @@ def plot_avg_corr_mat(
 
         for item in ddir.iterdir():
             if item.suffix.lower() == ".pkl":
-                # try to extract image_names if present
                 try:
                     import pickle
                     with open(item, "rb") as f:
@@ -4413,13 +4460,11 @@ def plot_avg_corr_mat(
     for dmg_layer in damage_layers:
         for act in activations_layers:
             if data_type != "selectivity":
-                raise NotImplementedError("plot_categ_differences currently supports selectivity mode only.")
+                raise NotImplementedError("plot_avg_corr_mat currently supports selectivity mode only.")
 
             sel_root = _selective_root(dmg_layer, act)
 
-            # ---- choose damage levels ----
             if damage_levels is not None:
-                # allow scalar or list/tuple
                 if isinstance(damage_levels, (int, float, str)):
                     lvls = [float(damage_levels)]
                 else:
@@ -4431,7 +4476,6 @@ def plot_avg_corr_mat(
                 print(f"[plot_avg_corr_mat] dmg={dmg_layer} act={act} lvls={lvls} used_sel={used_sel} mode={selectivity_mode}")
 
             for lvl in lvls:
-                # load per-selectivity-category averaged matrices
                 sel_mats = {}
                 image_names = None
                 for sel_cat in used_sel:
@@ -4440,18 +4484,14 @@ def plot_avg_corr_mat(
                     if image_names is None and names is not None:
                         image_names = names
 
-                # PANEL MODE: store each sel_cat separately
                 if selectivity_mode == "panel":
                     for sel_cat, M in sel_mats.items():
                         final[(dmg_layer, act, sel_cat, float(lvl), "panel")] = M
                     continue
 
-                # SMART MEAN: build one matrix by choosing relevant sel_mats per entry
                 if selectivity_mode != "smart_mean":
                     raise ValueError("selectivity_mode must be 'smart_mean' or 'panel'.")
 
-                # Need stimulus categories to apply smart mean.
-                # If no image_names available, we cannot do entrywise category logic.
                 if image_names is None:
                     raise RuntimeError(
                         "smart_mean requires image_names in the RDM pickles to infer stimulus categories. "
@@ -4466,21 +4506,16 @@ def plot_avg_corr_mat(
                 N = next(iter(sel_mats.values())).shape[0]
                 out = np.empty((N, N), dtype=np.float32)
 
-                # Build entrywise:
-                # same category => use that category's selective matrix
-                # different categories => average the two category-selective matrices (if both in used_sel)
                 for i in range(N):
                     ci = stim_cats[i]
                     for j in range(N):
                         cj = stim_cats[j]
                         if ci == cj:
                             if ci not in sel_mats:
-                                # if user excluded this category, fall back to mean over all available
                                 out[i, j] = np.mean([m[i, j] for m in sel_mats.values()], dtype=np.float32)
                             else:
                                 out[i, j] = sel_mats[ci][i, j]
                         else:
-                            # use both if available; otherwise use whatever exists
                             chosen = []
                             if ci in sel_mats:
                                 chosen.append(sel_mats[ci][i, j])
@@ -4490,24 +4525,18 @@ def plot_avg_corr_mat(
                                 chosen = [m[i, j] for m in sel_mats.values()]
                             out[i, j] = float(np.mean(chosen))
 
-                # Respect categories=("total",) by naming this "total"
-                # (If you pass other plot categories, you can extend this later.)
                 cat_name = "total" if "total" in categories else "smart_mean"
                 final[(dmg_layer, act, cat_name, float(lvl), "smart_mean")] = out
 
-    # ---- plot ----
     plot_dir = Path(plot_dir)
     plot_dir.mkdir(parents=True, exist_ok=True)
 
-    # determine levels and cats/panels present
     lvls_present = sorted({k[3] for k in final.keys()})
-    # In panel mode, "cat" is actually sel_cat panels; in smart_mean it's 'total'/etc.
     cats_present = sorted({k[2] for k in final.keys()})
     modes_present = sorted({k[4] for k in final.keys()})
 
     for act in activations_layers:
         for mode in modes_present:
-            # For "panel", cats_present are panels; for smart_mean, cats_present likely just ["total"]
             fig_cols = len(lvls_present) * (len(cats_present) if mode == "panel" else 1)
             fig, axes = plt.subplots(
                 nrows=len(damage_layers),
@@ -4536,7 +4565,6 @@ def plot_avg_corr_mat(
                             col += 1
                     else:
                         ax = axes[i, col]
-                        # pick whichever cat exists for smart_mean (usually total)
                         key = next((k for k in final.keys() if k[0]==dmg_layer and k[1]==act and k[3]==float(lvl) and k[4]==mode), None)
                         if key is None:
                             ax.axis("off")
@@ -4551,22 +4579,7 @@ def plot_avg_corr_mat(
                         col += 1
 
             plt.tight_layout()
-            # ---- dynamic output filename ----
-            # --- model name (same logic as categ_corr_lineplot) ---
-            def _model_name_from_main_dir(main_dir: str) -> str:
-                p = Path(main_dir)
-                parts = p.parts
-
-                # Common layout: .../damaged/<MODEL_NAME>/...
-                if "damaged" in parts:
-                    i = parts.index("damaged")
-                    if i + 1 < len(parts):
-                        return parts[i + 1]
-
-                # Fallback: last path component
-                return p.name or "model"
-
-            model_name = _model_name_from_main_dir(main_dir)
+            model_name = _lineplot_model_tag(main_dir)
             def _fmt_levels(lvls):
                 lvls = sorted(set(float(x) for x in lvls))
                 if len(lvls) == 1:
@@ -4627,8 +4640,8 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
 def plot_categ_differences(
     damage_layers,
     activations_layers,
-    damage_type: str|None = None,  # Damage type to plot; required only if damage_pairs is None
-    main_dir: str|list[str] = "data/haupt_stim_activ/damaged/cornet_rt/",  # Single dir or list of fallback dirs to search
+    damage_type: str|None = None,
+    main_dir: str|list[str] = "data/haupt_stim_activ/damaged/cornet_rt/",
     image_dir="stimuli/",
     mode='dirs',
     file_prefix='damaged_',
@@ -4638,12 +4651,12 @@ def plot_categ_differences(
     verbose=0,
     scatter=False,
     ylim=None,
-    data_type="selectivity",   # "selectivity" or e.g. "svm_15"
+    data_type="selectivity",
     percentage=False,
     selectivity_fraction: float|None = None,
     selection_mode: str = "percentage",
-    damage_pairs: dict[str, list]|None = None,  # {damage_type: [levels, ...], ...} to plot multiple damage types; None uses (damage_type, damage_levels)
-    save_mode: str = "png",  # Save format: "png", "svg", or "png+svg" for both
+    damage_pairs: dict[str, list]|None = None,
+    save_mode: str = "png",
     line_colors=None,
     line_colours=None,
     line_color=None,
@@ -4666,10 +4679,10 @@ def plot_categ_differences(
     is its own row of subplots (columns = categories). If comparison=True, fewer
     subplots with grouped bars.
 
-    When percentages=True, the first damage level (damage_levels[0]) is treated
+    When percentage=True, the first damage level for each damage type is treated
     as the baseline. We compute ratio = (current / baseline) * 100 for each raw
     replicate. That includes re-scaling the baseline itself, so the baseline
-    bar is at 100%.  
+    bar is at 100%.
 
     data_type:
        "selectivity" -> correlation-based data from ".../RDM/<act_layer>"
@@ -4679,7 +4692,6 @@ def plot_categ_differences(
        Width of a single bar in x-axis units. When comparison=True and no
        value is supplied, bars are auto-sized to occupy 80% of each group.
     """
-    # ---------- Normalize main_dir to a list (for fallback dirs) ----------
     if isinstance(main_dir, str):
         main_dir_list = [main_dir]
     else:
@@ -4694,8 +4706,6 @@ def plot_categ_differences(
         point_shapes, point_markers, point_shape, point_marker
     )
     resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
-    
-    # ---------------- NEW COMMON IO HELPERS --------------------------
 
     def load_svm_dataframes(item_path: str | os.PathLike) -> list[pd.DataFrame]:
         """
@@ -4731,9 +4741,8 @@ def plot_categ_differences(
         if not dfs:
             raise FileNotFoundError(f"No SVM DataFrames found in {item_path}")
         return dfs
-    # ---------------- HELPER FUNCTIONS ----------------
+
     def unify_image_name(cat_str):
-        """ Convert 'scene' -> 'place' for selectivity categories. """
         cat_str = cat_str.lower()
         if cat_str == "scene":
             return "place"
@@ -4761,8 +4770,6 @@ def plot_categ_differences(
         else:
             return (fname, "")
 
-    # ----------- SELECTIVITY FUNCTIONS -------------
-    
     def compute_differences_selectivity(matrices, sorted_filenames, categories_list):
         """
         For each focal category, compute (within-cat) - (between-cat) for each other cat.
@@ -4781,7 +4788,7 @@ def plot_categ_differences(
                     cat_r = unify_image_name(extract_string_numeric_parts(sorted_filenames[r_i])[0])
                     for c_i, val in enumerate(row):
                         if r_i == c_i:
-                            continue  # skip diagonal
+                            continue
                         cat_c = unify_image_name(extract_string_numeric_parts(sorted_filenames[c_i])[0])
                         if cat_r == cat and cat_c == cat:
                             within.append(val)
@@ -4796,7 +4803,6 @@ def plot_categ_differences(
                     diff = w_mean - b_mean
                     accum[cat][oc].append(diff)
 
-        # Convert accum -> final diffs_dict
         diffs_dict = {}
         for cat in accum:
             other_cats = sorted(accum[cat].keys())
@@ -4809,7 +4815,6 @@ def plot_categ_differences(
             diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
         return diffs_dict
 
-    # ----------- SVM FUNCTIONS -------------
     def compute_svm_pairwise_accuracies(dataframes, categories_list):
         """
         For each focal cat 'cat' and other cat 'oc':
@@ -4830,7 +4835,6 @@ def plot_categ_differences(
                     if oc == cat:
                         continue
                     oc_l = oc
-                    # gather columns that have BOTH cat_l and oc_l
                     pair_cols_idx = [
                         i for i, col in enumerate(lower_cols)
                         if (cat_l in col) and (oc_l in col)
@@ -4842,7 +4846,6 @@ def plot_categ_differences(
                         mean_acc = 0.0
                     accum[cat][oc].append(mean_acc)
 
-        # Convert accum -> final
         diffs_dict = {}
         for cat in accum:
             other_cats = sorted(accum[cat].keys())
@@ -4855,7 +4858,6 @@ def plot_categ_differences(
             diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
         return diffs_dict
 
-    # ---------------- Utility to scale to baseline ----------------
     def scale_to_baseline(diffs_dict_current, diffs_dict_baseline):
         """
         Given two diffs_dict structures:
@@ -4882,9 +4884,7 @@ def plot_categ_differences(
             new_raw_arrays = []
 
             for i, oc in enumerate(oc_list):
-                # find the corresponding baseline index for oc
                 if i >= len(base_oc_list) or oc != base_oc_list[i]:
-                    # fallback: search by name
                     try:
                         base_i = base_oc_list.index(oc)
                     except ValueError:
@@ -4898,7 +4898,6 @@ def plot_categ_differences(
                 arr_base = np.array(base_raw_arrays[base_i])
                 arr_curr = np.array(raw_arrays[i])
 
-                # If arrays differ in length for some reason, match the smaller
                 min_len = min(len(arr_base), len(arr_curr))
                 arr_base = arr_base[:min_len]
                 arr_curr = arr_curr[:min_len]
@@ -4918,44 +4917,21 @@ def plot_categ_differences(
             scaled_dict[cat] = (scaled_oc_list, new_mean_vals, new_std_vals, new_raw_arrays)
         return scaled_dict
 
-    # ---------- Helper to save plot in multiple formats ----------
-    def _save_plot(fig, base_path, mode="png", dpi=500):
-        """
-        Save figure in format(s) specified by mode.
-        
-        mode: "png", "svg", or "png+svg"
-        Saves to base_path + appropriate extension (.png, .svg, or both)
-        """
-        if "png" in mode:
-            png_path = base_path + ".png"
-            fig.savefig(png_path, dpi=dpi, format="png")
-        if "svg" in mode:
-            svg_path = base_path + ".svg"
-            fig.savefig(svg_path, format="svg")
-
-    # ---------- 1) LOAD & GROUP IMAGES BY CATEGORY -----------
     if not os.path.isdir(image_dir):
         raise FileNotFoundError(f"Image directory '{image_dir}' does not exist.")
 
     sorted_filenames = get_sorted_filenames(image_dir)
-    n_files = len(sorted_filenames)
-
-    # We'll define a custom category order with "place" (not "scene"):
     custom_category_order = ["face", "place", "object", "animal"]
 
-    # Build categories_map: {cat_name: [filenames]}
     categories_map = {}
     for fname in sorted_filenames:
         cat_raw = extract_string_numeric_parts(fname)[0]
-        cat = unify_image_name(cat_raw)  # unify "scene" -> "place"
+        cat = unify_image_name(cat_raw)
         categories_map.setdefault(cat, []).append(fname)
 
-    # Keep only categories that are actually found
     categories_list = [c for c in custom_category_order if c in categories_map]
     n_categories = len(categories_list)
 
-    # ---------- 2) GATHER RESULTS (matrices or dataframes) -----------
-    # If damage_pairs not provided, use old (damage_type, damage_levels) behavior
     if damage_pairs is None:
         if damage_type is None:
             raise ValueError("Either 'damage_type' or 'damage_pairs' must be provided.")
@@ -4972,7 +4948,6 @@ def plot_categ_differences(
             if data_type.startswith("svm"):
                 candidate = os.path.join(md, dmg_type, dmg_layer, data_type, act_layer)
             else:
-                # selectivity => correlation RDM
                 if selectivity_fraction is not None:
                     candidate = os.path.join(
                         md,
@@ -5049,7 +5024,7 @@ def plot_categ_differences(
 
         return _resolve_style_override(overrides, candidates=tuple(candidates), index=index)
 
-    all_results = []  # list of (dmg_layer, act_layer, damage_type, suffix, item_path, diffs_dict, selective_cat)
+    all_results = []
 
     if not damage_layers:
         raise ValueError("No damage_layers specified.")
@@ -5059,7 +5034,6 @@ def plot_categ_differences(
     for dmg_layer in damage_layers:
         for act_layer in activations_layers:
             for current_damage_type, current_damage_levels in damage_pairs.items():
-                # Find every valid base path so each requested suffix can resolve independently.
                 candidate_base_paths = find_valid_base_paths(dmg_layer, act_layer, current_damage_type)
 
                 if not candidate_base_paths:
@@ -5081,12 +5055,7 @@ def plot_categ_differences(
                             f"Check your damage_type, damage_layer, or activation_layer settings."
                         )
 
-                # ===== Selective RDM mode =====
                 if data_type == "selectivity" and selectivity_fraction is not None:
-                    # base_path is now RDM_{frac}_{mode}/
-                    # subdirs are like: animal_selective/, face_selective/, object_selective/, place_selective/
-                    # Each contains: damaged_X.XX/ with .pkl/.zarr files
-                    
                     def _load_corr_files_from_folder(folder_path):
                         mats = []
                         p = Path(folder_path)
@@ -5125,7 +5094,6 @@ def plot_categ_differences(
                                     )
                                 continue
                             
-                            # Load and compute diffs for this category
                             for item_path in items:
                                 mats = _load_corr_files_from_folder(item_path)
                                 if not mats:
@@ -5153,7 +5121,6 @@ def plot_categ_differences(
                                     )
                                 )
                     
-                    # After selective loop: check if we found anything for this (dmg, act, dmg_type) combo
                     if len(all_results) == results_before:
                         raise FileNotFoundError(
                             f"No selective RDM files found for damage_layer='{dmg_layer}', act_layer='{act_layer}', "
@@ -5162,7 +5129,6 @@ def plot_categ_differences(
                             f"Please run categ_corr_lineplot() first to generate the selectivity fraction files."
                         )
                 
-                # ===== Standard (non-selective) mode =====
                 else:
                     for suffix in current_damage_levels:
                         expected_name = f"{file_prefix}{suffix}"
@@ -5189,7 +5155,6 @@ def plot_categ_differences(
                                 f"Searched: {[bp for bp, _ in candidate_base_paths]}"
                             )
 
-                        # load each item and compute diffs
                         for item_path in items:
                             if data_type.startswith("svm"):
                                 dfs = load_svm_dataframes(item_path)
@@ -5210,25 +5175,20 @@ def plot_categ_differences(
                                 )
                             )
 
-    # ---------- 3) (OPTIONAL) CONVERT TO PERCENTAGES -----------
     if percentage:
-        # Group entries by (damage_layer, act_layer, damage_type) to handle multiple damage types
-        # For each group, use the first damage level in damage_pairs as the baseline
         group_map = defaultdict(list)
         for idx, (dmg_layer, act_layer, current_damage_type, sfx, ipath, diffs, selective_cat) in enumerate(all_results):
             group_key = (dmg_layer, act_layer, current_damage_type, selective_cat)
             group_map[group_key].append((sfx, ipath, diffs, idx))
 
-        updated_all_results = list(all_results)  # make a mutable copy
+        updated_all_results = list(all_results)
         for group_key, items in group_map.items():
             dmg_layer, act_layer, dmg_type, selective_cat = group_key
-            # Use the first level of this damage_type as the baseline
             baseline_sfx_list = damage_pairs.get(dmg_type, [])
             if not baseline_sfx_list:
                 continue
             baseline_sfx = baseline_sfx_list[0]
             
-            # Find the baseline item for this group (the one with suffix == baseline_sfx)
             baseline_item = None
             for (sfx, ipath, diffs_d, idx_in_all) in items:
                 if str(sfx) == str(baseline_sfx):
@@ -5236,24 +5196,19 @@ def plot_categ_differences(
                     break
 
             if baseline_item is None:
-                # no baseline in this group, skip
                 if verbose:
                     print(f"[WARN] No baseline ({baseline_sfx}) found for {group_key}")
                 continue
             baseline_diffs = baseline_item[2]
 
-            # Scale *every* suffix (including the baseline) 
-            # so that baseline ÷ baseline = 1 => 100%.
             for (sfx, ipath, current_diffs, idx_in_all) in items:
                 scaled_diffs = scale_to_baseline(current_diffs, baseline_diffs)
-                # Overwrite in updated_all_results
                 old_tuple = list(updated_all_results[idx_in_all])
                 old_tuple[5] = scaled_diffs
                 updated_all_results[idx_in_all] = tuple(old_tuple)
 
         all_results = updated_all_results
 
-    # Aggregate replicate bars when comparison mode groups multiple item paths.
     if damage_pairs is not None and comparison and len(damage_pairs) > 0:
         aggregated_results = {}
         
@@ -5263,26 +5218,21 @@ def plot_categ_differences(
             if agg_key not in aggregated_results:
                 aggregated_results[agg_key] = {}
                 for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_dict.items():
-                    # Store raw arrays as lists for accumulation; means/stds will be recalculated
                     aggregated_results[agg_key][cat] = (
                         oc_list,
                         [list(arr) if isinstance(arr, np.ndarray) else arr for arr in raw_arrays]
                     )
             else:
-                # Merge: concatenate raw arrays for this result
                 for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_dict.items():
                     if cat in aggregated_results[agg_key]:
                         existing_oc_list, existing_raw_arrays = aggregated_results[agg_key][cat]
-                        # Assume oc_list is in same order; concatenate raw arrays
                         for idx, oc in enumerate(oc_list):
                             if idx < len(existing_raw_arrays):
                                 arr_to_add = list(raw_arrays[idx]) if isinstance(raw_arrays[idx], np.ndarray) else list(raw_arrays[idx])
                                 existing_raw_arrays[idx].extend(arr_to_add)
         
-        # Convert aggregated results back to all_results format
         all_results_agg = []
         for (dmg_layer, act_layer, current_damage_type, suffix, selective_cat), agg_dict in aggregated_results.items():
-            # Recalculate means and stds from aggregated raw arrays
             final_diffs_dict = {}
             for cat, (oc_list, raw_arrays) in agg_dict.items():
                 mean_vals, std_vals = [], []
@@ -5306,10 +5256,7 @@ def plot_categ_differences(
         
         all_results = all_results_agg
 
-    # ---------- 4) PLOTTING -----------
     if not comparison:
-        # One row per (dmg_layer, act_layer, suffix, item_path)
-        # columns = categories
         num_rows = len(all_results)
         resolved_bar_width = _resolve_bar_width(bar_width)
         fig, axes = plt.subplots(
@@ -5317,7 +5264,7 @@ def plot_categ_differences(
             figsize=_barplot_figsize(n_categories, num_rows, figsize=figsize),
             sharey=True
         )
-        axes = np.array(axes, ndmin=2)  # ensure 2D
+        axes = np.array(axes, ndmin=2)
 
         for i, (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in enumerate(all_results):
             for j, cat in enumerate(categories_list):
@@ -5355,7 +5302,6 @@ def plot_categ_differences(
                     )
                     point_markers_for_cat.append(resolved_marker if resolved_marker is not None else "o")
 
-                # bars
                 ax.bar(
                     x_pos, mean_vals,
                     yerr=_error_values_to_yerr(std_vals),
@@ -5364,7 +5310,6 @@ def plot_categ_differences(
                     color=bar_colors,
                 )
 
-                # scatter if desired
                 if scatter:
                     for idx_oc, arr in enumerate(raw_diffs):
                         if len(arr) == 0:
@@ -5421,17 +5366,15 @@ def plot_categ_differences(
         if verbose == 1:
             save_plot = input(f"Save plot under {plot_path}? Y/N: ")
             if save_plot.capitalize() == "Y":
-                _save_plot(fig, plot_path, save_mode, dpi=500)
+                _save_figure_formats(fig, plot_path, save_mode, dpi=500)
             plt.show()
         elif verbose == 0:
-            _save_plot(fig, plot_path, save_mode, dpi=500)
+            _save_figure_formats(fig, plot_path, save_mode, dpi=500)
             plt.show()
         else:
             raise ValueError(f"{verbose} is not valid. Use 0 or 1.")
 
     else:
-        # comparison=True => group all combos in fewer subplots
-        # (1 subplot per category, grouped bars for each combo).
         fig, axes = plt.subplots(
             1,
             n_categories,
@@ -5441,7 +5384,6 @@ def plot_categ_differences(
         if n_categories == 1:
             axes = [axes]
 
-        # group results by category
         results_by_cat = {cat: {} for cat in categories_list}
         combos = []
         for (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in all_results:
@@ -5453,7 +5395,6 @@ def plot_categ_differences(
             if combo_key not in combos:
                 combos.append(combo_key)
             for cat in categories_list:
-                # In selective mode, only use RDMs from the matching selective category for each subplot
                 if selective_cat is not None and selective_cat != cat:
                     continue
                 results_by_cat[cat][combo_key] = diffs_dict.get(cat, ([], [], [], []))
@@ -5486,7 +5427,6 @@ def plot_categ_differences(
                 if not oc_list:
                     continue
 
-                # reorder oc_list to match custom_category_order minus cat
                 index_map = {c: k for k, c in enumerate(oc_list)}
                 new_oc_list = [c for c in custom_category_order if c != cat and c in index_map]
 
@@ -5583,10 +5523,10 @@ def plot_categ_differences(
         if verbose == 1:
             save_plot = input(f"Save plot under {plot_path}? Y/N: ")
             if save_plot.capitalize() == "Y":
-                _save_plot(fig, plot_path, save_mode, dpi=500)
+                _save_figure_formats(fig, plot_path, save_mode, dpi=500)
             plt.show()
         elif verbose == 0:
-            _save_plot(fig, plot_path, save_mode, dpi=500)
+            _save_figure_formats(fig, plot_path, save_mode, dpi=500)
             plt.show()
         else:
             raise ValueError(f"{verbose} is not valid. Use 0 or 1.")
@@ -5680,52 +5620,34 @@ def pair_corr_scatter_subplots(
     layers,
     damage_levels,
     damage_type,
-    image1,              # e.g. "animal1" (exclude ".jpg")
-    image2,              # e.g. "animal2" (exclude ".jpg")
+    image1,
+    image2,
     n_permutations=5,
     main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
     plot_dir="plots/",
-    use_log_scale=False,  # if True, x/y axes are log-scaled and we do log-log fits
-    verbose=0,  # 0 or 1
+    use_log_scale=False,
+    verbose=0,
     lower_limit=0
 ):
     """
-    Creates a grid of subplots with rows = layers, cols = damage levels.
-    In each subplot, we overlay up to n_permutations scatter plots for the two
-    images, plus (optionally) a log-log fit if use_log_scale=True.
-
-    1) For each (layer, damage_level):
-       - Navigate to {main_dir}/{damage_type}/{layer}/activations/damaged_{damage_level}/
-       - Load up to n_permutations .pkl files.
-       - For each pkl file, get the row for image1.jpg, image2.jpg, scatter them.
-       - Optionally do a log-space fit if use_log_scale=True (i.e., fit y = a * x^m).
-    2) Return one figure with len(layers)*len(damage_levels) subplots in a grid.
-    3) Save the figure (or prompt) according to verbose.
+    Plot activation scatter grids for one image pair across layers and damage levels.
     """
 
-    # Make sure the plot directory exists
     os.makedirs(plot_dir, exist_ok=True)
 
-    # Create the figure grid
     nrows = len(layers)
     ncols = len(damage_levels)
 
     fig, axes = plt.subplots(
         nrows, ncols,
         figsize=(5 * ncols, 4 * nrows),
-        squeeze=False  # ensures axes is a 2D array
+        squeeze=False
     )
 
-    # If you want to preserve the order of damage_levels as given, do so:
-    # Otherwise, you could sort them if they're numeric. We'll keep them as is.
-    # same for layers
-
-    # Iterate over each row=layer, col=damage_level
     for row_idx, layer in enumerate(layers):
         layer_activ_path = os.path.join(main_dir, damage_type, layer, "activations")
         if not os.path.isdir(layer_activ_path):
             print(f"[WARN] {layer_activ_path} does not exist; skipping entire row {layer}")
-            # Optionally turn off that entire row of subplots
             for col_idx in range(ncols):
                 ax = axes[row_idx, col_idx]
                 ax.set_title(f"{layer} not found")
@@ -5734,26 +5656,20 @@ def pair_corr_scatter_subplots(
 
         for col_idx, dmg_level in enumerate(damage_levels):
             ax = axes[row_idx, col_idx]
-            """ax.set_xlim(left=lower_limit)
-            ax.set_ylim(bottom=lower_limit)"""
             subdir_name = f"damaged_{dmg_level}"
             subdir_path = os.path.join(layer_activ_path, subdir_name)
 
             if not os.path.isdir(subdir_path):
-                # Subdir doesn't exist; skip
                 ax.set_title(f"Missing {layer}, level={dmg_level}")
                 ax.axis("off")
                 continue
 
-            # Gather .pkl files
             pkl_files = [f for f in os.listdir(subdir_path) if f.lower().endswith(".pkl")]
             pkl_files.sort()
 
-            # Colors for permutations
             cmap = plt.get_cmap("tab10")
             color_cycle = [cmap(k % 10) for k in range(n_permutations)]
 
-            # We'll plot each of the first n_permutations
             for j, pkl_file in enumerate(pkl_files[:n_permutations]):
                 pkl_path = os.path.join(subdir_path, pkl_file)
                 df = load_activations_zarr(pkl_path)
@@ -5765,37 +5681,28 @@ def pair_corr_scatter_subplots(
                     print(f"[WARN] {rowname1} or {rowname2} not in {pkl_path}, skipping this file.")
                     continue
 
-                # Filter numeric columns
                 numeric_cols = [c for c in df.columns if str(c).isdigit()]
                 act1 = df.loc[rowname1, numeric_cols].to_numpy(dtype=float)
                 act2 = df.loc[rowname2, numeric_cols].to_numpy(dtype=float)
 
-                # Scatter
                 color = color_cycle[j]
                 corr = np.corrcoef(act1, act2)[0, 1]
                 label_str = f"{pkl_file}: r={corr:.2f}"
-       
 
-                # Create a scatter plot with a label
                 ax.scatter(
                     act1, act2,
                     alpha=0.5,
                     color=color,
                     s=10,
-                    label=label_str)  # This is crucial for legend
+                    label=label_str)
 
-
-                # Optionally fit a line in log space if use_log_scale
                 if use_log_scale:
-                    # Exclude any non-positive points
                     valid_mask = (act1 > 0) & (act2 > 0)
                     if np.count_nonzero(valid_mask) > 1:
                         log_x = np.log(act1[valid_mask])
                         log_y = np.log(act2[valid_mask])
                         slope, intercept = np.polyfit(log_x, log_y, 1)
-                        # slope ~ exponent, intercept ~ ln(constant)
 
-                        # Create a range in log domain
                         log_x_fit = np.linspace(log_x.min(), log_x.max(), 50)
                         log_y_fit = slope * log_x_fit + intercept
 
@@ -5808,19 +5715,14 @@ def pair_corr_scatter_subplots(
                     x_fit = np.linspace(act1.min(), act1.max(), 50)
                     y_fit = slope * x_fit + intercept
                     ax.plot(x_fit, y_fit, color=color)
-                # Optionally, you might also compute correlation in log space or linear space
-                # but we won't show that here unless you specifically need it.
 
-            # If log scale, set it
             if use_log_scale:
                 ax.set_xscale("log")
                 ax.set_yscale("log")
 
             ax.grid(True)
 
-            # Subplot title
             ax.set_title(f"{layer}, dmg={dmg_level}")
-            # Optionally set labels only if top-left or some pattern
             if row_idx == (nrows - 1):
                 ax.set_xlabel(f"{image1} activations")
             if col_idx == 0:
@@ -5832,7 +5734,6 @@ def pair_corr_scatter_subplots(
     plt.tight_layout()
     plt.subplots_adjust(top=0.93)
 
-    # Build a filename
     model_dir = main_dir[0] if isinstance(main_dir, (list, tuple)) else main_dir
     model_name = str(model_dir).strip("/").split("/")[-1]
     plot_name = (
@@ -5845,7 +5746,6 @@ def pair_corr_scatter_subplots(
 
     save_path = os.path.join(plot_dir, plot_name)
 
-    # Save or show
     if verbose == 1:
         save_plot = input(f"Save figure under {save_path}? (Y/N): ")
         if save_plot.strip().lower() == "y":
@@ -5870,17 +5770,9 @@ def damage_type_lineplot(
     verbose=0,
 ):
     """
-    1) Aggregates data for each damage_type & category.
-    2) Plots one subplot *per* damage type.
-    3) If exactly 2 damage types, plots a second figure with a dual x-axis
-       (twinned axes) and a shared y-axis. 
-       - Each axis is forced to start at 0 on the left corner.
-       - The top and bottom axes have different colors and different param scales.
-    4) If common_ylim is provided, it's applied to all subplots for consistent comparison.
+    Plot category curves for each damage type, plus a twinned-axis comparison
+    when exactly two damage types are provided.
     """
-    # ------------------------------------------------------------------
-    # Helper : read **all permutations** from either a Pickle or a Zarr
-    # ------------------------------------------------------------------
     def _load_selectivity_dicts(path: str | os.PathLike) -> list[dict]:
         out = []
         if os.path.isfile(path):
@@ -5898,7 +5790,6 @@ def damage_type_lineplot(
                     root = zarr.open(str(path), mode="r")
                     for perm in root.attrs.get("perm_indices", []):
                         df = load_activations_zarr(path, perm=perm)
-                        # expect a 1‑row DataFrame whose single cell is the dict
                         if df.shape[0] == 1 and isinstance(df.iloc[0, 0], dict):
                             out.append(df.iloc[0, 0])
                         else:
@@ -5910,9 +5801,7 @@ def damage_type_lineplot(
                 if fn.endswith((".pkl", ".zarr")):
                     out += _load_selectivity_dicts(os.path.join(path, fn))
         return out
-    # ------------------------------------------------------------------
 
-    # ------------- STEP 1 – aggregate ---------------------------------
     data = { (dt, cat): {} for dt in damage_types for cat in categories }
 
     for dmg_type in damage_types:
@@ -5927,12 +5816,11 @@ def damage_type_lineplot(
         for subdir in os.listdir(layer_path):
             m = re.search(subdir_regex, subdir)
             if not (m and os.path.isdir(os.path.join(layer_path, subdir))):
-                continue                                    # not a “damaged_x” dir
+                continue
 
             frac = round(float(m.group(1)), 3)
             cache = os.path.join(output_path, f"avg_selectivity_{frac}.pkl")
 
-            # -- build cache if missing --------------------------------
             if not os.path.exists(cache):
                 agg: dict[str, list[float]] = {c: [] for c in categories}
 
@@ -5950,7 +5838,6 @@ def damage_type_lineplot(
                 with open(cache, "wb") as f:
                     pickle.dump(stats, f)
 
-            # -- read cache & fill master dict -------------------------
             cached = safe_load_pickle(cache) or {}
             for cat in categories:
                 if (isinstance(cached.get(cat), dict) and
@@ -5959,7 +5846,6 @@ def damage_type_lineplot(
                     σ = cached[cat][metric]["std"]
                     data[(dmg_type, cat)][frac] = (μ, σ)
 
-    # ------------- STEP 2 – single‑axis sub‑plots ---------------------
     n = len(damage_types)
     if n == 0:
         print("No valid damage types → nothing to plot.")
@@ -6009,7 +5895,6 @@ def damage_type_lineplot(
     if verbose: plt.show()
     else:       plt.close(fig)
 
-    # ------------- STEP 3 – twin‑axes plot (exactly two damage types) -
     if len(damage_types) != 2:
         print("Twinned‑axis plot skipped (need exactly 2 damage types).")
         return
@@ -7681,6 +7566,7 @@ def apply_eccentricity_graded(
         return out * _cache[key]
 
     target.register_forward_hook(_hook)
+
 
 def resolve_selectivity_table(path_or_dir: str | Path,
                               model_tag: str | None = None) -> Path:
