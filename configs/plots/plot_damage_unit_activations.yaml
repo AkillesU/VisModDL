@@ -1,0 +1,21 @@
+model_name: "cornet_rt5_c"
+damaged_model_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c"
+selectivity_path: "unit_selectivity"
+output_dir: "plots/damage_unit_activations/cornet_rt5_c"
+
+damage_types: ["connections"]
+damage_layers: ["IT", "V1", "V2", "V4"]
+activation_layers: ["IT"]
+unit_layer: "module.IT"
+
+categories: ["animal", "face", "object", "place"]
+ranking_score_prefix: "hg"
+top_n_units: 1
+mannwhitney_normalize: false
+
+plot_individual_units: true
+plot_category_averages: true
+plot_joint_average: true
+
+figure_size: [6, 6]
+dpi: 400
