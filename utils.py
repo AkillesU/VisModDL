@@ -5,26 +5,21 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from torch.nn.modules import activation
 from torchvision import transforms
 from PIL import Image
-from torchinfo import summary
 import yaml
 from tqdm import tqdm
 import math
 import torch.nn as nn
 import pickle
-from joblib import Parallel, delayed
-from sklearn.preprocessing import RobustScaler, StandardScaler
 from sklearn.svm import SVC
 from itertools import combinations, product
 import random
 import hashlib
 from collections import defaultdict
-import torchvision                       
-from torchvision.datasets.utils import download_url
-import os, tarfile, hashlib
+import torchvision
 import copy
+import shutil
 import statsmodels.formula.api as smf
 from pathlib import Path
 from typing import Sequence, Mapping, Tuple, List, Iterator, Any
@@ -51,33 +46,30 @@ def get_layer_from_path(model, path: str):
       - attribute access (e.g., 'layer1.0.conv1', 'V4', 'IT')
       - leading 'module.' from DataParallel paths (treated as optional)
     """
-    # 1) Normalize away explicit _modules segments
+    # Paths from named modules and saved configs sometimes include explicit
+    # `_modules` hops; normalize them before walking the model.
     try:
         norm = normalize_module_name(path)
     except NameError:
         norm = path.replace("._modules.", ".").replace("._modules", ".").strip(".")
 
-    steps = [s for s in norm.split(".") if s]  # remove empty tokens
+    steps = [s for s in norm.split(".") if s]
     current = model
 
-    # NEW: tolerate a leading 'module' token regardless of wrapping
     if steps and steps[0] == "module":
         if hasattr(current, "module"):
-            current = current.module  # unwrap real DataParallel
-        # drop the token either way
+            current = current.module
         steps = steps[1:]
 
     for step in steps:
-        # A) direct attribute?
         if hasattr(current, step):
             current = getattr(current, step)
             continue
 
-        # B) integer index (Sequential/ModuleList)?
         if step.isdigit():
             idx = int(step)
             try:
-                current = current[idx]       # Sequential/ModuleList
+                current = current[idx]
                 continue
             except (TypeError, IndexError, KeyError):
                 pass
@@ -90,7 +82,6 @@ def get_layer_from_path(model, path: str):
                 current = current[str(idx)]
                 continue
 
-        # C) dict-like or _modules lookup
         if isinstance(current, dict) and step in current:
             current = current[step]
             continue
@@ -105,6 +96,37 @@ def get_layer_from_path(model, path: str):
     return current
 
 
+def _as_list(value):
+    if value is None:
+        return []
+    return value if isinstance(value, (list, tuple)) else [value]
+
+
+def _module_child_path(base_path: str, child_name: str) -> str:
+    return child_name if base_path == "" else f"{base_path}._modules.{child_name}"
+
+
+def _collect_module_paths(module, base_path="", *, matches, stop_at_match=False):
+    paths = []
+    if matches(module):
+        paths.append(base_path)
+        if stop_at_match:
+            return paths
+
+    for name, submodule in module._modules.items():
+        if submodule is None:
+            continue
+        paths.extend(
+            _collect_module_paths(
+                submodule,
+                _module_child_path(base_path, name),
+                matches=matches,
+                stop_at_match=stop_at_match,
+            )
+        )
+
+    return paths
+
 
 def get_all_weight_layers(model, base_path="", include_bias=False):
     """
@@ -118,30 +140,10 @@ def get_all_weight_layers(model, base_path="", include_bias=False):
     Returns:
         List[str]: A list of dot-separated paths to each module with weights.
     """
-    weight_layers = []
-    if include_bias:
-        if hasattr(model, 'weight') or hasattr(model, 'bias'):
-            # 'model' itself is a leaf layer with weights
-            weight_layers.append(base_path)
-    else:
-        # Check if current module has a 'weight' parameter
-        if hasattr(model, 'weight'):
-            # 'model' itself is a leaf layer with weights
-            weight_layers.append(base_path)
+    def _has_requested_parameter(layer):
+        return hasattr(layer, "weight")
 
-    # If not, or in addition, iterate through submodules
-    for name, submodule in model._modules.items():
-        if submodule is None:
-            continue
-        # If base_path is empty, just use the name. Otherwise, append it with a dot.
-        if base_path == "":
-            new_path = name
-        else:
-            new_path = base_path + "." + "_modules" + "." + name
-
-        weight_layers.extend(get_all_weight_layers(submodule, new_path))
-
-    return weight_layers
+    return _collect_module_paths(model, base_path, matches=_has_requested_parameter)
 
 
 def get_all_conv_layers(model, base_path="", include_bias=False):
@@ -156,34 +158,41 @@ def get_all_conv_layers(model, base_path="", include_bias=False):
     Returns:
         List[str]: A list of dot-separated paths to each Conv2d module.
     """
-    conv_layers = []
+    def _is_requested_conv(layer):
+        return isinstance(layer, nn.Conv2d) and hasattr(layer, "weight")
 
-    # If the current module itself is a Conv2d, record its path
-    if isinstance(model, nn.Conv2d):
-        # Make sure it has a weight parameter (it should)
-        if include_bias:
-            if hasattr(model, 'weight') or hasattr(model, 'bias'):
-                conv_layers.append(base_path)
-        else:
-            if hasattr(model, 'weight'):
-                conv_layers.append(base_path)
-            # Once we've identified this as a Conv2d, we typically don't recurse further
-            # because a single nn.Conv2d shouldn't have any of its own submodules.
-        return conv_layers
+    return _collect_module_paths(
+        model,
+        base_path,
+        matches=_is_requested_conv,
+        stop_at_match=True,
+    )
 
-    # Otherwise if base path is not Conv layer itself, recurse into children
-    for name, submodule in model._modules.items():
-        if submodule is None:
-            continue
-        if base_path == "":
-            new_path = name
-        else:
-            new_path = base_path + "." + "_modules" + "." + name
 
-        # Rerun function to check if child is conv layer...
-        conv_layers.extend(get_all_conv_layers(submodule, new_path))
+def _collect_weight_target_paths(
+    model,
+    layer_paths=None,
+    *,
+    apply_to_all_layers=False,
+    only_conv=True,
+    include_bias=False,
+):
+    collector = get_all_conv_layers if only_conv else get_all_weight_layers
+    if apply_to_all_layers:
+        return collector(model, "", include_bias)
 
-    return conv_layers
+    targets = []
+    for path in _as_list(layer_paths):
+        targets.extend(collector(get_layer_from_path(model, path), path, include_bias))
+    return targets
+
+
+def is_conv_like(layer):
+    """
+    Returns True if the given layer is a convolutional layer.
+    Supports 1D, 2D, and 3D convs.
+    """
+    return isinstance(layer, (nn.Conv1d, nn.Conv2d, nn.Conv3d))
 
 
 def is_cornet(model_info: dict) -> bool:
@@ -192,7 +201,6 @@ def is_cornet(model_info: dict) -> bool:
 
 
 def short_module_tag(path: str) -> str:
-    # Uses your existing normalize_module_name if present
     try:
         norm = normalize_module_name(path)
     except NameError:
@@ -293,7 +301,7 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
             raise ValueError(f"CORnet model {load_model_name} not found. Check config file.")
 
     elif model_source == "pytorch_hub":
-        # Safe path for torchvision models: do NOT use torch.hub for pytorch/vision
+        # Torchvision models are more stable through torchvision's own API.
         if model_repo == "pytorch/vision":
             from torchvision.models import get_model, get_model_weights
 
@@ -318,7 +326,7 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
                 ) from e
 
         else:
-            # Keep old behaviour for non-torchvision hub repos
+            # Non-torchvision hub repos still use the hub loader.
             if model_weights == "":
                 model = torch.hub.load(model_repo, load_model_name)
             else:
@@ -408,41 +416,47 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
     return activations_df
 
 
-def apply_noise(model, noise_level, noise_dict, layer_paths, apply_to_all_layers, only_conv=True, include_bias=False):
-    if apply_to_all_layers:
-        targets = (
-            get_all_conv_layers(model, "", include_bias)
-            if only_conv else
-            get_all_weight_layers(model, "", include_bias)
-        )
-    else:
-        targets = []
-        for path in _as_list(layer_paths):
-            base = get_layer_from_path(model, path)
-            if only_conv:
-                targets.extend(get_all_conv_layers(base, path))
-            else:
-                targets.extend(get_all_weight_layers(base, path))
+def apply_noise(
+    model,
+    noise_level,
+    noise_dict,
+    layer_paths,
+    apply_to_all_layers,
+    only_conv=True,
+    include_bias=False,
+):
+    targets = _collect_weight_target_paths(
+        model,
+        layer_paths,
+        apply_to_all_layers=apply_to_all_layers,
+        only_conv=only_conv,
+        include_bias=include_bias,
+    )
 
     for w_path in targets:
         npath = normalize_module_name(w_path)
         layer = get_layer_from_path(model, npath)
 
-        # respect only_conv
         if only_conv and not is_conv_like(layer):
             continue
 
-        # WEIGHT
         if hasattr(layer, "weight") and layer.weight is not None:
             key_w = f"{npath}.weight"
-            sd_w = noise_dict[key_w] if key_w in noise_dict else float(layer.weight.detach().std().item())
+            sd_w = (
+                noise_dict[key_w]
+                if key_w in noise_dict
+                else float(layer.weight.detach().std().item())
+            )
             with torch.no_grad():
                 layer.weight.add_(torch.randn_like(layer.weight) * (sd_w * noise_level))
 
-        # BIAS (optional)
         if include_bias and hasattr(layer, "bias") and layer.bias is not None:
             key_b = f"{npath}.bias"
-            sd_b = noise_dict[key_b] if key_b in noise_dict else float(layer.bias.detach().std().item())
+            sd_b = (
+                noise_dict[key_b]
+                if key_b in noise_dict
+                else float(layer.bias.detach().std().item())
+            )
             with torch.no_grad():
                 layer.bias.add_(torch.randn_like(layer.bias) * (sd_b * noise_level))
 
@@ -464,17 +478,13 @@ def apply_activation_noise(
 
     Works for Conv (N, C, H, W, ...) and Linear (N, F) outputs.
     """
-    # Choose target layers
-    if apply_to_all_layers:
-        targets = get_all_conv_layers(model, "", include_bias=False) if only_conv else get_all_weight_layers(model, "", include_bias=False)
-    else:
-        targets = []
-        for path in _as_list(layer_paths):
-            base = get_layer_from_path(model, path)
-            if only_conv:
-                targets.extend(get_all_conv_layers(base, path))
-            else:
-                targets.extend(get_all_weight_layers(base, path))
+    targets = _collect_weight_target_paths(
+        model,
+        layer_paths,
+        apply_to_all_layers=apply_to_all_layers,
+        only_conv=only_conv,
+        include_bias=False,
+    )
 
     for w_path in targets:
         npath = normalize_module_name(w_path)
@@ -521,34 +531,28 @@ def apply_masking(
 
     Note
     ----
-    The helper functions `get_layer_from_path`, `get_all_conv_layers`,
-    `get_all_weight_layers`, and `create_mask` are assumed to exist
-    unchanged elsewhere in the codebase.
+    Activation masking registers hooks on layer outputs. Weight masking registers
+    pre-forward hooks so the same mask is applied consistently on each pass.
     """
     param_masks = {}
-    # Activation-level unit masking 
     if masking_level == "unit_activations":
-        # Ignore include_bias for activation masking (no bias at this stage).
-        # Enumerate target layers
-        target_paths = []
         if apply_to_all_layers:
-            # If want to add support "all layers", call get_all_conv_layers(model, "")
             raise NotImplementedError("unit_activations with apply_to_all_layers=True not implemented")
-        else:
-            for path in layer_paths:
-                base = get_layer_from_path(model, path)
-                if only_conv:
-                    target_paths.extend(get_all_conv_layers(base, path))
-                else:
-                    # You can also support Linear here via get_all_weight_layers
-                    target_paths.extend(get_all_weight_layers(base, path))
+        if layer_paths is None:
+            raise ValueError("layer_paths must be provided for unit_activations masking")
+
+        target_paths = _collect_weight_target_paths(
+            model,
+            layer_paths,
+            apply_to_all_layers=False,
+            only_conv=only_conv,
+            include_bias=False,
+        )
 
         # Register forward hooks that zero whole output channels/features.
         for w_path in target_paths:
             layer = get_layer_from_path(model, w_path)
 
-            # Determine number of units from WEIGHT shape if available (out_channels/out_features),
-            # fall back to an attribute if needed.
             if hasattr(layer, "weight") and layer.weight is not None:
                 num_units = layer.weight.shape[0]
             elif hasattr(layer, "out_channels"):
@@ -560,23 +564,18 @@ def apply_masking(
 
             k = int(fraction_to_mask * num_units)
             if k <= 0:
-                # nothing to mask for this layer at this damage level
                 continue
 
-            # Draw unit indices once per layer/permutation (like unit weight masking).
-            # We store a 1D mask; we’ll move it to the right device/dtype inside the hook.
+            # Draw once per permutation; the hook moves the mask onto the output device.
             unit_idx = torch.randperm(num_units)[:k]
             base_mask_1d = torch.ones(num_units, dtype=torch.float32)
             base_mask_1d[unit_idx] = 0.0
 
             def _act_unit_mask_hook(module, _inputs, output, mask_1d=base_mask_1d):
-                # Handle tensor or tuple outputs
                 def _apply(o):
-                    # Expect o shape [N, C, ...] for conv or [N, F] for linear
                     if not torch.is_tensor(o) or o.dim() < 2:
                         return o
                     m = mask_1d.to(device=o.device, dtype=o.dtype)
-                    # Build view: [1, C, 1, 1, ...] to broadcast across batch & spatial dims
                     view = [1, o.shape[1]] + [1] * (o.dim() - 2)
                     return o * m.view(*view)
 
@@ -588,56 +587,34 @@ def apply_masking(
 
             layer.register_forward_hook(_act_unit_mask_hook)
 
-        # Done: hooks are registered; nothing else to do for this mode.
         return
 
-    
-
-    # Activation-level *spatial* unit masking (mask individual activation elements, not whole channels)
     if masking_level == "unit_activations_spatial":
-        # Enumerate target layers similarly to unit_activations
-        target_paths = []
-        if apply_to_all_layers:
-            # apply to all conv/weight layers: mirror the unit_activations behavior by expanding from top-level blocks
-            for name, _ in model.named_parameters():
-                # handled below by collecting from model modules; here we just fall back to layer_paths semantics
-                pass
-
         if layer_paths is None and not apply_to_all_layers:
             raise ValueError("layer_paths must be provided unless apply_to_all_layers=True")
 
-        # If apply_to_all_layers=True, we treat the whole model as the base
-        if apply_to_all_layers:
-            # Expand from the model root
-            if only_conv:
-                target_paths.extend(get_all_conv_layers(model, ""))  # path prefix empty
-            else:
-                target_paths.extend(get_all_weight_layers(model, ""))
-        else:
-            for path in layer_paths:
-                base = get_layer_from_path(model, path)
-                if only_conv:
-                    target_paths.extend(get_all_conv_layers(base, path))
-                else:
-                    target_paths.extend(get_all_weight_layers(base, path))
+        target_paths = _collect_weight_target_paths(
+            model,
+            layer_paths,
+            apply_to_all_layers=apply_to_all_layers,
+            only_conv=only_conv,
+            include_bias=False,
+        )
 
-        # Register forward hooks that zero individual activation elements within each layer's output.
-        # We sample a fixed set of element indices per layer (per permutation) and apply the same mask across the batch.
+        # Fixed element indices per layer/permutation, shared across the batch.
         for w_path in target_paths:
             layer = get_layer_from_path(model, w_path)
 
-            # We choose indices lazily on first forward so we know the output spatial size.
+            # Output shapes can differ by model, so choose indices on first use.
             state = {"flat_idx": None, "shape_tail": None, "k": None}
 
             def _make_spatial_mask(o_tensor: torch.Tensor):
-                # o_tensor is expected to be [N, ...]; we mask over the per-sample tail dims
                 tail = tuple(o_tensor.shape[1:])
                 num_units = int(torch.tensor(tail).prod().item()) if len(tail) > 0 else 0
                 if num_units <= 0:
                     return None
                 k = int(fraction_to_mask * num_units)
                 if k <= 0:
-                    # nothing to mask for this layer at this damage level
                     return None
                 flat_idx = torch.randperm(num_units, device=o_tensor.device)[:k]
                 state["flat_idx"] = flat_idx
@@ -654,14 +631,16 @@ def apply_masking(
                         return o_tensor
                 flat_idx = state["flat_idx"]
                 tail = state["shape_tail"]
-                # Build mask of shape [1, *tail] and broadcast across batch
-                m = torch.ones(int(torch.tensor(tail).prod().item()), device=o_tensor.device, dtype=o_tensor.dtype)
+                m = torch.ones(
+                    int(torch.tensor(tail).prod().item()),
+                    device=o_tensor.device,
+                    dtype=o_tensor.dtype,
+                )
                 m[flat_idx] = 0
                 m = m.view((1,) + tail)
                 return o_tensor * m
 
             def _act_spatial_mask_hook(_module, _inp, output):
-                # Support tuple outputs (e.g., recurrent blocks returning (x, state))
                 if isinstance(output, tuple) and len(output) > 0 and torch.is_tensor(output[0]):
                     new_first = _apply(output[0])
                     return (new_first,) + output[1:]
@@ -672,8 +651,7 @@ def apply_masking(
 
         return
 
-
-# Build the mask tensors
+    # Weight masks are built once for the current permutation, then re-applied by hooks.
     with torch.no_grad():
         if apply_to_all_layers:
             for name, param in model.named_parameters():
@@ -682,91 +660,82 @@ def apply_masking(
                         param, fraction_to_mask, masking_level=masking_level
                     )
         else:
-            for path in layer_paths:
-                target_layer = get_layer_from_path(model, path)
-                if only_conv:
-                    weight_layer_paths = get_all_conv_layers(
-                        target_layer, path, include_bias
-                    )
-                else:
-                    weight_layer_paths = get_all_weight_layers(
-                        target_layer, path, include_bias
-                    )
+            weight_layer_paths = _collect_weight_target_paths(
+                model,
+                layer_paths,
+                apply_to_all_layers=False,
+                only_conv=only_conv,
+                include_bias=include_bias,
+            )
 
-                for w_path in weight_layer_paths:
-                    w_layer = get_layer_from_path(model, w_path)
+            for w_path in weight_layer_paths:
+                w_layer = get_layer_from_path(model, w_path)
 
-                    # unit‑level masking with bias: draw indices once
-                    if masking_level == "units" and include_bias:
-                        num_units = w_layer.weight.shape[0]
-                        k = int(fraction_to_mask * num_units)
-                        device = w_layer.weight.device
-                        if k == 0:
-                            unit_idx = torch.empty(
-                                0, dtype=torch.long, device=device
-                            )
-                        else:
-                            unit_idx = torch.randperm(
-                                num_units, device=device
-                            )[:k]
+                if masking_level == "units" and include_bias:
+                    num_units = w_layer.weight.shape[0]
+                    k = int(fraction_to_mask * num_units)
+                    device = w_layer.weight.device
+                    if k == 0:
+                        unit_idx = torch.empty(
+                            0, dtype=torch.long, device=device
+                        )
+                    else:
+                        unit_idx = torch.randperm(
+                            num_units, device=device
+                        )[:k]
 
-                        # weight mask (same shape as weight tensor)
-                        weight_mask = torch.ones_like(w_layer.weight)
+                    weight_mask = torch.ones_like(w_layer.weight)
+                    if k > 0:
+                        weight_mask[unit_idx, ...] = 0
+                    param_masks[w_path] = weight_mask
+
+                    if (
+                        hasattr(w_layer, "bias")
+                        and w_layer.bias is not None
+                    ):
+                        bias_mask = torch.ones_like(w_layer.bias)
                         if k > 0:
-                            weight_mask[unit_idx, ...] = 0
+                            bias_mask[unit_idx] = 0
+                        param_masks[f"{w_path}_bias"] = bias_mask
+
+                else:
+                    if (
+                        hasattr(w_layer, "weight")
+                        and w_layer.weight is not None
+                    ):
+                        weight_mask = create_mask(
+                            w_layer.weight,
+                            fraction_to_mask,
+                            masking_level=masking_level,
+                        )
                         param_masks[w_path] = weight_mask
 
-                        # matching bias mask (1‑D)
                         if (
-                            hasattr(w_layer, "bias")
+                            include_bias
+                            and hasattr(w_layer, "bias")
                             and w_layer.bias is not None
                         ):
-                            bias_mask = torch.ones_like(w_layer.bias)
-                            if k > 0:
-                                bias_mask[unit_idx] = 0
-                            param_masks[f"{w_path}_bias"] = bias_mask
-
-                    else:
-                        if (
-                            hasattr(w_layer, "weight")
-                            and w_layer.weight is not None
-                        ):
-                            weight_mask = create_mask(
-                                w_layer.weight,
+                            bias_mask = create_mask(
+                                w_layer.bias,
                                 fraction_to_mask,
                                 masking_level=masking_level,
                             )
-                            param_masks[w_path] = weight_mask
+                            param_masks[f"{w_path}_bias"] = bias_mask
+                    else:
+                        raise AttributeError(
+                            f"layer {w_path} does not have weights"
+                        )
 
-                            if (
-                                include_bias
-                                and hasattr(w_layer, "bias")
-                                and w_layer.bias is not None
-                            ):
-                                bias_mask = create_mask(
-                                    w_layer.bias,
-                                    fraction_to_mask,
-                                    masking_level=masking_level,
-                                )
-                                param_masks[f"{w_path}_bias"] = bias_mask
-                        else:
-                            raise AttributeError(
-                                f"layer {w_path} does not have weights"
-                            )
-
-    # ------------------------------------------------------------------ #
-    # 2. Register forward‑pre hooks that multiply in the masks           #
-    # ------------------------------------------------------------------ #
+    # Register forward-pre hooks that multiply in the masks.
     if not apply_to_all_layers:
         for path in layer_paths:
-            if only_conv:
-                weight_layer_paths = get_all_conv_layers(
-                    get_layer_from_path(model, path), path
-                )
-            else:
-                weight_layer_paths = get_all_weight_layers(
-                    get_layer_from_path(model, path), path
-                )
+            weight_layer_paths = _collect_weight_target_paths(
+                model,
+                [path],
+                apply_to_all_layers=False,
+                only_conv=only_conv,
+                include_bias=False,
+            )
 
             if include_bias:
                 for w_path in weight_layer_paths:
@@ -823,16 +792,13 @@ def apply_masking(
 
 def create_mask(param, fraction, masking_level='connections'):
     """
-    Create a mask for the given parameter (weight tensor).
-    If masking_level == 'connections', randomly zero out a fraction of all weight entries.
-    If masking_level == 'units', randomly zero out a fraction of entire units (rows in linear layers or filters in conv layers).
+    Create a multiplicative mask for either individual weights or dim-0 units.
     """
     shape = param.shape
     device = param.device
     if fraction <= 0:
         return torch.ones_like(param)
 
-    # Flatten the weights to pick indices easily
     if masking_level == 'connections':
         param_data = param.view(-1)
         n = param_data.numel()
@@ -845,24 +811,13 @@ def create_mask(param, fraction, masking_level='connections'):
         return mask_flat.view(shape)
 
     elif masking_level == 'units':
-        # For a Linear layer: weight shape is [out_features, in_features]
-        # Each out_feature is considered a unit
-        # For a Conv layer: weight shape might be [out_channels, in_channels, ...]
-        # We'll consider out_channels as units.
-        
-        # Identify dimension representing units: 
-        # For Linear: dim 0 is out_features.
-        # For Conv2d: dim 0 is out_channels.
-        # We'll assume standard layers where first dimension corresponds to units.
         units_dim = 0
         num_units = param.shape[units_dim]
         k = int(fraction * num_units)
         if k == 0:
             return torch.ones_like(param)
         unit_indices = torch.randperm(num_units, device=device)[:k]
-        # Create a mask of ones, then zero entire units
         mask = torch.ones_like(param)
-        # zero out rows (units)
         mask[unit_indices, ...] = 0
         return mask
 
@@ -1154,18 +1109,14 @@ def print_within_between(results, layer_name, model_name, output_path=None):
         yaml.safe_dump(native_results, f, sort_keys=False)
 
 
-def generate_params_list(params=[0.1,10,0.1]):
-    # Unpack the parameters
+def generate_params_list(params=(0.1, 10, 0.1)):
     start, length, step = params
-    
-    # Generate the values
     return [start + i * step for i in range(length)]
 
 
 def get_params_sd(model):
     sds = {}
-    for path in get_all_weight_layers(model):  # your existing enumerator
-        # canonicalize path like 'features.0' (strip any '._modules.' etc.)
+    for path in get_all_weight_layers(model):
         npath = normalize_module_name(path)
         submodule = get_layer_from_path(model, npath)
 
@@ -1195,84 +1146,60 @@ def run_damage(
     gain_control_noise=0.0,
     masking_level="connections",
     resume_existing_damage=False,
-    eccentricity_layer_path=None,  # Specific layer path. The output will be used for damage
-    eccentricity_bands: list[list[float]] | None = [[0.60, 1.00]],  # [min,max] normalized eccentricity bands
-    ecc_fraction_to_mask_params=[0, 0, 0],
+    eccentricity_layer_path=None,
+    eccentricity_bands: list[list[float]] | None = None,
+    ecc_fraction_to_mask_params=(0, 0, 0),
     run_suffix="",
-    # Graded eccentricity params
     ecc_profile: str = "linear",
     ecc_mode: str = "dropout",
     ecc_per_channel: bool = False,
     ecc_poly_deg: float = 2.0,
     ecc_exp_k: float = 4.0,
     ecc_reverse: bool = False,
-    ):
+):
     """
-    A merged run_damage that handles multiple manipulation methods.
+    Run one damage sweep and persist activations, RDMs, and selectivity summaries.
     """
-    # Determine time_steps for saving
     if "time_steps" in model_info:
         time_steps = str(model_info['time_steps'])
     elif str(model_info['name']).startswith("cornet_rt"):
         time_steps = "5"
     else:
         time_steps = ""
-    # Tag untrained models explicitly
+
     if not pretrained and not str(model_info.get('name','')).endswith('_ut'):
         model_info['name'] = f"{model_info['name']}_ut"
 
-    # Keep original run_suffix logic
     run_suffix = (("_c" if only_conv else "_all") + ("+b" if include_bias else "")) + run_suffix
 
-    # ------------------------------------------------------------
-    # A) Damage-level list (+ noise SDs if needed) — model-agnostic
-    # ------------------------------------------------------------
-    if manipulation_method == "connections":
-        damage_levels_list = generate_params_list(fraction_to_mask_params)
-        noise_dict = None
-    elif manipulation_method == "noise":
-        damage_levels_list = generate_params_list(noise_levels_params)
-        # Build a model WITHOUT hooks to compute parameter SDs
-        _tmp_model, _ = load_model(model_info, pretrained=pretrained, layer_name="temp", layer_path="")
-        noise_dict = get_params_sd(_tmp_model)                                 # uses generic weight-walker
-        del _tmp_model
-    elif manipulation_method == "noise_activations":
-        damage_levels_list = generate_params_list(noise_levels_params)
-        noise_dict = None
-    elif manipulation_method == "groupnorm_scaling":
-        damage_levels_list = generate_params_list(groupnorm_scaling_params)
-        noise_dict = None
-    elif manipulation_method == "eccentricity":
-        damage_levels_list = generate_params_list(ecc_fraction_to_mask_params)
-        noise_dict = None
-    elif manipulation_method == "eccentricity_gradual":
-        damage_levels_list = generate_params_list(ecc_fraction_to_mask_params)
-        noise_dict = None
-    else:
+    damage_param_map = {
+        "connections": fraction_to_mask_params,
+        "noise": noise_levels_params,
+        "noise_activations": noise_levels_params,
+        "groupnorm_scaling": groupnorm_scaling_params,
+        "eccentricity": ecc_fraction_to_mask_params,
+        "eccentricity_gradual": ecc_fraction_to_mask_params,
+    }
+    if manipulation_method not in damage_param_map:
         raise ValueError(f"manipulation_method '{manipulation_method}' is not recognized.")
-    # (The old CORnet/VGG block-order heuristic was unused downstream; safely omitted.)  :contentReference[oaicite:1]{index=1}
 
-    # ------------------------------------------------------------
-    # B) Decide final hooks robustly (lists ok; any model ok)
-    #     1) load once with NO hooks just to inspect structure
-    #     2) compute final_layers_to_hook
-    # ------------------------------------------------------------
-    # Always treat inputs as lists from here on
+    damage_levels_list = generate_params_list(damage_param_map[manipulation_method])
+    noise_dict = None
+    if manipulation_method == "noise":
+        _tmp_model, _ = load_model(model_info, pretrained=pretrained, layer_name="temp", layer_path="")
+        noise_dict = get_params_sd(_tmp_model)
+        del _tmp_model
+
     activation_layers_list = _as_list(activation_layers_to_save)
-    damage_layers_list     = _as_list(layer_paths_to_damage)
+    damage_layers_list = _as_list(layer_paths_to_damage)
 
-    # Load a no-hook model to build the hierarchy
+    # Inspect an unhooked model once so hooks are only attached to downstream layers.
     model, _ = load_model(model_info, pretrained=pretrained, layer_path="")
-    # Use your existing helper to select downstream activation hooks
     final_layers_to_hook = get_final_layers_to_hook(model, activation_layers_list, damage_layers_list)
-    # Fallback: if the filter returns empty, just use requested activation layers
     if not final_layers_to_hook:
         final_layers_to_hook = activation_layers_list
     print("Activations to be saved for ", damage_layers_list, ": ", final_layers_to_hook)
 
-    # ------------------------------------------------------------
-    # C) Directory naming (unchanged)
-    # ------------------------------------------------------------
     if manipulation_method == "groupnorm_scaling":
         _map = {"groupnorm": "g", "conv": "c"}
         sel = [_map[t] for t in sorted(set(groupnorm_scaling_targets))]
@@ -1299,9 +1226,6 @@ def run_damage(
         else:
             base_dir_tag = "connections"
 
-    # ------------------------------------------------------------
-    # D) Build permutation plan, optionally skipping completed runs
-    # ------------------------------------------------------------
     output_root = Path(f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}")
     activation_layer_tags = {
         lp: (lp.split(".")[2] if is_cornet(model_info) else short_module_tag(lp))
@@ -1340,22 +1264,18 @@ def run_damage(
             f"running {total_iterations} remaining."
         )
 
-    # ------------------------------------------------------------
-    # E) Main loops (reload WITH hooks; apply damage; save)
-    # ------------------------------------------------------------
     with tqdm(total=total_iterations, desc=f"Running {manipulation_method} alteration") as pbar:
         for r_start, r_end, dir_tag, damage_level, permutation_index in iteration_plan:
 
-            # 1) Load fresh model WITH ALL hooks at once
+            # Reload each permutation so damage hooks and parameter changes never leak.
             model, activations = load_model(
                 model_info=model_info,
                 pretrained=pretrained,
                 layer_name=layer_name,
-                layer_path=final_layers_to_hook     # LIST is okay
+                layer_path=final_layers_to_hook,
             )
             model.eval()
 
-            # 2) Apply chosen damage to ALL requested target blocks
             if manipulation_method == "connections":
                 apply_masking(
                     model, fraction_to_mask=damage_level,
@@ -1363,7 +1283,7 @@ def run_damage(
                     apply_to_all_layers=apply_to_all_layers,
                     masking_level=masking_level,
                     only_conv=only_conv,
-                    include_bias=include_bias
+                    include_bias=include_bias,
                 )
 
             elif manipulation_method == "noise":
@@ -1373,12 +1293,12 @@ def run_damage(
                     layer_paths=damage_layers_list,
                     apply_to_all_layers=apply_to_all_layers,
                     only_conv=only_conv,
-                    include_bias=include_bias
+                    include_bias=include_bias,
                 )
             elif manipulation_method == "noise_activations":
                 apply_activation_noise(
                     model,
-                    noise_multiplier=damage_level,  # from noise_levels_params
+                    noise_multiplier=damage_level,
                     layer_paths=damage_layers_list,
                     apply_to_all_layers=apply_to_all_layers,
                     only_conv=only_conv,
@@ -1386,12 +1306,13 @@ def run_damage(
 
             elif manipulation_method == "groupnorm_scaling":
                 apply_groupnorm_scaling(
-                    model, scaling_factor=damage_level,
+                    model,
+                    scaling_factor=damage_level,
                     layer_paths=damage_layers_list,
                     apply_to_all_layers=apply_to_all_layers,
                     include_bias=include_bias,
                     targets=groupnorm_scaling_targets,
-                    gain_control_noise=gain_control_noise
+                    gain_control_noise=gain_control_noise,
                 )
 
             elif manipulation_method == "eccentricity":
@@ -1401,7 +1322,7 @@ def run_damage(
                     r_min=r_start,
                     r_max=r_end,
                     fraction=damage_level,
-                    per_channel=False
+                    per_channel=False,
                 )
 
             elif manipulation_method == "eccentricity_gradual":
@@ -1417,10 +1338,9 @@ def run_damage(
                     per_channel=ecc_per_channel,
                     poly_deg=ecc_poly_deg,
                     exp_k=ecc_exp_k,
-                    reverse=ecc_reverse
+                    reverse=ecc_reverse,
                 )
 
-            # 3) Extract activations
             per_layer_data = {lp: [] for lp in final_layers_to_hook}
             image_files = sorted([
                 f for f in os.listdir(image_dir)
@@ -1438,7 +1358,6 @@ def run_damage(
                         out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat
                     )
 
-            # 4) Save outputs — robust name tags
             for lp in final_layers_to_hook:
                 arr_2d = np.stack(per_layer_data[lp], axis=0)
                 activations_df = pd.DataFrame(arr_2d, index=image_files)
@@ -1599,27 +1518,24 @@ def _load_svm_scores(path, categories):
         if isinstance(obj, np.ndarray):
             return _df_to_scores(pd.DataFrame(obj), want_cats)
 
-        if isinstance(obj, dict):                   # legacy formats
-            # try modern nested {"animal":{"score":{"mean":…}}}
+        if isinstance(obj, dict):
             maybe = {}
             for k, v in obj.items():
                 if isinstance(v, dict) and "score" in v and "mean" in v["score"]:
                     maybe[k.lower()] = float(v["score"]["mean"])
-                else:                               # very old {"animal": 0.93}
+                else:
                     try:
                         maybe[k.lower()] = float(v)
                     except Exception:
                         continue
-            df = pd.DataFrame([maybe])              # 1-row DF for helper
+            df = pd.DataFrame([maybe])
             return _df_to_scores(df, want_cats)
 
-        return {}                                   # unknown pickle content
+        return {}
 
-    # ---------- Zarr branch --------------------------------------------
     try:
         root = zarr.open(str(path), mode="r")
-        arr  = root["activ"][0]                     # first permutation
-        # try to recover column names (added by append_activation_to_zarr fix)
+        arr  = root["activ"][0]
         cols = root.attrs.get("column_names")
         df   = pd.DataFrame(arr, columns=cols)
         return _df_to_scores(df, want_cats)
@@ -4492,14 +4408,12 @@ def plot_avg_corr_mat(
         avg_mat = np.mean(np.stack(mats, axis=0), axis=0).astype(np.float32, copy=False)
         return avg_mat, image_names
 
-    # ---- collect final matrices ----
-    # final[(dmg_layer, act_layer, cat, lvl, maybe_panel)] = matrix
     final = {}
 
     for dmg_layer in damage_layers:
         for act in activations_layers:
             if data_type != "selectivity":
-                raise NotImplementedError("This update focuses on selectivity mode; keep your old non-selectivity path if needed.")
+                raise NotImplementedError("plot_categ_differences currently supports selectivity mode only.")
 
             sel_root = _selective_root(dmg_layer, act)
 
@@ -4956,15 +4870,12 @@ def plot_categ_differences(
         """
         scaled_dict = {}
         for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_dict_current.items():
-            # If cat not in baseline, keep original (or set to NaN).
             if cat not in diffs_dict_baseline:
                 scaled_dict[cat] = (oc_list, mean_vals, std_vals, raw_arrays)
                 continue
 
             base_oc_list, base_mean_vals, base_std_vals, base_raw_arrays = diffs_dict_baseline[cat]
 
-            # We'll assume oc_list and base_oc_list are in the same sorted order
-            # If they differ, you could do a more robust 'index matching'.
             scaled_oc_list = oc_list
             new_mean_vals = []
             new_std_vals = []
@@ -5342,18 +5253,14 @@ def plot_categ_differences(
 
         all_results = updated_all_results
 
-    # ---------- 3b) AGGREGATE REPLICATES WHEN damage_pairs IS SET AND comparison=True -----------
-    # When damage_pairs is used, multiple item_paths per suffix should be aggregated into one bar.
-    # This prevents 4x bars per subplot when there are 4 replicates.
+    # Aggregate replicate bars when comparison mode groups multiple item paths.
     if damage_pairs is not None and comparison and len(damage_pairs) > 0:
-        # Aggregate all_results by (dmg_layer, act_layer, suffix) instead of including item_path
-        aggregated_results = {}  # key: (dmg_layer, act_layer, suffix), value: aggregated diffs_dict
+        aggregated_results = {}
         
         for (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in all_results:
             agg_key = (dmg_layer, act_layer, current_damage_type, suffix, selective_cat)
             
             if agg_key not in aggregated_results:
-                # Initialize: deep copy the diffs_dict structure
                 aggregated_results[agg_key] = {}
                 for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_dict.items():
                     # Store raw arrays as lists for accumulation; means/stds will be recalculated
@@ -5538,9 +5445,6 @@ def plot_categ_differences(
         results_by_cat = {cat: {} for cat in categories_list}
         combos = []
         for (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in all_results:
-            # When damage_pairs is used, combo_key is based on (dmg_layer, act_layer, suffix)
-            # to ensure one bar per damage pair (not one per replicate).
-            # When damage_pairs is None, we use item_path for legacy behavior (one bar per item).
             if damage_pairs is not None and comparison and len(damage_pairs) > 0:
                 combo_key = (dmg_layer, act_layer, current_damage_type, suffix)
             else:
@@ -7309,27 +7213,12 @@ def get_all_groupnorm_layers(model, base_path=""):
     Returns:
         List[str]: A list of dot-separated paths to each GroupNorm module.
     """
-    gn_layers = []
-
-    # If the current module itself is a GroupNorm, record its path
-    if isinstance(model, nn.GroupNorm):
-        gn_layers.append(base_path)
-        # We don't need to recurse further into a GroupNorm layer
-        return gn_layers
-
-    # Otherwise, recurse into children
-    for name, submodule in model._modules.items():
-        if submodule is None:
-            continue
-        if base_path == "":
-            new_path = name
-        else:
-            # Note: Preserving the original pathing style from your code
-            new_path = base_path + "._modules." + name
-
-        gn_layers.extend(get_all_groupnorm_layers(submodule, new_path))
-
-    return gn_layers
+    return _collect_module_paths(
+        model,
+        base_path,
+        matches=lambda layer: isinstance(layer, nn.GroupNorm),
+        stop_at_match=True,
+    )
 
 
 def apply_groupnorm_scaling(
@@ -7346,8 +7235,8 @@ def apply_groupnorm_scaling(
     Multiply weights (and optional biases) by *scaling_factor*.
     Add Gaussian noise (before scaling) with std = gain_control_noise * weight.std().
     """
-    do_gn  = "groupnorm" in targets
-    do_conv= "conv"      in targets
+    do_gn = "groupnorm" in targets
+    do_conv = "conv" in targets
     if not (do_gn or do_conv):
         return
 
@@ -7362,14 +7251,22 @@ def apply_groupnorm_scaling(
     with torch.no_grad():
         if apply_to_all_layers:
             for p in _collect_targets(model, ""):
-                _scale_module_(get_layer_from_path(model, p),
-                               scaling_factor, include_bias, gain_control_noise)
+                _scale_module_(
+                    get_layer_from_path(model, p),
+                    scaling_factor,
+                    include_bias,
+                    gain_control_noise,
+                )
         else:
             for block in (layer_paths or []):
                 submod = get_layer_from_path(model, block)
                 for p in _collect_targets(submod, block):
-                    _scale_module_(get_layer_from_path(model, p),
-                                   scaling_factor, include_bias, gain_control_noise)
+                    _scale_module_(
+                        get_layer_from_path(model, p),
+                        scaling_factor,
+                        include_bias,
+                        gain_control_noise,
+                    )
 
 def _scale_module_(module: nn.Module,
                    factor: float,
@@ -7392,7 +7289,7 @@ def _scale_module_(module: nn.Module,
         module.bias.data.mul_(factor)
 
 
-# ── compressor used for every Zarr store ─────────────────────────────
+# Shared compressor for Zarr stores.
 _COMP = numcodecs.Blosc(cname="zstd",
                         clevel=7,
                         shuffle=numcodecs.Blosc.BITSHUFFLE)
@@ -7453,7 +7350,7 @@ def list_zarr_files(dir_path: str | Path) -> List[Path]:
 
 def load_matrix_zarr(path: str | Path, perm: int = 0) -> np.ndarray:
     """Load one permutation (default: 0) from a correlation‑matrix zarr store."""
-    df = load_activations_zarr(path, perm=perm)  # <- your existing helper
+    df = load_activations_zarr(path, perm=perm)
     return df.to_numpy(dtype=np.float32)
 
 
@@ -7471,9 +7368,7 @@ def load_all_corr_mats(item: str | Path) -> list[np.ndarray]:
     """
     p = Path(item)
 
-    # ---- Zarr directory ----
     if p.suffix.lower() == ".zarr" and p.is_dir():
-        import zarr  # local import to avoid hard dependency when unused
         root = zarr.open(p, mode="r")
         if "activ" not in root:
             raise ValueError(f"{p} is a .zarr but has no 'activ' array.")
@@ -7485,12 +7380,10 @@ def load_all_corr_mats(item: str | Path) -> list[np.ndarray]:
             return [arr[i].astype(np.float32, copy=False) for i in range(arr.shape[0])]
         raise ValueError(f"Unsupported 'activ' shape in {p}: {arr.shape}")
 
-    # ---- Pickle file ----
     if p.suffix.lower() == ".pkl" and p.is_file():
         with open(p, "rb") as f:
             obj = pickle.load(f)
 
-        # structured dict (your 0.pkl case)
         if isinstance(obj, dict):
             if "RDM" in obj:
                 obj = obj["RDM"]
@@ -7586,20 +7479,14 @@ def append_activation_to_zarr(df: pd.DataFrame,
 
     One permutation  →  one store.
     """
-    import numpy as np, zarr, os, shutil
-    from pathlib import Path
-
     n_img, n_feat = df.shape
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------ #
-    # 1) Strictly one store per permutation:   "<perm>__activ_<feat>.zarr"
-    # ------------------------------------------------------------------ #
+    # One store per permutation avoids shape clashes between activation layers.
     zarr_name = f"{perm_idx}__activ_{n_feat}.zarr"
     zarr_path = folder / zarr_name
 
-    # If the file already exists *delete it* so we never get shape clashes
     if zarr_path.exists():
         shutil.rmtree(zarr_path)
 
@@ -7617,7 +7504,7 @@ def append_activation_to_zarr(df: pd.DataFrame,
     root.attrs.update(
         image_names=df.index.tolist(),
         perm_indices=[perm_idx],
-        column_names=list(df.columns),         # QoL: restore original DF
+        column_names=list(df.columns),
     )
 
 
@@ -7794,20 +7681,6 @@ def apply_eccentricity_graded(
         return out * _cache[key]
 
     target.register_forward_hook(_hook)
-
-def _as_list(x):
-    if x is None:
-        return []
-    return x if isinstance(x, (list, tuple)) else [x]
-
-
-def is_conv_like(layer):
-    """
-    Returns True if the given layer is a convolutional layer.
-    Supports 1D, 2D, and 3D convs.
-    """
-    return isinstance(layer, (nn.Conv1d, nn.Conv2d, nn.Conv3d))
-
 
 def resolve_selectivity_table(path_or_dir: str | Path,
                               model_tag: str | None = None) -> Path:
