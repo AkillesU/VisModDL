@@ -792,6 +792,557 @@ def closest_available_levels(available: Sequence[float], requested: Sequence[flo
     return sorted(set(levels))
 
 
+def layer_display_label(layer_name: Any, config: Mapping[str, Any]) -> str:
+    labels = config.get("layer_sequence_labels", {}) or {}
+    if str(layer_name) in labels:
+        return str(labels[str(layer_name)])
+
+    text = str(layer_name)
+    lower = text.lower()
+    block_match = re.search(r"(?:^|[._/-])(v1|v2|v4|it)(?:$|[._/-])", lower)
+    block = block_match.group(1).upper() if block_match else text
+    relu_label = ""
+    if any(token in lower for token in ["relu1", "nonlin1", "relu_1"]):
+        relu_label = " relu1"
+    elif any(token in lower for token in ["relu2", "nonlin2", "relu_2"]):
+        relu_label = " relu2"
+    elif "output" in lower:
+        relu_label = " output"
+    return f"{block}{relu_label}".strip()
+
+
+def align_arrays(current: pd.DataFrame, baseline: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    if current.shape == baseline.shape:
+        return current.to_numpy(dtype=float), baseline.to_numpy(dtype=float)
+
+    current_by_index = {str(idx): idx for idx in current.index}
+    baseline_by_index = {str(idx): idx for idx in baseline.index}
+    common_index_keys = [key for key in current_by_index if key in baseline_by_index]
+    current_by_col = {str(col): col for col in current.columns}
+    baseline_by_col = {str(col): col for col in baseline.columns}
+    common_col_keys = [key for key in current_by_col if key in baseline_by_col]
+    if common_index_keys and common_col_keys:
+        curr = current.loc[[current_by_index[key] for key in common_index_keys], [current_by_col[key] for key in common_col_keys]]
+        base = baseline.loc[[baseline_by_index[key] for key in common_index_keys], [baseline_by_col[key] for key in common_col_keys]]
+        return curr.to_numpy(dtype=float), base.to_numpy(dtype=float)
+
+    n_rows = min(current.shape[0], baseline.shape[0])
+    n_cols = min(current.shape[1], baseline.shape[1])
+    return current.iloc[:n_rows, :n_cols].to_numpy(dtype=float), baseline.iloc[:n_rows, :n_cols].to_numpy(dtype=float)
+
+
+def relative_change_values(current: np.ndarray, baseline: np.ndarray, eps: float) -> np.ndarray:
+    denom = np.maximum(np.abs(baseline), float(eps))
+    values = (current - baseline) / denom
+    return values[np.isfinite(values)]
+
+
+def collect_batches_by_level(
+    config: Mapping[str, Any],
+    damage_type: str,
+    damage_layer: str,
+    activation_layer: str,
+    requested_levels: Optional[Sequence[float]],
+) -> Dict[float, Dict[int, pd.DataFrame]]:
+    root = activation_root(config, damage_type, damage_layer, activation_layer)
+    level_dirs = discover_damage_dirs(root, None)
+    if requested_levels is not None:
+        selected_levels = closest_available_levels([level for level, _ in level_dirs], requested_levels)
+        level_dirs = [(level, path) for level, path in level_dirs if float(level) in set(selected_levels)]
+
+    by_level: Dict[float, Dict[int, pd.DataFrame]] = {}
+    for level, damage_dir in level_dirs:
+        per_perm: Dict[int, pd.DataFrame] = {}
+        for activation_file in discover_activation_files(damage_dir):
+            for batch in load_activation_batches(activation_file):
+                per_perm[int(batch.perm)] = batch.df
+        if per_perm:
+            by_level[float(level)] = per_perm
+    return by_level
+
+
+def baseline_level_for_batches(by_level: Mapping[float, Mapping[int, pd.DataFrame]], preferred: float) -> Optional[float]:
+    if not by_level:
+        return None
+    levels = sorted(float(level) for level in by_level)
+    close = [level for level in levels if np.isclose(level, float(preferred))]
+    return close[0] if close else levels[0]
+
+
+def collect_layer_sequence_shift_rows(
+    config: Mapping[str, Any],
+    selected_units: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    damage_type = str(config.get("layer_sequence_damage_type", "connections"))
+    damage_layers = list(config.get("layer_sequence_damage_layers", ["V1", "V2", "V4", "IT"]))
+    activation_layers = list(config.get("layer_sequence_activation_layers", config.get("activation_layers", ["IT"])))
+    requested_levels = list(config.get("layer_sequence_damage_levels", [0.05, 0.15, 0.30, 0.70]))
+    baseline_level = float(config.get("layer_sequence_baseline_level", 0.0))
+    eps = float(config.get("layer_sequence_eps", 1e-8))
+    reference_it_layer = str(config.get("layer_sequence_selective_reference_layer", activation_layers[-1] if activation_layers else "IT"))
+
+    all_rows: List[Dict[str, Any]] = []
+    selective_rows: List[Dict[str, Any]] = []
+    levels_to_read = sorted(set([baseline_level] + [float(level) for level in requested_levels]))
+
+    for damage_layer in damage_layers:
+        for layer_order, activation_layer in enumerate(activation_layers):
+            try:
+                by_level = collect_batches_by_level(config, damage_type, damage_layer, activation_layer, levels_to_read)
+            except FileNotFoundError as exc:
+                print(f"Warning: {exc}")
+                continue
+            base_level = baseline_level_for_batches(by_level, baseline_level)
+            if base_level is None:
+                continue
+            baseline_by_perm = by_level.get(base_level, {})
+            if not baseline_by_perm:
+                continue
+            fallback_baseline = next(iter(baseline_by_perm.values()))
+
+            for damage_level in closest_available_levels(by_level.keys(), requested_levels):
+                for perm, current_df in by_level.get(damage_level, {}).items():
+                    baseline_df = baseline_by_perm.get(int(perm), fallback_baseline)
+                    current_arr, baseline_arr = align_arrays(current_df, baseline_df)
+                    shifts = relative_change_values(current_arr, baseline_arr, eps)
+                    if len(shifts) == 0:
+                        continue
+                    all_rows.append(
+                        {
+                            "damage_type": damage_type,
+                            "damage_layer": damage_layer,
+                            "activation_layer": activation_layer,
+                            "layer_label": layer_display_label(activation_layer, config),
+                            "layer_order": int(layer_order),
+                            "damage_level": float(damage_level),
+                            "baseline_level_used": float(base_level),
+                            "perm": int(perm),
+                            "mean_shift": float(np.mean(shifts)),
+                            "median_shift": float(np.median(shifts)),
+                            "sd_shift": sd(shifts),
+                            "n_values": int(len(shifts)),
+                        }
+                    )
+
+                    if str(activation_layer) == reference_it_layer:
+                        for _, unit_row in selected_units.iterrows():
+                            unit = int(unit_row["unit"])
+                            try:
+                                current_series = unit_series(current_df, unit)
+                                baseline_series = unit_series(baseline_df, unit)
+                            except Exception:
+                                continue
+                            curr = current_series.to_numpy(dtype=float)
+                            base = baseline_series.to_numpy(dtype=float)
+                            n = min(len(curr), len(base))
+                            unit_shifts = relative_change_values(curr[:n], base[:n], eps)
+                            if len(unit_shifts) == 0:
+                                continue
+                            selective_rows.append(
+                                {
+                                    "damage_type": damage_type,
+                                    "damage_layer": damage_layer,
+                                    "activation_layer": activation_layer,
+                                    "layer_label": layer_display_label(activation_layer, config),
+                                    "layer_order": int(layer_order),
+                                    "damage_level": float(damage_level),
+                                    "baseline_level_used": float(base_level),
+                                    "perm": int(perm),
+                                    "target_category": unit_row["target_category"],
+                                    "rank": int(unit_row["rank"]),
+                                    "unit": unit,
+                                    "score": float(unit_row["score"]),
+                                    "mean_shift": float(np.mean(unit_shifts)),
+                                    "median_shift": float(np.median(unit_shifts)),
+                                    "sd_shift": sd(unit_shifts),
+                                    "n_values": int(len(unit_shifts)),
+                                }
+                            )
+
+    return pd.DataFrame(all_rows), pd.DataFrame(selective_rows)
+
+
+def shift_metric_summary(
+    rows: pd.DataFrame,
+    group_cols: Sequence[str],
+    metric: str,
+    bootstrap_iterations: int,
+    bootstrap_ci: float,
+    bootstrap_seed: int,
+) -> pd.DataFrame:
+    if rows.empty:
+        return rows.copy()
+
+    def summarise(group: pd.DataFrame) -> pd.Series:
+        values = pd.to_numeric(group[metric], errors="coerce").to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        group_key = tuple(group[col].iloc[0] for col in group_cols if col in group.columns) + (metric,)
+        ci_low, ci_high = bootstrap_mean_ci(
+            values,
+            n_boot=int(bootstrap_iterations),
+            ci=float(bootstrap_ci),
+            seed=stable_seed(group_key, bootstrap_seed),
+        )
+        return pd.Series(
+            {
+                "mean": float(np.mean(values)) if len(values) else np.nan,
+                "sd": sd(values),
+                "ci_low": ci_low,
+                "ci_high": ci_high,
+                "n": int(len(values)),
+                "n_permutations": int(group["perm"].nunique()),
+            }
+        )
+
+    return rows.groupby(list(group_cols)).apply(summarise).reset_index().sort_values(list(group_cols)).reset_index(drop=True)
+
+
+def damage_color_map(damage_layers: Sequence[str]) -> Dict[str, str]:
+    palette = ["#1c7ed6", "#d9480f", "#2f9e44", "#7048e8", "#495057", "#e67700"]
+    return {str(layer): palette[i % len(palette)] for i, layer in enumerate(damage_layers)}
+
+
+def plot_layer_sequence_summary(
+    summary: pd.DataFrame,
+    selective_summary: pd.DataFrame,
+    title: str,
+    output_base: Path,
+    dpi: int,
+    figure_size: Sequence[float],
+    error_bar_mode: str,
+    bootstrap_ci: float,
+    combined: bool,
+    show_selective: bool,
+) -> None:
+    if summary.empty:
+        return
+    fig, ax = plt.subplots(figsize=tuple(figure_size))
+    colors = damage_color_map(summary["damage_layer"].drop_duplicates())
+    for damage_layer, sub in summary.groupby("damage_layer"):
+        sub = sub.sort_values("layer_order")
+        color = colors[str(damage_layer)]
+        label = f"{damage_layer} damage" if combined else "All units"
+        ax.errorbar(
+            sub["layer_order"],
+            sub["mean"],
+            yerr=errorbar_values(sub, error_bar_mode),
+            marker="o",
+            linestyle="-",
+            linewidth=2.0,
+            markersize=4.5,
+            capsize=3,
+            color=color,
+            label=label,
+        )
+
+    if show_selective and not selective_summary.empty:
+        for damage_layer, sub in selective_summary.groupby("damage_layer"):
+            sub = sub.sort_values("layer_order")
+            color = colors.get(str(damage_layer), "#212529")
+            ax.errorbar(
+                sub["layer_order"],
+                sub["mean"],
+                yerr=errorbar_values(sub, error_bar_mode),
+                marker="x",
+                linestyle="None",
+                markersize=8,
+                markeredgewidth=2,
+                capsize=3,
+                color=color,
+                label=f"{damage_layer} damage, top 5% IT",
+            )
+
+    tick_df = summary[["layer_order", "layer_label"]].drop_duplicates().sort_values("layer_order")
+    ax.set_xticks(tick_df["layer_order"])
+    ax.set_xticklabels(tick_df["layer_label"], rotation=35, ha="right")
+    ax.axhline(0, color="#868e96", linewidth=1.0)
+    ax.set_title(f"{title} | {errorbar_label(error_bar_mode, bootstrap_ci)}")
+    ax.set_xlabel("Activation layer")
+    ax.set_ylabel("Relative activation shift")
+    ax.grid(True, axis="y", color="#dee2e6", linewidth=0.8)
+    ax.set_box_aspect(1)
+    ax.legend(loc="best", fontsize=8)
+    save_figure(fig, output_base, dpi)
+
+
+def plot_layer_sequence_shift_analysis(
+    config: Mapping[str, Any],
+    all_rows: pd.DataFrame,
+    selective_rows: pd.DataFrame,
+) -> None:
+    if all_rows.empty:
+        return
+
+    output_dir = Path(config.get("output_dir", "plots/damage_unit_activations"))
+    figure_size = config.get("figure_size", [6, 6])
+    dpi = int(config.get("dpi", 400))
+    error_bar_modes = list(config.get("error_bars", ["sd", "bootstrap_ci"]))
+    bootstrap_iterations = int(config.get("bootstrap_iterations", 2000))
+    bootstrap_ci = float(config.get("bootstrap_ci", 95.0))
+    bootstrap_seed = int(config.get("bootstrap_seed", 1234))
+    metrics = ["mean_shift", "median_shift"]
+    damage_levels = sorted(all_rows["damage_level"].dropna().unique())
+    group_cols = ["damage_type", "damage_layer", "activation_layer", "layer_label", "layer_order", "damage_level"]
+    selective_group_cols = group_cols + ["target_category"]
+
+    for metric in metrics:
+        all_summary = shift_metric_summary(
+            all_rows,
+            group_cols,
+            metric,
+            bootstrap_iterations,
+            bootstrap_ci,
+            bootstrap_seed,
+        )
+        selective_summary = shift_metric_summary(
+            selective_rows,
+            selective_group_cols,
+            metric,
+            bootstrap_iterations,
+            bootstrap_ci,
+            bootstrap_seed,
+        )
+        selective_avg = pd.DataFrame()
+        if not selective_summary.empty:
+            selective_avg = shift_metric_summary(
+                selective_summary.assign(perm=0, **{metric: selective_summary["mean"]}),
+                group_cols,
+                metric,
+                bootstrap_iterations,
+                bootstrap_ci,
+                bootstrap_seed,
+            )
+
+        for error_bar_mode in error_bar_modes:
+            for level in damage_levels:
+                level_summary = all_summary[np.isclose(all_summary["damage_level"].astype(float), float(level))]
+                level_selective = selective_avg[np.isclose(selective_avg["damage_level"].astype(float), float(level))] if not selective_avg.empty else pd.DataFrame()
+                metric_name = "mean" if metric == "mean_shift" else "median"
+                level_tag = sanitize_filename(f"{level:g}")
+                plot_layer_sequence_summary(
+                    level_summary,
+                    pd.DataFrame(),
+                    f"{metric_name.title()} layer shift | damage level {level:g}",
+                    output_dir / "layer_sequence_shift" / error_bar_mode / metric_name / "combined" / f"damage{level_tag}_all-units",
+                    dpi,
+                    figure_size,
+                    error_bar_mode,
+                    bootstrap_ci,
+                    combined=True,
+                    show_selective=False,
+                )
+                plot_layer_sequence_summary(
+                    level_summary,
+                    level_selective,
+                    f"{metric_name.title()} layer shift with selective IT markers | damage level {level:g}",
+                    output_dir / "layer_sequence_shift" / error_bar_mode / metric_name / "combined_with_selective_it" / f"damage{level_tag}_all-units-plus-selective-it",
+                    dpi,
+                    figure_size,
+                    error_bar_mode,
+                    bootstrap_ci,
+                    combined=True,
+                    show_selective=True,
+                )
+                for damage_layer, layer_summary in level_summary.groupby("damage_layer"):
+                    layer_selective = level_selective[level_selective["damage_layer"] == damage_layer] if not level_selective.empty else pd.DataFrame()
+                    file_stub = f"{sanitize_filename(damage_layer)}_damage{level_tag}"
+                    plot_layer_sequence_summary(
+                        layer_summary,
+                        pd.DataFrame(),
+                        f"{metric_name.title()} layer shift | {damage_layer} damage | level {level:g}",
+                        output_dir / "layer_sequence_shift" / error_bar_mode / metric_name / "by_damage_layer" / file_stub,
+                        dpi,
+                        figure_size,
+                        error_bar_mode,
+                        bootstrap_ci,
+                        combined=False,
+                        show_selective=False,
+                    )
+                    plot_layer_sequence_summary(
+                        layer_summary,
+                        layer_selective,
+                        f"{metric_name.title()} layer shift with selective IT | {damage_layer} damage | level {level:g}",
+                        output_dir / "layer_sequence_shift" / error_bar_mode / metric_name / "by_damage_layer_with_selective_it" / file_stub,
+                        dpi,
+                        figure_size,
+                        error_bar_mode,
+                        bootstrap_ci,
+                        combined=False,
+                        show_selective=True,
+                    )
+
+    table_dir = output_dir / "tables"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    all_rows.to_csv(table_dir / "layer_sequence_shift_iteration_summary.csv", index=False)
+    selective_rows.to_csv(table_dir / "layer_sequence_shift_selective_it_iteration_summary.csv", index=False)
+
+
+def sample_values(values: np.ndarray, max_values: int, seed: int) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if max_values <= 0 or len(values) <= max_values:
+        return values
+    rng = np.random.default_rng(int(seed))
+    idx = rng.choice(len(values), size=int(max_values), replace=False)
+    return values[idx]
+
+
+def hoyer_sparsity(values: np.ndarray) -> float:
+    values = np.abs(np.asarray(values, dtype=float))
+    values = values[np.isfinite(values)]
+    n = len(values)
+    if n <= 1:
+        return float("nan")
+    l2 = float(np.linalg.norm(values))
+    if l2 <= 0:
+        return 1.0
+    l1 = float(np.sum(values))
+    return float((math.sqrt(n) - (l1 / l2)) / (math.sqrt(n) - 1.0))
+
+
+def collect_histogram_activation_values(config: Mapping[str, Any]) -> Tuple[Dict[Tuple[str, float], np.ndarray], pd.DataFrame]:
+    damage_type = str(config.get("histogram_damage_type", config.get("relative_shift_damage_type", "connections")))
+    damage_layers = list(config.get("histogram_damage_layers", ["V1", "V2", "V4", "IT"]))
+    activation_layer = str(config.get("histogram_activation_layer", "IT"))
+    requested_levels = list(config.get("histogram_damage_levels", [0.0, 0.05, 0.15, 0.30, 0.70]))
+    max_values = int(config.get("histogram_max_values_per_condition", 250_000))
+    zero_threshold = float(config.get("histogram_zero_threshold", 1e-8))
+
+    values_by_key: Dict[Tuple[str, float], np.ndarray] = {}
+    stat_rows: List[Dict[str, Any]] = []
+    for damage_layer in damage_layers:
+        try:
+            by_level = collect_batches_by_level(config, damage_type, damage_layer, activation_layer, requested_levels)
+        except FileNotFoundError as exc:
+            print(f"Warning: {exc}")
+            continue
+        for level in closest_available_levels(by_level.keys(), requested_levels):
+            chunks: List[np.ndarray] = []
+            for perm, df in by_level.get(level, {}).items():
+                vals = df.to_numpy(dtype=float).ravel()
+                vals = vals[np.isfinite(vals)]
+                if len(vals):
+                    chunks.append(vals)
+            if not chunks:
+                continue
+            values = np.concatenate(chunks)
+            sampled = sample_values(
+                values,
+                max_values=max_values,
+                seed=stable_seed((damage_type, damage_layer, activation_layer, level), int(config.get("bootstrap_seed", 1234))),
+            )
+            values_by_key[(str(damage_layer), float(level))] = sampled
+            stat_rows.append(
+                {
+                    "damage_type": damage_type,
+                    "damage_layer": damage_layer,
+                    "activation_layer": activation_layer,
+                    "damage_level": float(level),
+                    "n_values_sampled": int(len(sampled)),
+                    "mean": float(np.mean(sampled)) if len(sampled) else np.nan,
+                    "median": float(np.median(sampled)) if len(sampled) else np.nan,
+                    "sd": sd(sampled),
+                    "zero_fraction": float(np.mean(np.abs(sampled) <= zero_threshold)) if len(sampled) else np.nan,
+                    "hoyer_sparsity": hoyer_sparsity(sampled),
+                }
+            )
+    return values_by_key, pd.DataFrame(stat_rows)
+
+
+def histogram_label(damage_layer: str, level: float, stats_df: pd.DataFrame, include_level: bool = True) -> str:
+    row = stats_df[
+        (stats_df["damage_layer"].astype(str) == str(damage_layer))
+        & np.isclose(stats_df["damage_level"].astype(float), float(level))
+    ]
+    prefix = f"{damage_layer} {level:g}" if include_level else str(damage_layer)
+    if row.empty:
+        return prefix
+    first = row.iloc[0]
+    return f"{prefix} | zero={100 * first['zero_fraction']:.1f}%, H={first['hoyer_sparsity']:.2f}"
+
+
+def plot_activation_histograms(config: Mapping[str, Any]) -> None:
+    values_by_key, stats_df = collect_histogram_activation_values(config)
+    if not values_by_key:
+        return
+
+    output_dir = Path(config.get("output_dir", "plots/damage_unit_activations"))
+    figure_size = config.get("figure_size", [6, 6])
+    dpi = int(config.get("dpi", 400))
+    bins = int(config.get("histogram_bins", 80))
+    density = bool(config.get("histogram_density", True))
+    damage_layers = list(config.get("histogram_damage_layers", ["V1", "V2", "V4", "IT"]))
+    requested_levels = list(config.get("histogram_damage_levels", [0.0, 0.05, 0.15, 0.30, 0.70]))
+    all_levels = closest_available_levels([level for _, level in values_by_key], requested_levels)
+    colors = damage_color_map(damage_layers)
+
+    baseline_candidates = [key for key in values_by_key if np.isclose(key[1], 0.0)]
+    baseline_key = baseline_candidates[0] if baseline_candidates else sorted(values_by_key, key=lambda item: item[1])[0]
+
+    for level in all_levels:
+        fig, ax = plt.subplots(figsize=tuple(figure_size))
+        base_values = values_by_key.get(baseline_key)
+        if base_values is not None:
+            ax.hist(
+                base_values,
+                bins=bins,
+                density=density,
+                histtype="step",
+                linewidth=2.0,
+                color="#212529",
+                label=histogram_label(baseline_key[0], baseline_key[1], stats_df, include_level=False) + " baseline",
+            )
+        for damage_layer in damage_layers:
+            key = (str(damage_layer), float(level))
+            values = values_by_key.get(key)
+            if values is None:
+                continue
+            ax.hist(
+                values,
+                bins=bins,
+                density=density,
+                histtype="stepfilled",
+                alpha=0.25,
+                color=colors.get(str(damage_layer), "#1f77b4"),
+                label=histogram_label(str(damage_layer), float(level), stats_df, include_level=False),
+            )
+        ax.set_title(f"IT activation distribution | damage level {level:g}")
+        ax.set_xlabel("Activation value")
+        ax.set_ylabel("Density" if density else "Frequency")
+        ax.grid(True, axis="y", color="#dee2e6", linewidth=0.8)
+        ax.set_box_aspect(1)
+        ax.legend(loc="best", fontsize=7)
+        save_figure(fig, output_dir / "activation_histograms" / "by_damage_level" / f"damage{sanitize_filename(f'{level:g}')}", dpi)
+
+    for damage_layer in damage_layers:
+        fig, ax = plt.subplots(figsize=tuple(figure_size))
+        for level in all_levels:
+            key = (str(damage_layer), float(level))
+            values = values_by_key.get(key)
+            if values is None:
+                continue
+            ax.hist(
+                values,
+                bins=bins,
+                density=density,
+                histtype="step",
+                linewidth=1.8,
+                alpha=0.9,
+                label=histogram_label(str(damage_layer), float(level), stats_df),
+            )
+        ax.set_title(f"IT activation distribution | {damage_layer} damage")
+        ax.set_xlabel("Activation value")
+        ax.set_ylabel("Density" if density else "Frequency")
+        ax.grid(True, axis="y", color="#dee2e6", linewidth=0.8)
+        ax.set_box_aspect(1)
+        ax.legend(loc="best", fontsize=7)
+        save_figure(fig, output_dir / "activation_histograms" / "by_damage_layer" / sanitize_filename(damage_layer), dpi)
+
+    table_dir = output_dir / "tables"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    stats_df.to_csv(table_dir / "activation_histogram_sparsity_summary.csv", index=False)
+
+
 def compute_relative_shift_rows(
     activation_rows: pd.DataFrame,
     baseline_level: float,
@@ -1318,6 +1869,9 @@ def write_methodology_files(config: Mapping[str, Any]) -> None:
     shift_fraction = float(config.get("relative_shift_selectivity_fraction", 0.05))
     scatter_fraction = float(config.get("relative_shift_scatter_selectivity_fraction", shift_fraction))
     shift_layers = ", ".join(str(x) for x in config.get("relative_shift_damage_layers", ["V1", "IT"]))
+    sequence_layers = ", ".join(str(x) for x in config.get("layer_sequence_activation_layers", config.get("activation_layers", [])))
+    sequence_damage_levels = ", ".join(str(x) for x in config.get("layer_sequence_damage_levels", [0.05, 0.15, 0.30, 0.70]))
+    histogram_levels = ", ".join(str(x) for x in config.get("histogram_damage_levels", [0.0, 0.05, 0.15, 0.30, 0.70]))
 
     global_text = f"""
 Damage unit activation plot output
@@ -1336,6 +1890,8 @@ Top-level contents:
 - activation/: mean activation value against damage level.
 - mannwhitney_u/: Mann-Whitney U selectivity values against damage level.
 - relative_shift/: relative activation change analyses for highly selective IT units.
+- layer_sequence_shift/: sequential activation-layer shift plots.
+- activation_histograms/: IT activation histograms and sparsity summaries.
 - tables/: CSV summaries used to generate the plots.
 
 All plots are saved as both PNG and SVG. Figures use a Times-style serif font.
@@ -1405,6 +1961,63 @@ line is fitted and annotated with slope and R squared.
 """
     write_text_file(output_dir / "relative_shift" / "README.txt", relative_text)
 
+    layer_sequence_text = f"""
+Layer sequence shift plots
+
+These plots compare how activation shifts propagate across saved block-output activation
+layers. The configured .output() activation folders are: {sequence_layers}.
+
+Only the same and later activation layers usually exist for a given damage location
+because the damage run saves downstream activations. For example, V1 damage can include
+V1, V2, V4, and IT outputs, while V2 damage can include V2, V4, and IT outputs. Missing
+earlier folders are skipped. Each available activation layer is compared against its
+baseline activation matrix. Relative activation shift is computed elementwise as:
+
+    (activation_at_damage - baseline_activation) / max(abs(baseline_activation), eps)
+
+Damage levels plotted: {sequence_damage_levels}.
+
+combined/:
+One plot per damage level with separate lines for V1, V2, V4, and IT damage.
+
+by_damage_layer/:
+One plot per damage location and damage level.
+
+combined_with_selective_it/ and by_damage_layer_with_selective_it/:
+The same all-unit layer traces, with X markers at the configured final IT layer showing
+the top 5% category-selective IT units. This allows the selective IT population to be
+compared with all units in the IT readout layer.
+
+The mean_shift folders use the mean relative shift across activation values. The
+median_shift folders use the median relative shift.
+"""
+    write_text_file(output_dir / "layer_sequence_shift" / "README.txt", layer_sequence_text)
+
+    histogram_text = f"""
+Activation histograms
+
+These plots show the distribution of saved IT activation values for the intact model
+and for selected connection-damage locations and damage levels.
+
+Damage levels plotted: {histogram_levels}.
+
+by_damage_level/:
+One plot per damage level with overlaid activation distributions for damage to V1,
+V2, V4, and IT, plus the baseline distribution.
+
+by_damage_layer/:
+One plot per damage location with overlaid damage intensities.
+
+Legend annotations:
+- zero: percentage of sampled activation values with absolute value below the configured
+  histogram_zero_threshold.
+- H: Hoyer sparsity index; larger values indicate a sparser activation distribution.
+
+The table activation_histogram_sparsity_summary.csv stores the sparsity values used
+in the legends.
+"""
+    write_text_file(output_dir / "activation_histograms" / "README.txt", histogram_text)
+
     diagnostic_text = """
 Diagnostic ideas for larger IT changes after V1 damage than IT damage
 
@@ -1440,7 +2053,7 @@ gating are plausible contributors.
 """
     write_text_file(output_dir / "V1_vs_IT_damage_diagnostic_ideas.txt", diagnostic_text)
 
-    for metric_dir in ["activation", "mannwhitney_u", "relative_shift"]:
+    for metric_dir in ["activation", "mannwhitney_u", "relative_shift", "layer_sequence_shift"]:
         for error_mode in config.get("error_bars", ["sd", "bootstrap_ci"]):
             mode_text = (
                 "This folder contains plots with standard deviation error bars."
@@ -1501,6 +2114,18 @@ def main() -> None:
             print("Warning: relative shift analysis loaded no activation rows.")
         else:
             plot_relative_shift_analysis(config, shift_activation_rows, selected_shift_units)
+
+    if bool(config.get("plot_layer_sequence_shift_analysis", True)):
+        layer_fraction = float(config.get("layer_sequence_selective_fraction", 0.05))
+        selected_layer_units = select_fraction_units(config, layer_fraction)
+        layer_rows, layer_selective_rows = collect_layer_sequence_shift_rows(config, selected_layer_units)
+        if layer_rows.empty:
+            print("Warning: layer sequence shift analysis loaded no activation rows.")
+        else:
+            plot_layer_sequence_shift_analysis(config, layer_rows, layer_selective_rows)
+
+    if bool(config.get("plot_activation_histograms", True)):
+        plot_activation_histograms(config)
 
     write_methodology_files(config)
     print(f"Saved plots and tables under: {output_dir}")

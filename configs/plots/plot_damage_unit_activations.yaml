@@ -32,5 +32,27 @@ relative_shift_baseline_level: 0.0
 relative_shift_eps: 0.00000001
 relative_shift_scatter_damage_levels: [0.25, 0.5, 0.75, 1.0]
 
+plot_layer_sequence_shift_analysis: true
+layer_sequence_damage_type: "connections"
+layer_sequence_damage_layers: ["V1", "V2", "V4", "IT"]
+# These are the saved .output() activation folders. Earlier layers may be absent
+# for later damage locations; the script skips unavailable folders.
+layer_sequence_activation_layers: ["V1", "V2", "V4", "IT"]
+layer_sequence_selective_reference_layer: "IT"
+layer_sequence_selective_fraction: 0.05
+layer_sequence_damage_levels: [0.05, 0.15, 0.30, 0.70]
+layer_sequence_baseline_level: 0.0
+layer_sequence_eps: 0.00000001
+
+plot_activation_histograms: true
+histogram_damage_type: "connections"
+histogram_damage_layers: ["V1", "V2", "V4", "IT"]
+histogram_activation_layer: "IT"
+histogram_damage_levels: [0.0, 0.05, 0.15, 0.30, 0.70]
+histogram_bins: 80
+histogram_density: true
+histogram_zero_threshold: 0.00000001
+histogram_max_values_per_condition: 250000
+
 figure_size: [3, 3]
 dpi: 400
