@@ -49,6 +49,12 @@ CATEGORY_COLORS = {
     "joint": "#212529",
 }
 
+STATUS_STYLES = {
+    "target": ("Target images", "#1c7ed6", "-"),
+    "non_target": ("Non-target images", "#d9480f", "--"),
+    "all": ("All images", "#2f9e44", ":"),
+}
+
 
 @dataclass(frozen=True)
 class ActivationBatch:
@@ -242,6 +248,54 @@ def select_top_units(config: Mapping[str, Any]) -> pd.DataFrame:
                     "score_col": score_col,
                     "selectivity_layer": str(row[layer_col]),
                     "selectivity_path": str(selectivity_path),
+                }
+            )
+
+    if not selected:
+        raise ValueError("No units were selected from the selectivity table.")
+    return pd.DataFrame(selected)
+
+
+def select_fraction_units(config: Mapping[str, Any], fraction: float) -> pd.DataFrame:
+    model_name = str(config.get("model_name", "cornet_rt5_c"))
+    categories = [canonical_category(c) for c in config.get("categories", list(CATEGORY_ALIASES))]
+    ranking_score_prefix = str(config.get("ranking_score_prefix", "hg"))
+    score_columns = config.get("score_columns", {}) or {}
+    unit_layer = config.get("unit_layer", "module.IT")
+
+    selectivity_path = resolve_selectivity_path(config.get("selectivity_path", "unit_selectivity"), model_name)
+    df = read_table(selectivity_path)
+    layer_col = config.get("selectivity_layer_col") or infer_column(df, ["layer", "layer_name"], "layer")
+    unit_col = config.get("unit_col") or infer_column(df, ["unit", "unit_id", "channel"], "unit")
+
+    layer_df = df[df[layer_col].astype(str) == str(unit_layer)].copy()
+    if layer_df.empty:
+        aliases = {str(unit_layer), str(unit_layer).replace("module.", ""), f"module.{unit_layer}"}
+        layer_df = df[df[layer_col].astype(str).isin(aliases)].copy()
+    if layer_df.empty:
+        available = sorted(df[layer_col].astype(str).unique(), key=natural_key)
+        raise ValueError(f"No rows found for unit_layer={unit_layer!r}. Available layers include: {available[:12]}")
+
+    selected: List[Dict[str, Any]] = []
+    for category in categories:
+        score_col = score_column_for_category(layer_df, category, ranking_score_prefix, score_columns)
+        scored = layer_df.dropna(subset=[score_col]).sort_values(score_col, ascending=False)
+        total_scored = int(len(scored))
+        top_k = max(1, int(math.ceil(len(scored) * float(fraction))))
+        for rank, (_, row) in enumerate(scored.head(top_k).iterrows(), start=1):
+            selected.append(
+                {
+                    "target_category": category,
+                    "rank": int(rank),
+                    "unit": parse_unit_index(row[unit_col]),
+                    "unit_source_value": row[unit_col],
+                    "score": float(row[score_col]),
+                    "score_col": score_col,
+                    "selectivity_layer": str(row[layer_col]),
+                    "selectivity_path": str(selectivity_path),
+                    "selection_fraction": float(fraction),
+                    "category_total_units": total_scored,
+                    "category_selected_units": top_k,
                 }
             )
 
@@ -479,10 +533,16 @@ def collect_iteration_summaries(
                                 values = unit_series(batch.df, int(unit_row["unit"])).to_numpy(dtype=float)
                                 target_mask = image_categories == target_category
                                 other_mask = np.isin(image_categories, categories) & ~target_mask
+                                all_mask = np.isin(image_categories, categories)
                                 target_values = values[target_mask]
                                 other_values = values[other_mask]
+                                all_values = values[all_mask]
 
-                                for status, status_values in [("target", target_values), ("non_target", other_values)]:
+                                for status, status_values in [
+                                    ("target", target_values),
+                                    ("non_target", other_values),
+                                    ("all", all_values),
+                                ]:
                                     finite = status_values[np.isfinite(status_values)]
                                     activation_rows.append(
                                         {
@@ -612,6 +672,9 @@ def configure_plot_style() -> None:
         {
             "figure.dpi": 120,
             "savefig.dpi": 400,
+            "font.family": "serif",
+            "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+            "mathtext.fontset": "stix",
             "font.size": 10,
             "axes.titlesize": 11,
             "axes.labelsize": 10,
@@ -718,6 +781,289 @@ def plot_mw_summary(
     save_figure(fig, output_base, dpi)
 
 
+def closest_available_levels(available: Sequence[float], requested: Sequence[float]) -> List[float]:
+    available_arr = np.asarray(sorted(set(float(v) for v in available)), dtype=float)
+    if len(available_arr) == 0:
+        return []
+    levels: List[float] = []
+    for req in requested:
+        idx = int(np.argmin(np.abs(available_arr - float(req))))
+        levels.append(float(available_arr[idx]))
+    return sorted(set(levels))
+
+
+def compute_relative_shift_rows(
+    activation_rows: pd.DataFrame,
+    baseline_level: float,
+    eps: float,
+) -> pd.DataFrame:
+    if activation_rows.empty:
+        return activation_rows.copy()
+
+    rows = activation_rows.copy()
+    combo_cols = ["damage_type", "damage_layer", "activation_layer"]
+    id_cols = combo_cols + ["target_category", "rank", "unit", "target_status"]
+    baseline_parts: List[pd.DataFrame] = []
+    for _, combo in rows[combo_cols].drop_duplicates().iterrows():
+        mask = np.ones(len(rows), dtype=bool)
+        for col in combo_cols:
+            mask &= rows[col].eq(combo[col]).to_numpy()
+        combo_rows = rows.loc[mask].copy()
+        if combo_rows.empty:
+            continue
+        levels = combo_rows["damage_level"].astype(float).to_numpy()
+        if np.any(np.isclose(levels, float(baseline_level))):
+            use_level = float(baseline_level)
+        else:
+            use_level = float(np.nanmin(levels))
+        baseline_parts.append(combo_rows[np.isclose(combo_rows["damage_level"].astype(float), use_level)].copy())
+
+    if not baseline_parts:
+        return pd.DataFrame()
+
+    baseline_rows = pd.concat(baseline_parts, ignore_index=True)
+    baseline_perm = (
+        baseline_rows.groupby(id_cols + ["perm"], as_index=False)
+        .agg(baseline_activation=("mean_activation", "mean"), baseline_level_used=("damage_level", "mean"))
+    )
+    baseline_unit = (
+        baseline_rows.groupby(id_cols, as_index=False)
+        .agg(baseline_activation_fallback=("mean_activation", "mean"), baseline_level_fallback=("damage_level", "mean"))
+    )
+
+    shifted = rows.merge(baseline_perm, on=id_cols + ["perm"], how="left")
+    shifted = shifted.merge(baseline_unit, on=id_cols, how="left")
+    shifted["baseline_activation"] = shifted["baseline_activation"].fillna(shifted["baseline_activation_fallback"])
+    shifted["baseline_level_used"] = shifted["baseline_level_used"].fillna(shifted["baseline_level_fallback"])
+    denom = shifted["baseline_activation"].abs().clip(lower=float(eps))
+    shifted["relative_activation_change"] = (shifted["mean_activation"] - shifted["baseline_activation"]) / denom
+    return shifted.drop(columns=["baseline_activation_fallback", "baseline_level_fallback"], errors="ignore")
+
+
+def relative_shift_summary(
+    shift_rows: pd.DataFrame,
+    group_cols: Sequence[str],
+    bootstrap_iterations: int,
+    bootstrap_ci: float,
+    bootstrap_seed: int,
+) -> pd.DataFrame:
+    if shift_rows.empty:
+        return shift_rows.copy()
+
+    def summarise(group: pd.DataFrame) -> pd.Series:
+        values = pd.to_numeric(group["relative_activation_change"], errors="coerce").to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        group_key = tuple(group[col].iloc[0] for col in group_cols if col in group.columns)
+        ci_low, ci_high = bootstrap_mean_ci(
+            values,
+            n_boot=int(bootstrap_iterations),
+            ci=float(bootstrap_ci),
+            seed=stable_seed(group_key, bootstrap_seed),
+        )
+        return pd.Series(
+            {
+                "mean": float(np.mean(values)) if len(values) else np.nan,
+                "sd": sd(values),
+                "ci_low": ci_low,
+                "ci_high": ci_high,
+                "n": int(len(values)),
+                "n_permutations": int(group["perm"].nunique()),
+                "n_units": int(group[["target_category", "unit"]].drop_duplicates().shape[0]),
+            }
+        )
+
+    return shift_rows.groupby(list(group_cols)).apply(summarise).reset_index().sort_values(list(group_cols)).reset_index(drop=True)
+
+
+def plot_relative_shift_lineplot(
+    summary: pd.DataFrame,
+    title: str,
+    output_base: Path,
+    dpi: int,
+    figure_size: Sequence[float],
+    error_bar_mode: str,
+    bootstrap_ci: float,
+) -> None:
+    fig, ax = plt.subplots(figsize=tuple(figure_size))
+    for status, (label, color, linestyle) in STATUS_STYLES.items():
+        sub = summary[summary["target_status"] == status].sort_values("damage_level")
+        if sub.empty:
+            continue
+        ax.errorbar(
+            sub["damage_level"],
+            sub["mean"],
+            yerr=errorbar_values(sub, error_bar_mode),
+            marker="o",
+            linestyle=linestyle,
+            linewidth=2.0,
+            markersize=4.5,
+            capsize=3,
+            color=color,
+            label=label,
+        )
+    ax.axhline(0, color="#868e96", linewidth=1.0)
+    ax.set_title(f"{title} | {errorbar_label(error_bar_mode, bootstrap_ci)}")
+    ax.set_xlabel("Damage level")
+    ax.set_ylabel("Relative activation change")
+    ax.grid(True, axis="y", color="#dee2e6", linewidth=0.8)
+    ax.set_box_aspect(1)
+    ax.legend(loc="best")
+    save_figure(fig, output_base, dpi)
+
+
+def fit_line(x_values: np.ndarray, y_values: np.ndarray) -> Tuple[float, float, float]:
+    finite = np.isfinite(x_values) & np.isfinite(y_values)
+    x = x_values[finite]
+    y = y_values[finite]
+    if len(x) < 2 or np.isclose(np.var(x), 0):
+        return float("nan"), float("nan"), float("nan")
+    slope, intercept = np.polyfit(x, y, 1)
+    predicted = slope * x + intercept
+    ss_res = float(np.sum((y - predicted) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+    return float(slope), float(intercept), r2
+
+
+def plot_selectivity_shift_scatter(
+    shift_rows: pd.DataFrame,
+    title: str,
+    output_base: Path,
+    dpi: int,
+    figure_size: Sequence[float],
+) -> None:
+    point_rows = (
+        shift_rows.groupby(["target_category", "unit", "rank", "score"], as_index=False)
+        .agg(relative_activation_change=("relative_activation_change", "mean"))
+    )
+    if point_rows.empty:
+        return
+    fig, ax = plt.subplots(figsize=tuple(figure_size))
+    for category, sub in point_rows.groupby("target_category"):
+        color = CATEGORY_COLORS.get(category, "#1f77b4")
+        ax.scatter(
+            sub["score"],
+            sub["relative_activation_change"],
+            color=color,
+            alpha=0.72,
+            s=22,
+            label=category,
+        )
+
+    x = point_rows["score"].to_numpy(dtype=float)
+    y = point_rows["relative_activation_change"].to_numpy(dtype=float)
+    slope, intercept, r2 = fit_line(x, y)
+    if np.isfinite(slope):
+        xs = np.linspace(float(np.nanmin(x)), float(np.nanmax(x)), 100)
+        ax.plot(xs, slope * xs + intercept, color="#212529", linewidth=1.8)
+        ax.text(
+            0.04,
+            0.96,
+            f"slope={slope:.3g}\nR^2={r2:.3g}",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+        )
+
+    ax.axhline(0, color="#868e96", linewidth=1.0)
+    ax.set_title(title)
+    ax.set_xlabel("Selectivity score")
+    ax.set_ylabel("Relative activation change")
+    ax.grid(True, axis="y", color="#dee2e6", linewidth=0.8)
+    ax.set_box_aspect(1)
+    ax.legend(loc="best")
+    save_figure(fig, output_base, dpi)
+
+
+def plot_relative_shift_analysis(
+    config: Mapping[str, Any],
+    shift_activation_rows: pd.DataFrame,
+    selected_shift_units: pd.DataFrame,
+) -> None:
+    if shift_activation_rows.empty:
+        return
+
+    output_dir = Path(config.get("output_dir", "plots/damage_unit_activations"))
+    figure_size = config.get("figure_size", [6, 6])
+    dpi = int(config.get("dpi", 400))
+    error_bar_modes = list(config.get("error_bars", ["sd", "bootstrap_ci"]))
+    bootstrap_iterations = int(config.get("bootstrap_iterations", 2000))
+    bootstrap_ci = float(config.get("bootstrap_ci", 95.0))
+    bootstrap_seed = int(config.get("bootstrap_seed", 1234))
+    baseline_level = float(config.get("relative_shift_baseline_level", 0.0))
+    eps = float(config.get("relative_shift_eps", 1e-8))
+    requested_scatter_levels = config.get("relative_shift_scatter_damage_levels", [0.25, 0.5, 0.75, 1.0])
+    fraction = float(config.get("relative_shift_selectivity_fraction", 0.05))
+    scatter_fraction = float(config.get("relative_shift_scatter_selectivity_fraction", fraction))
+    fraction_label = f"top{int(round(100 * fraction))}pct"
+    scatter_fraction_label = f"top{int(round(100 * scatter_fraction))}pct"
+
+    shift_rows = compute_relative_shift_rows(shift_activation_rows, baseline_level=baseline_level, eps=eps)
+    line_units = selected_shift_units.copy()
+    if "category_total_units" in line_units.columns:
+        line_units["line_top_k"] = np.ceil(line_units["category_total_units"].astype(float) * fraction).clip(lower=1).astype(int)
+        line_units = line_units[line_units["rank"].astype(int) <= line_units["line_top_k"]]
+    line_keys = line_units[["target_category", "unit"]].drop_duplicates()
+    line_shift_rows = shift_rows.merge(line_keys, on=["target_category", "unit"], how="inner")
+
+    combo_cols = ["damage_type", "damage_layer", "activation_layer"]
+    line_summary = relative_shift_summary(
+        line_shift_rows,
+        combo_cols + ["target_status", "damage_level"],
+        bootstrap_iterations,
+        bootstrap_ci,
+        bootstrap_seed,
+    )
+
+    for _, combo in line_summary[combo_cols].drop_duplicates().iterrows():
+        combo_mask = np.ones(len(line_summary), dtype=bool)
+        row_mask = np.ones(len(shift_rows), dtype=bool)
+        combo_name_parts = []
+        for col in combo_cols:
+            combo_mask &= line_summary[col].eq(combo[col]).to_numpy()
+            row_mask &= shift_rows[col].eq(combo[col]).to_numpy()
+            combo_name_parts.append(sanitize_filename(combo[col]))
+        combo_name = "_".join(combo_name_parts)
+        combo_summary = line_summary.loc[combo_mask]
+        for error_bar_mode in error_bar_modes:
+            plot_relative_shift_lineplot(
+                combo_summary,
+                f"Top {100 * fraction:g}% selective IT units | damage {combo['damage_layer']}",
+                output_dir / "relative_shift" / error_bar_mode / "lineplot" / f"{combo_name}_{fraction_label}_relative-shift",
+                dpi,
+                figure_size,
+                error_bar_mode,
+                bootstrap_ci,
+            )
+
+        combo_rows = shift_rows.loc[row_mask]
+        available_levels = sorted(combo_rows["damage_level"].dropna().unique())
+        scatter_levels = closest_available_levels(available_levels, requested_scatter_levels)
+        for level in scatter_levels:
+            level_rows = combo_rows[np.isclose(combo_rows["damage_level"].astype(float), float(level))]
+            for status, (status_label, _, _) in STATUS_STYLES.items():
+                status_rows = level_rows[level_rows["target_status"] == status]
+                if status_rows.empty:
+                    continue
+                file_stub = f"{combo_name}_damage{level:g}_{status}_{scatter_fraction_label}_selectivity-vs-shift"
+                plot_selectivity_shift_scatter(
+                    status_rows,
+                    f"{status_label} | damage {combo['damage_layer']} level {level:g}",
+                    output_dir / "relative_shift" / "selectivity_scatter" / file_stub,
+                    dpi,
+                    figure_size,
+                )
+
+    table_dir = output_dir / "tables"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    selected_shift_units.to_csv(table_dir / f"relative_shift_selected_{scatter_fraction_label}_units.csv", index=False)
+    line_units.to_csv(table_dir / f"relative_shift_lineplot_{fraction_label}_units.csv", index=False)
+    shift_activation_rows.to_csv(table_dir / "relative_shift_activation_iteration_summary.csv", index=False)
+    shift_rows.to_csv(table_dir / "relative_shift_iteration_summary.csv", index=False)
+    line_summary.to_csv(table_dir / "relative_shift_line_summary.csv", index=False)
+
+
 def plot_all(config: Mapping[str, Any], activation_rows: pd.DataFrame, mw_rows: pd.DataFrame) -> None:
     output_dir = Path(config.get("output_dir", "plots/damage_unit_activations"))
     figure_size = config.get("figure_size", [6, 6])
@@ -726,6 +1072,7 @@ def plot_all(config: Mapping[str, Any], activation_rows: pd.DataFrame, mw_rows: 
     top_n = int(config.get("top_n_units", 1))
     plot_individual = bool(config.get("plot_individual_units", True))
     plot_category_average = bool(config.get("plot_category_averages", True))
+    plot_rank_average = bool(config.get("plot_rank_averages", True))
     plot_joint_average = bool(config.get("plot_joint_average", True))
     error_bar_modes = list(config.get("error_bars", ["sd", "bootstrap_ci"]))
     bootstrap_iterations = int(config.get("bootstrap_iterations", 2000))
@@ -747,6 +1094,20 @@ def plot_all(config: Mapping[str, Any], activation_rows: pd.DataFrame, mw_rows: 
     mw_unit_summary = mw_summary(
         mw_rows,
         base_mw_group,
+        bootstrap_iterations,
+        bootstrap_ci,
+        bootstrap_seed,
+    )
+    activation_rank_summary = pooled_activation_summary(
+        activation_rows,
+        combo_cols + ["rank", "target_status", "damage_level"],
+        bootstrap_iterations,
+        bootstrap_ci,
+        bootstrap_seed,
+    )
+    mw_rank_summary = mw_summary(
+        mw_rows,
+        combo_cols + ["rank", "damage_level"],
         bootstrap_iterations,
         bootstrap_ci,
         bootstrap_seed,
@@ -851,6 +1212,47 @@ def plot_all(config: Mapping[str, Any], activation_rows: pd.DataFrame, mw_rows: 
                         bootstrap_ci,
                     )
 
+        if plot_rank_average:
+            act_rank_summary = pooled_activation_summary(
+                activation_rows.loc[combo_filter],
+                combo_cols + ["rank", "target_status", "damage_level"],
+                bootstrap_iterations,
+                bootstrap_ci,
+                bootstrap_seed,
+            )
+            mw_rank_summary = mw_summary(
+                mw_rows.loc[mw_filter],
+                combo_cols + ["rank", "damage_level"],
+                bootstrap_iterations,
+                bootstrap_ci,
+                bootstrap_seed,
+            )
+            for rank in sorted(act_rank_summary["rank"].unique()):
+                rank = int(rank)
+                file_stub = f"{combo_name}_rank{rank}_across-categories"
+                for error_bar_mode in error_bar_modes:
+                    plot_activation_summary(
+                        act_rank_summary[act_rank_summary["rank"] == rank],
+                        f"Activation | rank {rank} average across categories | damage {combo['damage_layer']}",
+                        CATEGORY_COLORS["joint"],
+                        output_dir / "activation" / error_bar_mode / "rank_average" / file_stub,
+                        dpi,
+                        figure_size,
+                        error_bar_mode,
+                        bootstrap_ci,
+                    )
+                    plot_mw_summary(
+                        mw_rank_summary[mw_rank_summary["rank"] == rank],
+                        f"Selectivity | rank {rank} average across categories | damage {combo['damage_layer']}",
+                        CATEGORY_COLORS["joint"],
+                        output_dir / "mannwhitney_u" / error_bar_mode / "rank_average" / file_stub,
+                        dpi,
+                        figure_size,
+                        normalize_u,
+                        error_bar_mode,
+                        bootstrap_ci,
+                    )
+
         if plot_joint_average:
             act_joint = pooled_activation_summary(
                 activation_rows.loc[combo_filter],
@@ -896,6 +1298,156 @@ def plot_all(config: Mapping[str, Any], activation_rows: pd.DataFrame, mw_rows: 
     mw_rows.to_csv(table_dir / "mannwhitney_iteration_summary.csv", index=False)
     activation_unit_summary.to_csv(table_dir / "activation_unit_summary.csv", index=False)
     mw_unit_summary.to_csv(table_dir / "mannwhitney_unit_summary.csv", index=False)
+    activation_rank_summary.to_csv(table_dir / "activation_rank_summary.csv", index=False)
+    mw_rank_summary.to_csv(table_dir / "mannwhitney_rank_summary.csv", index=False)
+
+
+def write_text_file(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text.strip() + "\n", encoding="utf-8")
+
+
+def write_methodology_files(config: Mapping[str, Any]) -> None:
+    output_dir = Path(config.get("output_dir", "plots/damage_unit_activations"))
+    top_n = int(config.get("top_n_units", 1))
+    damage_types = ", ".join(str(x) for x in config.get("damage_types", [config.get("damage_type", "unit_activations")]))
+    damage_layers = ", ".join(str(x) for x in config.get("damage_layers", []))
+    activation_layers = ", ".join(str(x) for x in config.get("activation_layers", []))
+    categories = ", ".join(str(x) for x in config.get("categories", []))
+    error_bars = ", ".join(str(x) for x in config.get("error_bars", ["sd", "bootstrap_ci"]))
+    shift_fraction = float(config.get("relative_shift_selectivity_fraction", 0.05))
+    scatter_fraction = float(config.get("relative_shift_scatter_selectivity_fraction", shift_fraction))
+    shift_layers = ", ".join(str(x) for x in config.get("relative_shift_damage_layers", ["V1", "IT"]))
+
+    global_text = f"""
+Damage unit activation plot output
+
+This directory contains plots generated by plot_damage_unit_activations.py.
+
+Main configuration:
+- Damage types: {damage_types}
+- Damage layers: {damage_layers}
+- Activation layers read out: {activation_layers}
+- Categories: {categories}
+- Primary unit selection: top {top_n} IT units per category by the configured selectivity score.
+- Error bar modes: {error_bars}
+
+Top-level contents:
+- activation/: mean activation value against damage level.
+- mannwhitney_u/: Mann-Whitney U selectivity values against damage level.
+- relative_shift/: relative activation change analyses for highly selective IT units.
+- tables/: CSV summaries used to generate the plots.
+
+All plots are saved as both PNG and SVG. Figures use a Times-style serif font.
+"""
+    write_text_file(output_dir / "README.txt", global_text)
+
+    activation_text = """
+Activation plots
+
+Y axis: mean activation value.
+X axis: damage level.
+
+Individual-unit plots show each selected category-selective IT unit separately.
+Category-average plots average across the selected units for one target category.
+Rank-average plots average across categories for the same selectivity rank.
+Joint-average plots average across all selected category units.
+
+For activation plots, the solid line is the unit response to target-category images.
+The dashed line is the response to non-target category images.
+
+The sd directory uses standard deviation as the error bar. The bootstrap_ci directory
+uses a bootstrap confidence interval around the plotted mean.
+"""
+    write_text_file(output_dir / "activation" / "README.txt", activation_text)
+
+    mw_text = """
+Mann-Whitney U plots
+
+Y axis: Mann-Whitney U value comparing target-category activations against non-target
+activations for the same unit or unit group.
+X axis: damage level.
+
+These plots are intended as a selectivity measure: larger separation between target and
+non-target activation distributions produces larger U values, unless normalized U is
+enabled in the config.
+
+The sd directory uses standard deviation as the error bar. The bootstrap_ci directory
+uses a bootstrap confidence interval around the plotted mean.
+"""
+    write_text_file(output_dir / "mannwhitney_u" / "README.txt", mw_text)
+
+    relative_text = f"""
+Relative shift plots
+
+This analysis reads IT activation files from connection damage to: {shift_layers}.
+The line plots use the top {100 * shift_fraction:g}% most selective IT units per
+category. The selectivity scatter plots use the top {100 * scatter_fraction:g}% per
+category, which can be broader to make the fitted relationship easier to inspect.
+
+Relative activation change is computed as:
+
+    (activation_at_damage - baseline_activation) / max(abs(baseline_activation), eps)
+
+The baseline is damage level 0 when available; otherwise the lowest available damage
+level for that damage-layer/activation-layer combination is used.
+
+lineplot/:
+Mean relative activation change against damage level for target images, non-target
+images, and all category images.
+
+selectivity_scatter/:
+For selected damage levels, each point is an IT unit averaged across permutations.
+By default this uses the top {100 * scatter_fraction:g}% of units per category so the
+x axis spans a broad selectivity range. The x axis is the unit selectivity score from
+the original selectivity table. The y axis is relative activation change. A least-squares
+line is fitted and annotated with slope and R squared.
+"""
+    write_text_file(output_dir / "relative_shift" / "README.txt", relative_text)
+
+    diagnostic_text = """
+Diagnostic ideas for larger IT changes after V1 damage than IT damage
+
+1. Propagation and convergence:
+V1 damage can perturb many downstream IT inputs at once after multiple nonlinear layers.
+IT damage may remove weights or activations locally, while V1 damage changes the feature
+basis feeding V2, V4, and IT.
+
+2. Normalization and winner switching:
+BatchNorm, GroupNorm, ReLU, and MaxPool can turn small early-layer perturbations into
+larger downstream activation shifts. Compare per-layer relative shifts from V1 to IT and
+look for stages where the slope increases sharply.
+
+3. Sparsity and redundancy:
+IT units may be redundant with one another, so direct IT damage can be partly absorbed.
+Earlier damage can remove shared low-level evidence used by many IT units. Plot the
+fraction of changed/nonzero activations per layer after V1 versus IT damage.
+
+4. Input-output sensitivity:
+Estimate a simple linear sensitivity model by regressing IT activation changes against
+activation changes in V1, V2, and V4. Stronger V1-driven changes would appear as larger
+downstream gain from early-layer perturbations.
+
+5. Selectivity dependence:
+Use the selectivity_scatter plots to test whether highly selective IT units are more
+fragile. Compare slopes for V1 and IT damage at the same damage levels and image subsets.
+
+6. Toy model:
+A small feed-forward ReLU network with convergent layers can test the mechanism: randomly
+zero early-layer weights versus late-layer weights, then measure relative output-unit
+change. If early damage causes larger shifts in the toy model, convergence and nonlinear
+gating are plausible contributors.
+"""
+    write_text_file(output_dir / "V1_vs_IT_damage_diagnostic_ideas.txt", diagnostic_text)
+
+    for metric_dir in ["activation", "mannwhitney_u", "relative_shift"]:
+        for error_mode in config.get("error_bars", ["sd", "bootstrap_ci"]):
+            mode_text = (
+                "This folder contains plots with standard deviation error bars."
+                if error_mode == "sd"
+                else "This folder contains plots with bootstrap confidence interval error bars."
+            )
+            write_text_file(output_dir / metric_dir / str(error_mode) / "README.txt", mode_text)
 
 
 def load_config(path: str | Path) -> Dict[str, Any]:
@@ -931,6 +1483,26 @@ def main() -> None:
     if activation_rows.empty or mw_rows.empty:
         raise RuntimeError("No activation data were loaded. Check damaged_model_dir, damage_type, layers, and damage levels.")
     plot_all(config, activation_rows, mw_rows)
+    if bool(config.get("plot_relative_shift_analysis", True)):
+        shift_fraction = float(config.get("relative_shift_selectivity_fraction", 0.05))
+        scatter_fraction = float(config.get("relative_shift_scatter_selectivity_fraction", shift_fraction))
+        selected_shift_units = select_fraction_units(config, max(shift_fraction, scatter_fraction))
+        selected_shift_units.to_csv(output_dir / "tables" / "relative_shift_selected_units.csv", index=False)
+
+        shift_config = dict(config)
+        shift_config["damage_types"] = [config.get("relative_shift_damage_type", "connections")]
+        shift_config["damage_layers"] = list(config.get("relative_shift_damage_layers", ["V1", "IT"]))
+        shift_config["activation_layers"] = list(config.get("relative_shift_activation_layers", config.get("activation_layers", ["IT"])))
+        if config.get("relative_shift_damage_levels") is not None:
+            shift_config["damage_levels"] = config.get("relative_shift_damage_levels")
+
+        shift_activation_rows, _ = collect_iteration_summaries(shift_config, selected_shift_units)
+        if shift_activation_rows.empty:
+            print("Warning: relative shift analysis loaded no activation rows.")
+        else:
+            plot_relative_shift_analysis(config, shift_activation_rows, selected_shift_units)
+
+    write_methodology_files(config)
     print(f"Saved plots and tables under: {output_dir}")
 
 

@@ -10,7 +10,7 @@ unit_layer: "module.IT"
 
 categories: ["animal", "face", "object", "place"]
 ranking_score_prefix: "hg"
-top_n_units: 10
+top_n_units: 5
 mannwhitney_normalize: false
 error_bars: ["sd", "bootstrap_ci"]
 bootstrap_iterations: 2000
@@ -19,7 +19,18 @@ bootstrap_seed: 1234
 
 plot_individual_units: true
 plot_category_averages: true
+plot_rank_averages: true
 plot_joint_average: true
+
+plot_relative_shift_analysis: true
+relative_shift_selectivity_fraction: 0.05
+relative_shift_scatter_selectivity_fraction: 1.0
+relative_shift_damage_type: "connections"
+relative_shift_damage_layers: ["V1", "IT"]
+relative_shift_activation_layers: ["IT"]
+relative_shift_baseline_level: 0.0
+relative_shift_eps: 0.00000001
+relative_shift_scatter_damage_levels: [0.25, 0.5, 0.75, 1.0]
 
 figure_size: [3, 3]
 dpi: 400
