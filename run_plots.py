@@ -12,6 +12,7 @@ from utils import (
     damage_type_lineplot,
     plot_category_relative_drop_bar,
     plot_total_differentiation_bar,
+    DEFAULT_BARPLOT_SCATTER_SIZE,
 )
 
 
@@ -24,6 +25,12 @@ PLOT_FUNCTIONS = {
     "damage_type_lineplot": damage_type_lineplot,
     "plot_category_relative_drop_bar": plot_category_relative_drop_bar,
     "plot_total_differentiation_bar": plot_total_differentiation_bar,
+}
+
+PLOT_PARAMETER_DEFAULTS = {
+    "plot_total_differentiation_bar": {
+        "scatter_size": DEFAULT_BARPLOT_SCATTER_SIZE,
+    },
 }
 
 
@@ -44,7 +51,8 @@ def main(config_path):
 
     for task in config.get("tasks", []):
         function_name = task.get("function")
-        parameters = dict(task.get("parameters", {}))
+        parameters = dict(PLOT_PARAMETER_DEFAULTS.get(function_name, {}))
+        parameters.update(task.get("parameters", {}))
         parameters["plot_dir"] = plot_dir
 
         if function_name:

@@ -2271,6 +2271,7 @@ def _summary_yerr(summary_df, value_col, lower_col="ci95_lower", upper_col="ci95
 
 DEFAULT_BARPLOT_WIDTH = 0.8
 DEFAULT_BARPLOT_SCATTER_ALPHA = 0.25
+DEFAULT_BARPLOT_SCATTER_SIZE = 20
 DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION = 0.8
 BARPLOT_AXIS_WIDTH = 2.2
 BARPLOT_AXIS_HEIGHT = 4.4
@@ -2296,6 +2297,21 @@ def _resolve_alpha(alpha, default=DEFAULT_BARPLOT_SCATTER_ALPHA, name="scatter_a
         raise ValueError(f"{name} must be a finite number between 0 and 1.")
     if not np.isfinite(value) or value < 0 or value > 1:
         raise ValueError(f"{name} must be a finite number between 0 and 1.")
+    return value
+
+
+def _resolve_scatter_size(
+    scatter_size,
+    default=DEFAULT_BARPLOT_SCATTER_SIZE,
+    name="scatter_size",
+):
+    value = default if scatter_size is None else scatter_size
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a positive finite number.")
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive finite number.")
     return value
 
 
@@ -3455,6 +3471,7 @@ def plot_total_differentiation_bar(
     scatter=False,
     bar_width=None,
     scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
+    scatter_size=DEFAULT_BARPLOT_SCATTER_SIZE,
     scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
     figsize=None,
     tolerance=1e-6,
@@ -3566,6 +3583,7 @@ def plot_total_differentiation_bar(
 
     resolved_bar_width = _resolve_bar_width(bar_width)
     resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
+    resolved_scatter_size = _resolve_scatter_size(scatter_size)
 
     fig, ax = plt.subplots(figsize=_barplot_figsize(figsize=figsize))
     _apply_barplot_axis_aspect(ax)
@@ -3619,7 +3637,7 @@ def plot_total_differentiation_bar(
                 x_pos[idx] + jitter,
                 vals,
                 alpha=resolved_scatter_alpha,
-                s=20,
+                s=resolved_scatter_size,
                 color=colors[idx],
                 marker=markers[idx],
                 zorder=0,
