@@ -3246,6 +3246,7 @@ def plot_category_relative_drop_bar(
     scatter=False,
     bar_width=None,
     scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
+    scatter_size=DEFAULT_BARPLOT_SCATTER_SIZE,
     scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
     figsize=None,
 ):
@@ -3356,6 +3357,7 @@ def plot_category_relative_drop_bar(
 
     resolved_bar_width = _resolve_bar_width(bar_width)
     resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
+    resolved_scatter_size = _resolve_scatter_size(scatter_size)
 
     if ax is None:
         fig, ax = plt.subplots(figsize=_barplot_figsize(figsize=figsize))
@@ -3400,7 +3402,7 @@ def plot_category_relative_drop_bar(
                 x_pos[idx] + jitter,
                 vals,
                 alpha=resolved_scatter_alpha,
-                s=20,
+                s=resolved_scatter_size,
                 zorder=0,
                 color=colors[idx],
                 marker="o",

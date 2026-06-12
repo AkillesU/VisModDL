@@ -28,6 +28,9 @@ PLOT_FUNCTIONS = {
 }
 
 PLOT_PARAMETER_DEFAULTS = {
+    "plot_category_relative_drop_bar": {
+        "scatter_size": DEFAULT_BARPLOT_SCATTER_SIZE,
+    },
     "plot_total_differentiation_bar": {
         "scatter_size": DEFAULT_BARPLOT_SCATTER_SIZE,
     },
