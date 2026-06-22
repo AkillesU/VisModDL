@@ -19,6 +19,16 @@ model:
   time_steps: 5
   device: auto
 
+shared_heatmap_scale:
+  enabled: true
+  heatmap_cmap: viridis
+  q_cmap: viridis
+  save_formats: [png, svg]
+  configs:
+    - it-v1_animals_cornet_rt5.yaml
+    - it-v1_faces_cornet_rt5.yaml
+    - it-v1_objects_cornet_rt5.yaml
+    - it-v1_places_cornet_rt5.yaml
 
 per_image_overlay:
   enabled: true

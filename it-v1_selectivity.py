@@ -89,6 +89,173 @@ def _plot_heatmap(arr: np.ndarray,
         plt.savefig(out_base.with_suffix(f".{fmt}"), dpi=300)
     plt.close()
 
+
+def _top_frac_list_from_cfg(cfg: dict) -> list:
+    top_frac_cfg = cfg.get("top_frac", 0.1)
+    if isinstance(top_frac_cfg, (float, int)):
+        return [top_frac_cfg]
+    return list(top_frac_cfg)
+
+
+def _category_tag_from_cfg(cfg: dict) -> str:
+    if cfg.get("image_category_dirs"):
+        categories = [pathlib.Path(d).expanduser().name for d in cfg["image_category_dirs"]]
+    elif cfg.get("image_categories"):
+        categories = list(cfg["image_categories"])
+    else:
+        categories = [cfg["category"]]
+    return "".join(sorted({str(c)[0].lower() for c in categories if str(c)}))
+
+
+def _config_prefixes(cfg: dict) -> list[tuple[object, str, pathlib.Path]]:
+    model_cfg = cfg.get("model", {})
+    model_name = model_cfg.get("name", "cornet_rt").lower()
+    is_pretrained = model_cfg.get("weights", "pretrained").lower() == "pretrained"
+    ut_suffix = "_ut" if not is_pretrained else ""
+    mode = cfg.get("top_unit_selection", "percentage").lower()
+    cat = cfg["category"].lower()
+    cat_tag = _category_tag_from_cfg(cfg)
+    outdir = pathlib.Path(cfg.get("output_dir", "it2v1_analysis"))
+
+    prefixes = []
+    for top_frac in _top_frac_list_from_cfg(cfg):
+        prefix = f"{cat}_{cat_tag}_{mode}_{top_frac}{ut_suffix}"
+        prefixes.append((top_frac, prefix, outdir / f"{prefix}_v1_featuremap_selective_vs_random_grad.csv"))
+    return prefixes
+
+
+def _read_heatmap_specs_from_csv(cfg: dict,
+                                 heatmap_cmap: str,
+                                 q_cmap: str) -> list[dict]:
+    effect_size = str(cfg.get("effect_size", "hedges_g")).lower()
+    eff_label = {"hedges_g": "Hedges' g", "cliffs_delta": "Cliff's delta", "mw_u": "Mann-Whitney U"}[effect_size]
+    file_suffix = {"hedges_g": "hedges_g", "cliffs_delta": "cliffs_delta", "mw_u": "mw_u"}[effect_size]
+
+    specs = []
+    for top_frac, prefix, csv_path in _config_prefixes(cfg):
+        if not csv_path.exists():
+            print(f"[WARN] Shared heatmap scale skipped missing CSV: {csv_path}")
+            continue
+
+        df = pd.read_csv(csv_path)
+        Hf = int(df["fy"].max()) + 1
+        Wf = int(df["fx"].max()) + 1
+        obs_map = pd.to_numeric(df["mean_diff"], errors="coerce").values.reshape(Hf, Wf)
+
+        if effect_size in df.columns:
+            effect_map = pd.to_numeric(df[effect_size], errors="coerce").values.reshape(Hf, Wf)
+        else:
+            fallback_cols = [col for col in ("mw_u", "cliffs_delta", "hedges_g") if col in df.columns]
+            if not fallback_cols:
+                print(f"[WARN] Shared heatmap scale skipped {csv_path}; no effect-size column found.")
+                continue
+            effect_map = pd.to_numeric(df[fallback_cols[0]], errors="coerce").values.reshape(Hf, Wf)
+
+        if "fdr_q_value" in df.columns:
+            q_map = pd.to_numeric(df["fdr_q_value"], errors="coerce").values.reshape(Hf, Wf)
+            if "significant_fdr" in df.columns:
+                sig_mask = df["significant_fdr"].astype(bool).values.reshape(Hf, Wf)
+            elif "significant" in df.columns:
+                sig_mask = df["significant"].astype(bool).values.reshape(Hf, Wf)
+            else:
+                sig_mask = q_map < 0.05
+        elif "bonferroni_p_value" in df.columns:
+            q_map = pd.to_numeric(df["bonferroni_p_value"], errors="coerce").values.reshape(Hf, Wf)
+            sig_mask = q_map < 0.05
+        else:
+            print(f"[WARN] Shared heatmap scale skipped {csv_path}; no q-value column found.")
+            continue
+
+        outdir = csv_path.parent
+        effect_plot = np.where(sig_mask, effect_map, np.nan)
+        q_plot = q_map.copy()
+        q_plot[~sig_mask] = np.nan
+
+        specs.extend([
+            {
+                "kind": "mean_diff",
+                "array": obs_map.copy(),
+                "title": f"Mean |grad| diff  (sel-rand, top_frac={top_frac})",
+                "label": "Delta |grad|",
+                "cmap": heatmap_cmap,
+                "out_base": outdir / f"{prefix}_A_mean_diff",
+            },
+            {
+                "kind": "effect",
+                "array": effect_plot.copy(),
+                "title": eff_label,
+                "label": eff_label,
+                "cmap": heatmap_cmap,
+                "out_base": outdir / f"{prefix}_B_{file_suffix}",
+            },
+            {
+                "kind": "q",
+                "array": q_plot,
+                "title": "FDR q",
+                "label": "q",
+                "cmap": q_cmap,
+                "out_base": outdir / f"{prefix}_C_q",
+            },
+        ])
+    return specs
+
+
+def run_shared_heatmap_scale_replot(cfg: dict, cfg_path: str | pathlib.Path):
+    shared_cfg = cfg.get("shared_heatmap_scale", {})
+    if not shared_cfg or not bool(shared_cfg.get("enabled", False)):
+        return
+
+    base_dir = pathlib.Path(cfg_path).expanduser().resolve().parent
+    config_paths = shared_cfg.get("configs", [])
+    if not config_paths:
+        print("[WARN] shared_heatmap_scale.enabled is true but no configs were listed.")
+        return
+
+    heatmap_cmap = str(shared_cfg.get("heatmap_cmap", cfg.get("heatmap_cmap", "bwr")))
+    q_cmap = str(shared_cfg.get("q_cmap", cfg.get("q_cmap", "viridis")))
+    save_formats = _as_save_formats(shared_cfg.get("save_formats", cfg.get("save_formats", ["png"])))
+
+    shared_specs = []
+    for path in config_paths:
+        config_path = pathlib.Path(path).expanduser()
+        if not config_path.is_absolute():
+            config_path = base_dir / config_path
+        if not config_path.exists():
+            print(f"[WARN] Shared heatmap scale skipped missing config: {config_path}")
+            continue
+        with open(config_path, "r") as f:
+            other_cfg = yaml.safe_load(f)
+        shared_specs.extend(_read_heatmap_specs_from_csv(other_cfg, heatmap_cmap, q_cmap))
+
+    if not shared_specs:
+        print("[WARN] Shared heatmap scale found no CSV-backed heatmaps to replot.")
+        return
+
+    common_limits = {}
+    for kind in {spec["kind"] for spec in shared_specs}:
+        vmin, vmax = _finite_minmax(
+            spec["array"] for spec in shared_specs if spec["kind"] == kind
+        )
+        common_limits[kind] = (vmin, vmax)
+
+    for spec in shared_specs:
+        vmin, vmax = common_limits.get(spec["kind"], (None, None))
+        _plot_heatmap(
+            arr=spec["array"],
+            title=spec["title"],
+            colorbar_label=spec["label"],
+            cmap=spec["cmap"],
+            out_base=spec["out_base"],
+            save_formats=save_formats,
+            vmin=vmin,
+            vmax=vmax,
+        )
+
+    print(
+        "Saved shared-scale heatmaps from "
+        f"{len(config_paths)} configs using formats: {', '.join(save_formats)}"
+    )
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Utility helpers – unchanged
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1262,6 +1429,8 @@ def main(cfg_path: str | pathlib.Path,
     if heatmap_specs:
         scale_msg = "common" if use_common_heatmap_scale else "per-heatmap"
         print(f"Saved {len(heatmap_specs)} average heatmaps using {scale_msg} color scales and formats: {', '.join(save_formats)}")
+
+    run_shared_heatmap_scale_replot(cfg, cfg_path)
 
 
 if __name__=="__main__":
