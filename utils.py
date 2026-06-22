@@ -5282,6 +5282,26 @@ def resolve_selectivity_table(path_or_dir: str | Path,
     if p.is_file() and p.suffix.lower() in (".pkl", ".csv"):
         return p
 
+    # If the caller passed a filename that does not exist, try to resolve
+    # by prepending the model_tag inside the same directory (if available).
+    if p.suffix.lower() in (".pkl", ".csv") and not p.exists():
+        parent = p.parent if p.parent.exists() else Path('.')
+        basename = p.name
+        # Try model-tagged candidate first
+        if model_tag:
+            cand = parent / f"{model_tag}_{basename}"
+            if cand.exists():
+                return cand
+            # also try replacing any leading model_tag in basename
+            if basename.startswith("all_layers_units_"):
+                cand2 = parent / f"{model_tag}_{basename}"
+                if cand2.exists():
+                    return cand2
+        # fallback to searching parent for legacy names
+        legacy = parent / basename
+        if legacy.exists():
+            return legacy
+
     # directory search
     if p.is_dir():
         candidates: list[Path] = []

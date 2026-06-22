@@ -22,10 +22,10 @@ def select_block_layers(model,model_tag) -> list[str]:
     """
 
     if "alexnet" in model_tag:
-        return ["features.12"]
+        return ["features.12","features.11","features.2","features.5","features.9"]
 
     if "vgg16" in model_tag:
-        return ["features.23", "features.30"]
+        return ["features.4","features.9","features.16","features.23", "features.30", "features.29"] #
 
     # CORnet family logic
     if model_tag in {"cornet_rt", "cornet_s"}:
