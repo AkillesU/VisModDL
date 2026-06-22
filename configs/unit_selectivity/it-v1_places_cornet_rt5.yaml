@@ -19,13 +19,13 @@ model:
   time_steps: 5
   device: auto
 
-common_heatmap_scale: true
+common_heatmap_scale: false
 heatmap_cmap: RdBu
 q_cmap: viridis
 save_formats: [png, svg]
 
 shared_heatmap_scale:
-  enabled: true
+  enabled: false
   kinds: [effect]
   heatmap_cmap: RdBu
   q_cmap: viridis
