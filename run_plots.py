@@ -1,14 +1,26 @@
 import yaml
-from utils import categ_corr_lineplot, plot_categ_differences, plot_avg_corr_mat, pair_corr_scatter_subplots, damage_type_lineplot
+from utils import (
+    categ_corr_lineplot,
+    grouped_categ_corr_lineplot,
+    plot_categ_differences,
+    plot_avg_corr_mat,
+    pair_corr_scatter_subplots,
+    damage_type_lineplot,
+    plot_category_relative_drop_bar,
+    plot_total_differentiation_bar,
+)
 
 def run_function(function_name, **kwargs):
     """Executes the specified function with the given parameters."""
     functions = {
         "categ_corr_lineplot": categ_corr_lineplot,
+        "grouped_categ_corr_lineplot": grouped_categ_corr_lineplot,
         "plot_categ_differences": plot_categ_differences,
         "plot_avg_corr_mat": plot_avg_corr_mat,
         "pair_corr_scatter_subplots": pair_corr_scatter_subplots,
-        "damage_type_lineplot": damage_type_lineplot
+        "damage_type_lineplot": damage_type_lineplot,
+        "plot_category_relative_drop_bar": plot_category_relative_drop_bar,
+        "plot_total_differentiation_bar": plot_total_differentiation_bar,
     }
 
     if function_name in functions:

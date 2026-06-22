@@ -1,0 +1,23 @@
+selectivity_csv_dir: unit_selectivity
+category: objects
+top_unit_selection: percentage
+top_frac: [0.05]
+n_random_repeats: 100
+collapse_method: median
+effect_size: mw_u
+category_images: categ_images_testset/places
+image_categories: [places]
+max_images: 64
+pixels_per_degree: None
+output_dir: it2v1_analysis/top5pct_mw/cross_objects_sel_on_places_imgs
+gaussian_sigma: 0
+model:
+  source: cornet
+  name: cornet_rt
+  weights: pretrained
+  time_steps: 5
+  device: auto
+
+per_image_overlay:
+  enabled: false
+  indices: []

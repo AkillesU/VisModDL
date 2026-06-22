@@ -1,0 +1,30 @@
+selectivity_csv_dir: unit_selectivity
+category: animals
+top_unit_selection: percentage
+top_frac: [0.05]
+n_random_repeats: 100
+collapse_method: median
+effect_size: mw_u
+category_images: categ_images_testset/animals
+image_categories: [animals]
+max_images: 64
+pixels_per_degree: None
+output_dir: it2v1_analysis/top5pct_mw/self_animals
+gaussian_sigma: 0
+model:
+  source: cornet
+  name: cornet_rt
+  weights: pretrained
+  time_steps: 5
+  device: auto
+
+per_image_overlay:
+  enabled: true
+  indices: [0, 1, 2, 3]
+  alpha: 0.65
+  cmap: "viridis"
+  upsample: "bilinear"
+  viz_norm: "per_image"
+  save_raw_maps: false
+  out_subdir: "overlays"
+  make_greyscale: true

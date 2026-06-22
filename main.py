@@ -19,6 +19,8 @@ def main():
         config_filename = "cornet_s_it.yaml"
 
     config_path = f"configs/{config_filename}"
+    if not os.path.exists(config_path):
+        config_path = config_filename
 
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
@@ -44,6 +46,7 @@ def main():
     noise_levels_params = config.get("noise_levels", [0.1, 0, 0.1])
     include_bias = config.get("include_bias", False)
     only_conv = config.get("only_conv", True)
+    resume_existing_damage = config.get("resume_existing_damage", False)
     # Add the new parameter for GroupNorm scaling
     groupnorm_scaling_params = config.get("groupnorm_scaling", [1.0, 1, 0.0])
     gain_control_noise = config.get("gain_control_noise", 0.0)
@@ -74,7 +77,8 @@ def main():
         only_conv               = only_conv,
         include_bias            = include_bias,
         masking_level           = masking_level,
-        groupnorm_scaling_targets = groupnorm_scaling_targets
+        groupnorm_scaling_targets = groupnorm_scaling_targets,
+        resume_existing_damage  = resume_existing_damage
     )
 
     # Noise ---------------------------------------------------------

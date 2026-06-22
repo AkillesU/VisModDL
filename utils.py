@@ -32,6 +32,16 @@ import zarr
 import numcodecs
 
 
+PLOT_FONT_FAMILY = "Times New Roman"
+PLOT_FONT_FALLBACKS = [PLOT_FONT_FAMILY, "Times", "DejaVu Serif"]
+
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.serif": PLOT_FONT_FALLBACKS,
+    "mathtext.fontset": "stix",
+})
+
+
 def get_layer_from_path(model, path: str):
     """
     Resolve dotted module paths across models (VGG/ResNet/CORnet/etc).
@@ -190,102 +200,154 @@ def short_module_tag(path: str) -> str:
     return norm.replace(".", "_")
 
 
+def format_damage_dirname(damage_level: float) -> str:
+    return f"damaged_{round(damage_level, 3)}"
+
+
+def resolve_damage_dir_tag(
+    manipulation_method: str,
+    base_dir_tag: str,
+    r_start: float,
+    r_end: float,
+    damage_levels_list,
+) -> str:
+    if manipulation_method == "eccentricity_gradual":
+        sweep_start = damage_levels_list[0]
+        if sweep_start > 0.0:
+            band_label = f"band{r_start:.2f}-{r_end:.2f}_min_{sweep_start:.2f}"
+        else:
+            band_label = f"band{r_start:.2f}-{r_end:.2f}"
+        return f"eccentricity_gradual_{band_label}"
+
+    if manipulation_method == "eccentricity":
+        return f"eccentricity_{r_start:.2f}-{r_end:.2f}"
+
+    return base_dir_tag
+
+
+def is_damage_permutation_complete(
+    output_root: Path,
+    dir_tag: str,
+    layer_name: str,
+    activation_layer_tags,
+    damage_level: float,
+    permutation_index: int,
+) -> bool:
+    damage_dirname = format_damage_dirname(damage_level)
+
+    for activation_tag in activation_layer_tags:
+        activation_dir = output_root / dir_tag / layer_name / "activations" / activation_tag / damage_dirname
+        rdm_dir = output_root / dir_tag / layer_name / "RDM" / activation_tag / damage_dirname
+        selectivity_dir = output_root / dir_tag / layer_name / "selectivity" / activation_tag / damage_dirname
+
+        has_activation = any(activation_dir.glob(f"{permutation_index}__activ_*.zarr"))
+        has_rdm = any(rdm_dir.glob(f"{permutation_index}__activ_*.zarr"))
+        has_selectivity = (selectivity_dir / f"{permutation_index}.pkl").exists()
+
+        if not (has_activation and has_rdm and has_selectivity):
+            return False
+
+    return True
+
+
 def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path="", model_time_steps=5):
     """
     Load a specified pretrained model and register a forward hook to capture activations.
-
-    Parameters:
-        model_class: The class (constructor) for the model (e.g., cornet_s).
-        pretrained (bool): If True, load pretrained weights.
-        layer_name (str): The layer name at which to hook and capture activations.
-                          Possible values depend on the model architecture.
-
-    Returns:
-        model: The loaded and hooked model
-        activations: A dictionary to store captured activations
     """
-    # Define model load parameters
     model_source = model_info["source"]
     model_repo = model_info["repo"]
     model_name = model_info["name"]
-    # Determine a canonical name to use for loading constructors/hub calls.
-    # Some callers append a `_ut` suffix to indicate untrained variants for
-    # filesystem naming; but the actual constructor names do not include that
-    # suffix. Keep the potentially-suffixed `model_name` for other uses but
-    # strip `_ut` when resolving which model to load.
+
     load_model_name = model_name[:-3] if isinstance(model_name, str) and model_name.endswith("_ut") else model_name
-    # Tag untrained models explicitly for naming elsewhere but do not affect
-    # which constructor we call (we use `load_model_name` for that purpose).
+
     if not pretrained and not str(model_name).endswith("_ut"):
-        # keep model_info['name'] for filesystem/metadata, but loading uses load_model_name
         model_info["name"] = f"{model_name}_ut"
         model_name = model_info["name"]
+
     model_weights = model_info["weights"]
     if "time_steps" in model_info:
         model_time_steps = model_info["time_steps"]
 
-    # Hook function to capture layer outputs
-    def hook_fn(module, input, output):
-        activations[layer_name] = output.cpu().detach().numpy()
-
-
     if model_source == "cornet":
-        # use the stripped name for constructor lookup
         m = str(load_model_name).lower()
         if m == "cornet_z":
             from cornet import cornet_z
-            model = cornet_z(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
-
+            model = cornet_z(
+                pretrained=pretrained,
+                map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            )
         elif m == "cornet_s":
             from cornet import cornet_s
-            model = cornet_s(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
-
+            model = cornet_s(
+                pretrained=pretrained,
+                map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            )
         elif m == "cornet_rt":
             from cornet import cornet_rt
-            model = cornet_rt(pretrained=pretrained, map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")), times=model_time_steps)
-
+            model = cornet_rt(
+                pretrained=pretrained,
+                map_location=(torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")),
+                times=model_time_steps
+            )
         else:
             raise ValueError(f"CORnet model {load_model_name} not found. Check config file.")
 
     elif model_source == "pytorch_hub":
-        # use load_model_name (without any _ut suffix) for hub resolution
-        if model_weights == "":
-            model = torch.hub.load(model_repo, load_model_name)
-        else:
-            model = torch.hub.load(model_repo, load_model_name, weights=model_weights)
+        # Safe path for torchvision models: do NOT use torch.hub for pytorch/vision
+        if model_repo == "pytorch/vision":
+            from torchvision.models import get_model, get_model_weights
 
-        # Assign model to device
+            try:
+                if (not pretrained) or model_weights in ("", None):
+                    weights = None
+                elif isinstance(model_weights, str):
+                    weights_enum = get_model_weights(load_model_name)
+                    if model_weights.upper() == "DEFAULT":
+                        weights = weights_enum.DEFAULT
+                    else:
+                        weights = getattr(weights_enum, model_weights)
+                else:
+                    weights = model_weights
+
+                model = get_model(load_model_name, weights=weights)
+
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to load torchvision model '{load_model_name}' "
+                    f"via torchvision.models for repo '{model_repo}'."
+                ) from e
+
+        else:
+            # Keep old behaviour for non-torchvision hub repos
+            if model_weights == "":
+                model = torch.hub.load(model_repo, load_model_name)
+            else:
+                model = torch.hub.load(model_repo, load_model_name, weights=model_weights)
+
         model.cuda() if torch.cuda.is_available() else model.cpu()
+
     else:
         raise ValueError(f"Check model source: {model_source}")
-    
-    # Print model summary
-    #print(model)
 
     model.eval()
-    activations = {} # Init activations dictionary for hook registration
+    activations = {}
 
-    # early-exit guard 
     if layer_path in (None, ""):
-        # caller does not need hooks – just return the model as-is
         return model, activations
 
-
-    # We'll store all hooks in the same 'activations' dictionary, keyed by their path.
     if isinstance(layer_path, list):
-        # If layer_path is already a list of paths, do multiple hooks
         def make_hook_fn(name):
             def hook_fn(module, input, output):
                 activations[name] = output.cpu().detach().numpy()
             return hook_fn
-        
+
         for lp in layer_path:
             target_layer = get_layer_from_path(model, lp)
             target_layer.register_forward_hook(make_hook_fn(lp))
     else:
-        # Old single-layer logic
         def hook_fn(module, input, output):
             activations[layer_name] = output.cpu().detach().numpy()
+
         target_layer = get_layer_from_path(model, layer_path)
         target_layer.register_forward_hook(hook_fn)
 
@@ -354,7 +416,13 @@ def apply_noise(model, noise_level, noise_dict, layer_paths, apply_to_all_layers
             get_all_weight_layers(model, "", include_bias)
         )
     else:
-        targets = _as_list(layer_paths)
+        targets = []
+        for path in _as_list(layer_paths):
+            base = get_layer_from_path(model, path)
+            if only_conv:
+                targets.extend(get_all_conv_layers(base, path))
+            else:
+                targets.extend(get_all_weight_layers(base, path))
 
     for w_path in targets:
         npath = normalize_module_name(w_path)
@@ -400,7 +468,13 @@ def apply_activation_noise(
     if apply_to_all_layers:
         targets = get_all_conv_layers(model, "", include_bias=False) if only_conv else get_all_weight_layers(model, "", include_bias=False)
     else:
-        targets = _as_list(layer_paths)
+        targets = []
+        for path in _as_list(layer_paths):
+            base = get_layer_from_path(model, path)
+            if only_conv:
+                targets.extend(get_all_conv_layers(base, path))
+            else:
+                targets.extend(get_all_weight_layers(base, path))
 
     for w_path in targets:
         npath = normalize_module_name(w_path)
@@ -1120,6 +1194,7 @@ def run_damage(
     groupnorm_scaling_targets,
     gain_control_noise=0.0,
     masking_level="connections",
+    resume_existing_damage=False,
     eccentricity_layer_path=None,  # Specific layer path. The output will be used for damage
     eccentricity_bands: list[list[float]] | None = [[0.60, 1.00]],  # [min,max] normalized eccentricity bands
     ecc_fraction_to_mask_params=[0, 0, 0],
@@ -1198,189 +1273,214 @@ def run_damage(
     # ------------------------------------------------------------
     # C) Directory naming (unchanged)
     # ------------------------------------------------------------
-    if manipulation_method == "noise":
-        dir_tag = "noise"
-    elif manipulation_method == "noise_activations":
-        dir_tag = "noise_activations"
-    elif manipulation_method == "connections":
-        if masking_level == "units":
-            dir_tag = "units"
-        elif masking_level == "unit_activations":
-            dir_tag = "unit_activations"
-        elif masking_level == "unit_activations_spatial":
-            dir_tag = "unit_activations_spatial"
-        else:
-            dir_tag = "connections"
-    elif manipulation_method == "groupnorm_scaling":
+    if manipulation_method == "groupnorm_scaling":
         _map = {"groupnorm": "g", "conv": "c"}
         sel = [_map[t] for t in sorted(set(groupnorm_scaling_targets))]
         targ_tag = "+".join(sel)
-        dir_tag = f"groupnorm_scaling_{targ_tag}_noise{gain_control_noise:.3f}"
+        base_dir_tag = f"groupnorm_scaling_{targ_tag}_noise{gain_control_noise:.3f}"
     else:
-        dir_tag = manipulation_method
+        base_dir_tag = manipulation_method
+
+    eccentricity_bands = (
+        eccentricity_bands if eccentricity_bands is not None else [[0.60, 1.00]]
+    )
+
+    if manipulation_method == "noise":
+        base_dir_tag = "noise"
+    elif manipulation_method == "noise_activations":
+        base_dir_tag = "noise_activations"
+    elif manipulation_method == "connections":
+        if masking_level == "units":
+            base_dir_tag = "units"
+        elif masking_level == "unit_activations":
+            base_dir_tag = "unit_activations"
+        elif masking_level == "unit_activations_spatial":
+            base_dir_tag = "unit_activations_spatial"
+        else:
+            base_dir_tag = "connections"
 
     # ------------------------------------------------------------
-    # D) Total iterations
+    # D) Build permutation plan, optionally skipping completed runs
     # ------------------------------------------------------------
-    total_iterations = len(damage_levels_list) * mc_permutations * len(eccentricity_bands)
+    output_root = Path(f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}")
+    activation_layer_tags = {
+        lp: (lp.split(".")[2] if is_cornet(model_info) else short_module_tag(lp))
+        for lp in final_layers_to_hook
+    }
+    iteration_plan = []
+    skipped_iterations = 0
+
+    for r_start, r_end in eccentricity_bands:
+        dir_tag = resolve_damage_dir_tag(
+            manipulation_method=manipulation_method,
+            base_dir_tag=base_dir_tag,
+            r_start=r_start,
+            r_end=r_end,
+            damage_levels_list=damage_levels_list,
+        )
+        for damage_level in damage_levels_list:
+            for permutation_index in range(mc_permutations):
+                if resume_existing_damage and is_damage_permutation_complete(
+                    output_root=output_root,
+                    dir_tag=dir_tag,
+                    layer_name=layer_name,
+                    activation_layer_tags=activation_layer_tags.values(),
+                    damage_level=damage_level,
+                    permutation_index=permutation_index,
+                ):
+                    skipped_iterations += 1
+                    continue
+
+                iteration_plan.append((r_start, r_end, dir_tag, damage_level, permutation_index))
+
+    total_iterations = len(iteration_plan)
+    if resume_existing_damage:
+        print(
+            f"Resume mode: skipping {skipped_iterations} completed permutations; "
+            f"running {total_iterations} remaining."
+        )
 
     # ------------------------------------------------------------
     # E) Main loops (reload WITH hooks; apply damage; save)
     # ------------------------------------------------------------
     with tqdm(total=total_iterations, desc=f"Running {manipulation_method} alteration") as pbar:
-        for r_start, r_end in eccentricity_bands:
+        for r_start, r_end, dir_tag, damage_level, permutation_index in iteration_plan:
 
-            # Clean folder naming for eccentricity modes (unchanged)
-            if manipulation_method == "eccentricity_gradual":
-                sweep_start = damage_levels_list[0]
-                if sweep_start > 0.0:
-                    band_label = f"band{r_start:.2f}-{r_end:.2f}_min_{sweep_start:.2f}"
-                else:
-                    band_label = f"band{r_start:.2f}-{r_end:.2f}"
-                dir_tag = f"eccentricity_gradual_{band_label}"
+            # 1) Load fresh model WITH ALL hooks at once
+            model, activations = load_model(
+                model_info=model_info,
+                pretrained=pretrained,
+                layer_name=layer_name,
+                layer_path=final_layers_to_hook     # LIST is okay
+            )
+            model.eval()
+
+            # 2) Apply chosen damage to ALL requested target blocks
+            if manipulation_method == "connections":
+                apply_masking(
+                    model, fraction_to_mask=damage_level,
+                    layer_paths=damage_layers_list,
+                    apply_to_all_layers=apply_to_all_layers,
+                    masking_level=masking_level,
+                    only_conv=only_conv,
+                    include_bias=include_bias
+                )
+
+            elif manipulation_method == "noise":
+                apply_noise(
+                    model, noise_level=damage_level,
+                    noise_dict=noise_dict,
+                    layer_paths=damage_layers_list,
+                    apply_to_all_layers=apply_to_all_layers,
+                    only_conv=only_conv,
+                    include_bias=include_bias
+                )
+            elif manipulation_method == "noise_activations":
+                apply_activation_noise(
+                    model,
+                    noise_multiplier=damage_level,  # from noise_levels_params
+                    layer_paths=damage_layers_list,
+                    apply_to_all_layers=apply_to_all_layers,
+                    only_conv=only_conv,
+                )
+
+            elif manipulation_method == "groupnorm_scaling":
+                apply_groupnorm_scaling(
+                    model, scaling_factor=damage_level,
+                    layer_paths=damage_layers_list,
+                    apply_to_all_layers=apply_to_all_layers,
+                    include_bias=include_bias,
+                    targets=groupnorm_scaling_targets,
+                    gain_control_noise=gain_control_noise
+                )
+
             elif manipulation_method == "eccentricity":
-                dir_tag = f"eccentricity_{r_start:.2f}-{r_end:.2f}"
+                apply_eccentricity_mask(
+                    model,
+                    layer_path=eccentricity_layer_path,
+                    r_min=r_start,
+                    r_max=r_end,
+                    fraction=damage_level,
+                    per_channel=False
+                )
 
-            # ----- damage sweep -----
-            for damage_level in damage_levels_list:
-                for permutation_index in range(mc_permutations):
+            elif manipulation_method == "eccentricity_gradual":
+                apply_eccentricity_graded(
+                    model,
+                    layer_path=eccentricity_layer_path,
+                    r_start=r_start,
+                    r_end=r_end,
+                    p_min=0.0,
+                    p_max=damage_level,
+                    mode=ecc_mode,
+                    profile=ecc_profile,
+                    per_channel=ecc_per_channel,
+                    poly_deg=ecc_poly_deg,
+                    exp_k=ecc_exp_k,
+                    reverse=ecc_reverse
+                )
 
-                    # 1) Load fresh model WITH ALL hooks at once
-                    model, activations = load_model(
-                        model_info=model_info,
-                        pretrained=pretrained,
-                        layer_name=layer_name,
-                        layer_path=final_layers_to_hook     # LIST is okay
+            # 3) Extract activations
+            per_layer_data = {lp: [] for lp in final_layers_to_hook}
+            image_files = sorted([
+                f for f in os.listdir(image_dir)
+                if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+            ])
+
+            for image_file in image_files:
+                img_path = os.path.join(image_dir, image_file)
+                input_tensor = preprocess_image(img_path)
+                with torch.no_grad():
+                    model(input_tensor)
+                for lp in final_layers_to_hook:
+                    out_flat = activations[lp].flatten()
+                    per_layer_data[lp].append(
+                        out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat
                     )
-                    model.eval()
 
-                    # 2) Apply chosen damage to ALL requested target blocks
-                    if manipulation_method == "connections":
-                        apply_masking(
-                            model, fraction_to_mask=damage_level,
-                            layer_paths=damage_layers_list,
-                            apply_to_all_layers=apply_to_all_layers,
-                            masking_level=masking_level,
-                            only_conv=only_conv,
-                            include_bias=include_bias
-                        )
+            # 4) Save outputs — robust name tags
+            for lp in final_layers_to_hook:
+                arr_2d = np.stack(per_layer_data[lp], axis=0)
+                activations_df = pd.DataFrame(arr_2d, index=image_files)
+                activations_df_sorted = sort_activations_by_numeric_index(activations_df)
+                lp_name = activation_layer_tags[lp]
+                damage_dirname = format_damage_dirname(damage_level)
 
-                    elif manipulation_method == "noise":
-                        apply_noise(
-                            model, noise_level=damage_level,
-                            noise_dict=noise_dict,
-                            layer_paths=damage_layers_list,
-                            apply_to_all_layers=apply_to_all_layers,
-                            only_conv=only_conv,
-                            include_bias=include_bias
-                        )
-                    elif manipulation_method == "noise_activations":
-                        apply_activation_noise(
-                            model,
-                            noise_multiplier=damage_level,  # from noise_levels_params
-                            layer_paths=damage_layers_list,
-                            apply_to_all_layers=apply_to_all_layers,
-                            only_conv=only_conv,
-                        )
+                # Activations
+                activation_dir = (
+                    output_root / dir_tag / layer_name / "activations" / lp_name / damage_dirname
+                )
+                os.makedirs(activation_dir, exist_ok=True)
+                append_activation_to_zarr(
+                    activations_df_sorted.astype(np.float16),
+                    activation_dir,
+                    perm_idx=permutation_index
+                )
 
-                    elif manipulation_method == "groupnorm_scaling":
-                        apply_groupnorm_scaling(
-                            model, scaling_factor=damage_level,
-                            layer_paths=damage_layers_list,
-                            apply_to_all_layers=apply_to_all_layers,
-                            include_bias=include_bias,
-                            targets=groupnorm_scaling_targets,
-                            gain_control_noise=gain_control_noise
-                        )
+                # RDM
+                correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
+                corrmat_dir = (
+                    output_root / dir_tag / layer_name / "RDM" / lp_name / damage_dirname
+                )
+                os.makedirs(corrmat_dir, exist_ok=True)
+                append_activation_to_zarr(
+                    pd.DataFrame(correlation_matrix.astype("float32")),
+                    corrmat_dir,
+                    perm_idx=permutation_index
+                )
 
-                    elif manipulation_method == "eccentricity":
-                        apply_eccentricity_mask(
-                            model,
-                            layer_path=eccentricity_layer_path,
-                            r_min=r_start,
-                            r_max=r_end,
-                            fraction=damage_level,
-                            per_channel=False
-                        )
+                # Within-between selectivity
+                categories_array = assign_categories(sorted_image_names)
+                results = convert_np_to_native(calc_within_between(correlation_matrix, categories_array))
 
-                    elif manipulation_method == "eccentricity_gradual":
-                        apply_eccentricity_graded(
-                            model,
-                            layer_path=eccentricity_layer_path,
-                            r_start=r_start,
-                            r_end=r_end,
-                            p_min=0.0,
-                            p_max=damage_level,
-                            mode=ecc_mode,
-                            profile=ecc_profile,
-                            per_channel=ecc_per_channel,
-                            poly_deg=ecc_poly_deg,
-                            exp_k=ecc_exp_k,
-                            reverse=ecc_reverse
-                        )
+                selectivity_dir = (
+                    output_root / dir_tag / layer_name / "selectivity" / lp_name / damage_dirname
+                )
+                os.makedirs(selectivity_dir, exist_ok=True)
+                with open(os.path.join(selectivity_dir, f"{permutation_index}.pkl"), "wb") as f:
+                    pickle.dump(results, f)
 
-                    # 3) Extract activations
-                    per_layer_data = {lp: [] for lp in final_layers_to_hook}
-                    image_files = sorted([
-                        f for f in os.listdir(image_dir)
-                        if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-                    ])
-
-                    for image_file in image_files:
-                        img_path = os.path.join(image_dir, image_file)
-                        input_tensor = preprocess_image(img_path)
-                        with torch.no_grad():
-                            model(input_tensor)
-                        for lp in final_layers_to_hook:
-                            out_flat = activations[lp].flatten()
-                            per_layer_data[lp].append(
-                                out_flat.cpu().numpy() if torch.is_tensor(out_flat) else out_flat
-                            )
-
-                    # 4) Save outputs — robust name tags
-                    for lp in final_layers_to_hook:
-                        arr_2d = np.stack(per_layer_data[lp], axis=0)
-                        activations_df = pd.DataFrame(arr_2d, index=image_files)
-                        activations_df_sorted = sort_activations_by_numeric_index(activations_df)
-
-                        # SAFE replacement for lp.split('.')[2]
-                        lp_name = lp.split(".")[2] if is_cornet(model_info) else short_module_tag(lp)
-
-                        # Activations
-                        activation_dir = (
-                            f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                            f"{dir_tag}/{layer_name}/activations/{lp_name}/damaged_{round(damage_level,3)}"
-                        )
-                        os.makedirs(activation_dir, exist_ok=True)
-                        append_activation_to_zarr(activations_df_sorted.astype(np.float16),
-                                                  activation_dir, perm_idx=permutation_index)
-
-                        # RDM
-                        correlation_matrix, sorted_image_names = compute_correlations(activations_df_sorted)
-                        corrmat_dir = (
-                            f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                            f"{dir_tag}/{layer_name}/RDM/{lp_name}/damaged_{round(damage_level,3)}"
-                        )
-                        os.makedirs(corrmat_dir, exist_ok=True)
-                        append_activation_to_zarr(
-                            pd.DataFrame(correlation_matrix.astype("float32")),
-                            corrmat_dir,
-                            perm_idx=permutation_index
-                        )
-
-                        # Within-between selectivity
-                        categories_array = assign_categories(sorted_image_names)
-                        results = convert_np_to_native(calc_within_between(correlation_matrix, categories_array))
-
-                        selectivity_dir = (
-                            f"data/haupt_stim_activ/damaged/{model_info['name']}{time_steps}{run_suffix}/"
-                            f"{dir_tag}/{layer_name}/selectivity/{lp_name}/damaged_{round(damage_level,3)}"
-                        )
-                        os.makedirs(selectivity_dir, exist_ok=True)
-                        with open(os.path.join(selectivity_dir, f"{permutation_index}.pkl"), "wb") as f:
-                            pickle.dump(results, f)
-
-                    pbar.update(1)
+            pbar.update(1)
 
     print("All damage permutations completed!")
 
@@ -1461,7 +1561,6 @@ def _load_svm_scores(path, categories):
       asked for `categories=['total']`.
     * Missing categories → value = np.nan.
     """
-    import os, pickle, numpy as np, pandas as pd, zarr
 
     BASE_CATS = ("animal", "face", "object", "place")
     want_cats = set(cat.lower() for cat in categories) | set(BASE_CATS)
@@ -1527,58 +1626,51 @@ def _load_svm_scores(path, categories):
     except Exception:
         return {}
 
-def categ_corr_lineplot(
+
+def _collect_categ_corr_lineplot_data(
     damage_layers,
     activations_layers,
     damage_type,
     main_dir="data/haupt_stim_activ/damaged/cornet_rt5_all/",
     categories=("overall",),
     metric="observed_difference",
-    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",   # handles damaged_1.0, damaged_1.0_123, damaged_1.0/...
-    plot_dir="plots/",
+    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",
     data_type="selectivity",
-    scatter=False,
     verbose=0,
-    ylim=None,
     percentage=False,
-    selectivity_fraction: float|None = None,
+    selectivity_fraction: float | None = None,
     selection_mode: str = "percentage",
-    selectivity_file: str|None   = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
-    flip_x_axis=False,  # Used for e.g., gain control plots
+    selectivity_file: str | None = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
     model_tag: str | None = None,
 ):
     """
-    Aggregate replicate files into mean±std curves.
+    Shared data collector for categ_corr_lineplot-style plots.
 
-    Enhancement:
-      - If selectivity RDMs are missing at RDM_{fraction}_{selection_mode}/<act>/<cat>_selective/,
-        compute them from activation .zarr files on the fly, save to disk, and proceed.
+    Returns:
+        data: {(damage_layer, act_key, category): {damage_level: (mean, std, n)}}
+        raw_points: same keys -> {damage_level: [replicate values]}
     """
 
-    # ------------ debug helper --------------------------------
     def _dbg(msg, level=1):
         if isinstance(verbose, int) and verbose >= level:
             print(msg)
 
-    # ------------ helper loaders (pkl / zarr / activ) ----------
     def _is_zarr_dir(p):
-        return os.path.isdir(p) and p.lower().endswith(".zarr")
-
+        return os.path.isdir(p) and str(p).lower().endswith(".zarr")
 
     def _have_selective_rdms(rdm_dir, cats):
         for c in cats:
             cdir = rdm_dir / f"{c}_selective"
             if not cdir.exists():
                 return False
-            # require at least one damaged_* subdir with at least one pickle inside
             ok = False
             for d in cdir.glob("damaged_*"):
                 if d.is_dir() and any(d.glob("*.pkl")):
-                    ok = True; break
+                    ok = True
+                    break
             if not ok:
                 return False
         return True
-
 
     def _safe_load_pickle_file(p):
         try:
@@ -1590,42 +1682,19 @@ def categ_corr_lineplot(
         except Exception:
             return None
 
-    def _compute_rdm_from_activ(activ_2d: np.ndarray):
-        """
-        Build an RDM from activations (n_images x n_units).
-        Uses correlation distance across images: 1 - corr(rows).
-        """
-        X = activ_2d
-        if X.ndim != 2 or X.shape[0] < 2:
-            raise ValueError("Need 2D (n_images x n_units>=2) activations to compute an RDM.")
-        # Center each image (row), then cosine similarity across images equals correlation
-        X = X - X.mean(axis=1, keepdims=True)
-        denom = np.linalg.norm(X, axis=1, keepdims=True)
-        denom[denom == 0] = 1.0
-        Xn = X / denom
-        C = (Xn @ Xn.T) / X.shape[1]
-        return 1.0 - C
-
     def _load_rdm_record(pathlike):
-        """
-        Return {'RDM': 2D array, 'image_names': list[str] or None}
-        Works for .pkl dicts (keys 'RDM' and optional 'image_names') and .zarr stores
-        that already contain an RDM (not common in your pipeline, but supported).
-        """
         if isinstance(pathlike, str) and pathlike.lower().endswith(".pkl"):
             content = _safe_load_pickle_file(pathlike)
             if isinstance(content, dict) and "RDM" in content:
-                return {"RDM": np.array(content["RDM"]),
-                        "image_names": content.get("image_names")}
+                return {"RDM": np.array(content["RDM"]), "image_names": content.get("image_names")}
             return None
 
         if _is_zarr_dir(pathlike):
             try:
-                import zarr, numpy as _np
                 root = zarr.open_group(pathlike, mode="r")
                 for k in ("RDM", "rdm", "D", "distance"):
                     if k in root:
-                        R = _np.array(root[k])
+                        arr = np.array(root[k])
                         img_names = None
                         try:
                             attrs = dict(root[k].attrs)
@@ -1635,67 +1704,11 @@ def categ_corr_lineplot(
                                     break
                         except Exception:
                             pass
-                        return {"RDM": R, "image_names": img_names}
+                        return {"RDM": arr, "image_names": img_names}
             except Exception:
                 return None
         return None
 
-    # ---------- selectivity helpers (top-k units per category) ----------
-    def _get_top_units_from_selectivity(sel_obj, layer, act, cat, frac, mode):
-        """
-        Returns np.ndarray[int] of unit indices for (layer, act, cat).
-        Supports multiple sel_obj shapes: nested dicts or a DataFrame with columns:
-            'layer','unit','mw_animals','mw_faces','mw_objects','mw_places'
-        """
-        cat_map = {"animal":"mw_animals","face":"mw_faces","object":"mw_objects","place":"mw_places",
-                   "animals":"mw_animals","faces":"mw_faces","objects":"mw_objects","places":"mw_places"}
-        col = cat_map.get(cat, None)
-
-        # Nested dicts
-        if isinstance(sel_obj, dict) and col is None:
-            # Try several nestings
-            for attempt in (
-                lambda: sel_obj.get(layer, {}).get(act, {}).get(cat, None),
-                lambda: sel_obj.get(act, {}).get(cat, None),
-                lambda: sel_obj.get(cat, None),
-            ):
-                v = None
-                try:
-                    v = attempt()
-                except Exception:
-                    v = None
-                if v is not None:
-                    return np.asarray(v, dtype=int)
-
-        # DataFrame-like
-        try:
-            if hasattr(sel_obj, "columns"):
-                df = sel_obj
-                # Require an exact match on layer column (or adapt this to your true schema)
-                if "layer" in df.columns:
-                    mask = (df["layer"].astype(str) == layer) | (df["layer"].astype(str).str.endswith(f"/{layer}"))
-                    if not mask.any():
-                        return None  # <- don't proceed with all rows
-                    df = df[mask]
-                if col not in df.columns or "unit" not in df.columns:
-                    return None
-                df = df.sort_values(col, ascending=False)
-                top_n = max(1, int(round(frac * len(df)))) if mode == "percentage" else max(1, int(frac))
-                return df["unit"].to_numpy()[:top_n].astype(int)
-        except Exception:
-            pass
-
-        return None
-
-    # ---------- write an RDM pickle ----------
-    def _write_rdm_pickle(out_path, R, image_names):
-        rec = {"RDM": R}
-        if image_names is not None:
-            rec["image_names"] = list(map(str, image_names))
-        with open(out_path, "wb") as f:
-            pickle.dump(rec, f)
-
-    # ------------ 1. choose data sub-folder --------------------
     if data_type in ("selectivity",) or data_type.startswith("svm"):
         data_subfolder = data_type
     elif data_type == "imagenet":
@@ -1705,109 +1718,79 @@ def categ_corr_lineplot(
     else:
         raise ValueError(f"unknown data_type '{data_type}'")
 
-    _dbg(f"[SETUP] data_type={data_type} metric={metric} categories={categories}", 1)
-    _dbg(f"[SETUP] subdir_regex={subdir_regex!r} main_dir={main_dir}", 2)
-
-    # ------------ 2. helper for cache filename ----------------
     def agg_fname(frac):
         if data_type == "imagenet":
             return f"avg_imagenet_{metric}_{frac}.pkl"
-        else:
-            return f"avg_{data_type}_{frac}.pkl"
+        return f"avg_{data_type}_{frac}.pkl"
 
-    # ------------ 3. containers -------------------------------
-    data       = {}   # (layer, act_key, cat) -> {frac:(mean,std,n)}
-    raw_points = {}   # same keys -> {frac:[replicas]}
-
-    # ===========================================================
-    # Inner: PRECOMPUTE selective RDMs if missing
-    # ===========================================================
-    activ_dir = ("activations")  # we only compute from zarr in non-RDM dirs
-    
-    # Complile the subdir regex once
+    data = {}
+    raw_points = {}
     dmg_re = re.compile(subdir_regex)
-    # ------------ 4. crawl the directory tree -----------------
+
     for layer in damage_layers:
         for act in activations_layers:
             act_key = act
 
-            # ===========================
-            # SELECTIVITY (fractioned)  |
-            # ===========================
             if data_type == "selectivity" and selectivity_fraction is not None:
-                        # categories to pull RDMs for (precomputed per-category)
                 if "total" in categories:
                     categories_rdm = ["face", "object", "animal", "place"]
                 else:
                     categories_rdm = list(categories)
 
-                # 1) Discover the selective RDM directory
                 rdm_dir = Path(main_dir) / damage_type / layer / f"RDM_{selectivity_fraction:.2f}_{selection_mode}" / act
                 _dbg(f"[DISCOVER] layer={layer} act={act}", 1)
                 _dbg(f"[DISCOVER] target RDM dir = {rdm_dir}", 1)
 
-                # Define a sample category subdir to check for existence
                 rdm_cat_dir = rdm_dir / f"{categories_rdm[0]}_selective" / "damaged_0.0"
-
-                # NEW: try to build them if missing
                 if not rdm_dir.exists() or not any(rdm_cat_dir.rglob("*.pkl")):
                     _dbg("[DISCOVER] selective RDMs missing or empty — attempting on-the-fly build from activations.", 1)
-                    activ_root = Path(main_dir) / damage_type / layer / "activations" / act
-                    _dbg(f"[PRECOMPUTE] activ_root = {activ_root}", 1)
-
                     if not _have_selective_rdms(rdm_dir, categories_rdm):
+                        selectivity_file_path = Path(f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl")
+                        if not selectivity_file_path.exists():
+                            selectivity_file_path = selectivity_file_path.with_suffix(".csv")
+                        selectivity_file = str(selectivity_file_path)
                         generate_category_selective_RDMs(
-                            activations_root = Path(main_dir) / damage_type,
-                            layer_name       = layer,         # matches selectivity table’s layer label
-                            top_frac         = float(selectivity_fraction),
-                            categories       = categories_rdm,   # no "total" here
-                            selection_mode   = selection_mode,
-                            selectivity_file = f"unit_selectivity/{model_tag}_all_layers_units_mannwhitneyu.pkl",
-                            damage_layer     = layer,
-                            activation_layer = act,
-                            model_tag        = model_tag
+                            activations_root=Path(main_dir) / damage_type,
+                            layer_name=layer,
+                            top_frac=float(selectivity_fraction),
+                            categories=categories_rdm,
+                            selection_mode=selection_mode,
+                            selectivity_file=selectivity_file,
+                            damage_layer=layer,
+                            activation_layer=act,
+                            model_tag=model_tag,
                         )
                     if not _have_selective_rdms(rdm_dir, categories_rdm):
                         raise RuntimeError(f"No selective RDMs built under {rdm_dir} for cats {categories_rdm}")
-                # 2) Prepare output directory for averages
+
                 out_base = Path(main_dir) / damage_type / layer / f"avg_selectivity_top{selectivity_fraction:.2f}_{selection_mode}" / act
                 out_base.mkdir(parents=True, exist_ok=True)
-                _dbg(f"[OUT] averages will be written under: {out_base}", 2)
 
-                # 3) Iterate categories (face/object/animal/place or user subset)
                 for cat in categories_rdm:
                     data[(layer, act_key, cat)] = {}
                     raw_points[(layer, act_key, cat)] = {}
 
-                    # expected precomputed category subfolder
                     cat_dir = rdm_dir / f"{cat}_selective"
-                    _dbg(f"[CAT] cat='{cat}' → {cat_dir}", 2)
-
-                    # Scene/place redundancy
                     if not cat_dir.exists():
                         alt = rdm_dir / "scene_selective"
-                        alt_exists = alt.exists()
-                        _dbg(f"[MISS] {cat_dir} does not exist."
-                             f"{' Found scene_selective instead.' if alt_exists else ''}", 1)
-                        continue
+                        if alt.exists():
+                            cat_dir = alt
+                        else:
+                            _dbg(f"[MISS] {cat_dir} does not exist.", 1)
+                            continue
 
-                    # 4) Crawl damage subdirs
                     subdirs = [d for d in sorted(cat_dir.iterdir()) if d.is_dir()]
                     if not subdirs:
                         _dbg(f"[MISS] no damage subfolders found under {cat_dir}", 1)
                         continue
-                    _dbg(f"[HAVE] {len(subdirs)} damage subfolders under {cat_dir}: {[d.name for d in subdirs]}", 2)
 
-                    # Iterate damage subdirs
                     for dmg in subdirs:
                         m = dmg_re.search(dmg.name)
                         if not m:
-                            _dbg(f"[SKIP] subdir name did not match subdir_regex: {dmg.name}  (regex={subdir_regex})", 1)
                             continue
                         try:
                             dmg_level = float(m.group(1))
                         except Exception:
-                            _dbg(f"[SKIP] could not cast damage fraction from '{m.group(1)}' in {dmg.name}", 1)
                             continue
 
                         avg_file = out_base / f"avg_selectivity_{cat}_{dmg_level}.pkl"
@@ -1815,16 +1798,16 @@ def categ_corr_lineplot(
                             try:
                                 with open(avg_file, "rb") as f:
                                     stats = pickle.load(f)
-                                data[(layer, act_key, cat)][dmg_level] = (stats.get("mean", np.nan),
-                                                                           stats.get("std", 0.0),
-                                                                           stats.get("n", 0))
+                                data[(layer, act_key, cat)][dmg_level] = (
+                                    stats.get("mean", np.nan),
+                                    stats.get("std", 0.0),
+                                    stats.get("n", 0),
+                                )
                                 raw_points[(layer, act_key, cat)][dmg_level] = stats.get("vals", [])
-                                _dbg(f"[CACHE] hit {avg_file} → n={stats.get('n',0)}", 2)
                                 continue
                             except Exception:
                                 _dbg(f"[CACHE] corrupt {avg_file}; will rebuild.", 1)
 
-                        # scan files inside this damage-level folder
                         files = []
                         for f in sorted(dmg.iterdir()):
                             if f.is_file() and f.suffix.lower() == ".pkl":
@@ -1832,159 +1815,117 @@ def categ_corr_lineplot(
                             elif f.is_dir() and f.name.lower().endswith(".zarr"):
                                 files.append(f)
                         if not files:
-                            _dbg(f"[MISS] no *.pkl or *.zarr files under {dmg}", 1)
                             continue
-                        _dbg(f"[SCAN] {dmg.name}: {len(files)} files", 2)
 
                         selectivities = []
-                        reasons_skipped = {"unreadable":0, "no_RDM":0, "no_names":0, "calc_error":0, "shape_mismatch":0}
-
                         for f in files:
                             rec = _load_rdm_record(str(f))
-                            if rec is None:
-                                reasons_skipped["unreadable"] += 1
-                                _dbg(f"   [SKIP] unreadable file: {f.name}", 3)
+                            if rec is None or "RDM" not in rec or rec["RDM"] is None:
                                 continue
-                            if "RDM" not in rec or rec["RDM"] is None:
-                                reasons_skipped["no_RDM"] += 1
-                                _dbg(f"   [SKIP] no RDM in file: {f.name}", 3)
-                                continue
-
                             R = np.array(rec["RDM"])
                             if R.ndim != 2 or R.shape[0] != R.shape[1]:
-                                reasons_skipped["shape_mismatch"] += 1
-                                _dbg(f"   [SKIP] RDM not square (shape={R.shape}) in {f.name}", 2)
                                 continue
-
                             img_names = rec.get("image_names", None)
                             if not img_names:
-                                reasons_skipped["no_names"] += 1
-                                _dbg(f"   [SKIP] missing image_names in {f.name}", 2)
                                 continue
-
                             try:
                                 cats = assign_categories(img_names)
-                            except Exception as e:
-                                reasons_skipped["calc_error"] += 1
-                                _dbg(f"   [SKIP] assign_categories failed for {f.name}: {e}", 2)
-                                continue
-
-                            try:
                                 sel = calc_within_between(R, cats)[cat]["observed_difference"]
                                 selectivities.append(float(sel))
-                            except Exception as e:
-                                reasons_skipped["calc_error"] += 1
-                                _dbg(f"   [SKIP] calc_within_between failed for {f.name}: {e}", 2)
+                            except Exception as exc:
+                                _dbg(f"   [SKIP] selectivity calc failed for {f.name}: {exc}", 2)
                                 continue
 
                         if not selectivities:
-                            _dbg(f"[EMPTY] no usable replicas at {dmg} for cat={cat}. "
-                                 f"Reasons: {reasons_skipped}", 1)
                             continue
 
                         mean_sel = float(np.mean(selectivities))
-                        std_sel  = float(np.std(selectivities, ddof=1)) if len(selectivities) > 1 else 0.0
-                        stats    = {"mean": mean_sel, "std": std_sel, "n": len(selectivities),
-                                    "vals": [float(x) for x in selectivities]}
+                        std_sel = float(np.std(selectivities, ddof=1)) if len(selectivities) > 1 else 0.0
+                        stats = {
+                            "mean": mean_sel,
+                            "std": std_sel,
+                            "n": len(selectivities),
+                            "vals": [float(x) for x in selectivities],
+                        }
                         try:
                             with open(avg_file, "wb") as f:
                                 pickle.dump(stats, f)
-                            _dbg(f"[WRITE] {avg_file.name}: n={stats['n']} mean={mean_sel:.4f} std={std_sel:.4f}", 2)
-                        except Exception as e:
-                            _dbg(f"[ERROR] failed to write {avg_file}: {e}", 1)
+                        except Exception as exc:
+                            _dbg(f"[ERROR] failed to write {avg_file}: {exc}", 1)
 
                         data[(layer, act_key, cat)][dmg_level] = (mean_sel, std_sel, len(selectivities))
                         raw_points[(layer, act_key, cat)][dmg_level] = list(selectivities)
 
-                #synthesize "total" from per-replicate means across base categories
-                if ("total" in categories):
+                if "total" in categories:
                     have_all = all((layer, act_key, bc) in data for bc in categories_rdm)
                     if have_all:
-                        # union of all damage fractions present across cats
                         all_fracs = set()
                         for bc in categories_rdm:
                             all_fracs |= set(raw_points[(layer, act_key, bc)].keys())
 
-                        # init "total"
                         data[(layer, act_key, "total")] = {}
                         raw_points[(layer, act_key, "total")] = {}
-
                         for frac in sorted(all_fracs):
                             lists = []
                             ok = True
                             for bc in categories_rdm:
                                 rp = raw_points[(layer, act_key, bc)].get(frac, [])
                                 if not rp:
-                                    ok = False; break
+                                    ok = False
+                                    break
                                 lists.append(list(map(float, rp)))
                             if not ok:
                                 continue
-
-                            # align on min replicate count
                             L = min(len(lst) for lst in lists)
                             if L == 0:
                                 continue
-
-                            per_rep_means = [float(np.nanmean([lists[0][i], lists[1][i], lists[2][i], lists[3][i]]))
-                                             for i in range(L)]
+                            per_rep_means = [
+                                float(np.nanmean([lists[0][i], lists[1][i], lists[2][i], lists[3][i]]))
+                                for i in range(L)
+                            ]
                             mean_total = float(np.nanmean(per_rep_means))
-                            std_total  = float(np.nanstd(per_rep_means, ddof=1)) if L > 1 else 0.0  # SD of means
-
+                            std_total = float(np.nanstd(per_rep_means, ddof=1)) if L > 1 else 0.0
                             data[(layer, act_key, "total")][frac] = (mean_total, std_total, L)
                             raw_points[(layer, act_key, "total")][frac] = per_rep_means
-            
+
             else:
-                # =======================================
-                # All other data_type paths (original)  |
-                # =======================================
                 if data_type == "imagenet":
                     layer_path = os.path.join(main_dir, damage_type, layer, "imagenet")
-                    out_base   = os.path.join(main_dir, damage_type, layer, "avg_imagenet")
-                    act_key    = "imagenet"
+                    out_base = os.path.join(main_dir, damage_type, layer, "avg_imagenet")
+                    act_key = "imagenet"
                 else:
                     layer_path = os.path.join(main_dir, damage_type, layer, data_subfolder, act)
-                    out_base   = os.path.join(main_dir, damage_type, layer, f"avg_{data_type}", act)
-                    act_key    = act
-                _dbg(f"[PATH] layer={layer} act={act_key}", 1)
-                _dbg(f"[PATH] layer_path={layer_path}", 2)
-                _dbg(f"[PATH] out_base={out_base}", 2)
+                    out_base = os.path.join(main_dir, damage_type, layer, f"avg_{data_type}", act)
+                    act_key = act
 
                 if not os.path.isdir(layer_path):
                     _dbg(f"[MISS] layer_path does not exist: {layer_path}", 1)
                     continue
                 os.makedirs(out_base, exist_ok=True)
 
-                # init dict slots
                 for cat in categories:
                     data[(layer, act_key, cat)] = {}
                     raw_points[(layer, act_key, cat)] = {}
 
-                # scan damaged_* subdirs
                 for subdir in os.listdir(layer_path):
                     subdir_path = os.path.join(layer_path, subdir)
                     if not os.path.isdir(subdir_path):
                         continue
                     m = re.search(subdir_regex, subdir)
                     if not m:
-                        _dbg(f"[SKIP] regex miss: {subdir}", 2)
                         continue
                     frac = round(float(m.group(1)), 3)
                     cache = os.path.join(out_base, agg_fname(frac))
-                    _dbg(f"[FRACTION] {subdir} -> frac={frac}  cache={'HIT' if os.path.exists(cache) else 'MISS'}", 1)
 
-                    # ---------- build cache if missing ----------
                     if not os.path.exists(cache):
-                        agg = {}                      # cat -> list[values]
-                        _dbg(f"[BUILD] scanning files in {subdir_path}", 2)
-
+                        agg = {}
                         for fname in os.listdir(subdir_path):
                             p = os.path.join(subdir_path, fname)
-                            is_pkl  = fname.lower().endswith(".pkl")
+                            is_pkl = fname.lower().endswith(".pkl")
                             is_zarr = fname.lower().endswith(".zarr") and os.path.isdir(p)
                             if not (is_pkl or is_zarr):
                                 continue
 
-                            # ---- IMAGE NET MODE ----
                             if data_type == "imagenet":
                                 if is_zarr:
                                     continue
@@ -2005,7 +1946,6 @@ def categ_corr_lineplot(
                                         continue
                                     agg.setdefault(cat, []).append(float(val))
 
-                            # ---- SELECTIVITY MODE (no fraction) ----
                             elif data_type == "selectivity":
                                 if is_zarr:
                                     continue
@@ -2017,18 +1957,12 @@ def categ_corr_lineplot(
                                     except Exception:
                                         continue
                                 if not isinstance(content, dict):
-                                    _dbg(f"[SKIP] not a dict: {fname}", 2)
                                     continue
-                                _dbg(f"[FILE] {fname} keys={list(content.keys())[:6]}", 2)
-
                                 base_cats = ["animal", "face", "object", "place"]
-
                                 if "total" in categories:
                                     if ("total" in content) and (metric in content["total"]):
                                         agg.setdefault("total", []).append(float(content["total"][metric]))
-                                        _dbg(f"[APPEND] direct 'total' from {fname}: {metric}", 2)
                                     else:
-                                        _dbg(f"[FALLBACK] synthesize total from base cats in {fname}", 2)
                                         for cat_name, met_dict in content.items():
                                             if (cat_name in base_cats) and (metric in met_dict):
                                                 agg.setdefault(cat_name, []).append(float(met_dict[metric]))
@@ -2036,9 +1970,7 @@ def categ_corr_lineplot(
                                     for cat_name, met_dict in content.items():
                                         if (cat_name in categories) and (metric in met_dict):
                                             agg.setdefault(cat_name, []).append(float(met_dict[metric]))
-
-                            # ---- SVM MODE ----
-                            else:   # data_type startswith "svm"
+                            else:
                                 scores = _load_svm_scores(p, categories)
                                 if not scores:
                                     continue
@@ -2049,33 +1981,31 @@ def categ_corr_lineplot(
                             base_cats = ("animal", "face", "object", "place")
                             if all(bc in agg for bc in base_cats) and all(len(agg[bc]) for bc in base_cats):
                                 L = min(len(agg[bc]) for bc in base_cats)
-                                per_rep_means = [float(np.nanmean([agg["animal"][i], agg["face"][i], agg["object"][i], agg["place"][i]]))
-                                                 for i in range(L)]
-                                _dbg(f"[SYNTH] total from per-replicate means, n={len(per_rep_means)}", 1)
-                                agg["total"] = per_rep_means
+                                agg["total"] = [
+                                    float(np.nanmean([agg["animal"][i], agg["face"][i], agg["object"][i], agg["place"][i]]))
+                                    for i in range(L)
+                                ]
 
                         packed = {
                             c: {
                                 metric: {
                                     "mean": float(np.mean(v)) if len(v) > 0 else np.nan,
-                                    "std":  float(np.std(v, ddof=1)) if len(v) > 1 else 0.0,
-                                    "n":    len(v),
-                                    "vals": [float(x) for x in v]
+                                    "std": float(np.std(v, ddof=1)) if len(v) > 1 else 0.0,
+                                    "n": len(v),
+                                    "vals": [float(x) for x in v],
                                 }
-                            } for c, v in agg.items()
+                            }
+                            for c, v in agg.items()
                         }
                         try:
                             with open(cache, "wb") as f:
                                 pickle.dump(packed, f)
-                        except Exception as e:
-                            _dbg(f"[ERROR] failed to write cache {cache}: {e}", 1)
+                        except Exception as exc:
+                            _dbg(f"[ERROR] failed to write cache {cache}: {exc}", 1)
 
-                    # ---------- read cache and populate data ----------
                     agg_content = safe_load_pickle(cache) or {}
-                    if (data_type == "selectivity"
-                        and ("total" in categories)
-                        and ("total" not in agg_content)):
-                        base = ("animal","face","object","place")
+                    if data_type == "selectivity" and ("total" in categories) and ("total" not in agg_content):
+                        base = ("animal", "face", "object", "place")
                         have_all = all(
                             (b in agg_content)
                             and (metric in agg_content[b])
@@ -2086,14 +2016,16 @@ def categ_corr_lineplot(
                             lists = [list(map(float, agg_content[b][metric]["vals"])) for b in base]
                             if all(len(lst) for lst in lists):
                                 L = min(len(lst) for lst in lists)
-                                per_rep_means = [float(np.nanmean([lists[0][i], lists[1][i], lists[2][i], lists[3][i]]))
-                                                 for i in range(L)]
+                                per_rep_means = [
+                                    float(np.nanmean([lists[0][i], lists[1][i], lists[2][i], lists[3][i]]))
+                                    for i in range(L)
+                                ]
                                 agg_content["total"] = {
                                     metric: {
                                         "mean": float(np.nanmean(per_rep_means)),
-                                        "std":  float(np.nanstd(per_rep_means, ddof=1)) if L > 1 else 0.0,
-                                        "n":    L,
-                                        "vals": per_rep_means
+                                        "std": float(np.nanstd(per_rep_means, ddof=1)) if L > 1 else 0.0,
+                                        "n": L,
+                                        "vals": per_rep_means,
                                     }
                                 }
                                 try:
@@ -2106,14 +2038,13 @@ def categ_corr_lineplot(
                         if cat not in agg_content or metric not in agg_content[cat]:
                             continue
                         rec = agg_content[cat][metric]
-                        mean = rec.get("mean", np.nan)
-                        std  = rec.get("std", 0.0)
-                        n    = rec.get("n", 0)
-                        vals = rec.get("vals", [])
-                        data[(layer, act_key, cat)][frac] = (mean, std, n)
-                        raw_points[(layer, act_key, cat)][frac] = vals
+                        data[(layer, act_key, cat)][frac] = (
+                            rec.get("mean", np.nan),
+                            rec.get("std", 0.0),
+                            rec.get("n", 0),
+                        )
+                        raw_points[(layer, act_key, cat)][frac] = rec.get("vals", [])
 
-    # ------------ 5. optional percentage scaling --------------
     if percentage:
         def _baseline_fraction(frac_keys, dmg_type):
             fracs = sorted(frac_keys)
@@ -2123,65 +2054,30 @@ def categ_corr_lineplot(
 
         for key in list(data.keys()):
             frac_dict = data[key]
-            raw_dict  = raw_points[key]
+            raw_dict = raw_points[key]
             if not frac_dict:
-                _dbg(f"[WARN] no aggregated points for {key}", 1)
                 continue
 
             base_frac = _baseline_fraction(frac_dict.keys(), damage_type)
             if base_frac not in raw_dict or len(raw_dict[base_frac]) == 0:
-                _dbg(f"[WARN] percentage=True but no baseline replicas at frac={base_frac} for {key}", 1)
                 continue
 
             base_vals = np.asarray(raw_dict[base_frac], dtype=float)
-
             for frac in list(frac_dict.keys()):
                 cur_vals = np.asarray(raw_dict.get(frac, []), dtype=float)
-                min_len  = min(len(base_vals), len(cur_vals))
+                min_len = min(len(base_vals), len(cur_vals))
                 if min_len == 0:
-                    _dbg(f"[WARN] cannot scale frac={frac} for {key} (no raw points)", 2)
                     continue
                 ratio = 100.0 * (cur_vals[:min_len] / (base_vals[:min_len] + 1e-12))
                 raw_points[key][frac] = list(map(float, ratio))
-                m, s = float(np.mean(ratio)), float(np.std(ratio, ddof=1)) if len(ratio) > 1 else 0.0
+                m = float(np.mean(ratio))
+                s = float(np.std(ratio, ddof=1)) if len(ratio) > 1 else 0.0
                 data[key][frac] = (m, s, len(ratio))
 
-    # ------------ 6. plotting ----------------------
-    for (layer, act_key, cat), frac_dict in data.items():
-        if not frac_dict or cat not in categories:
-            continue
-        xs = sorted(frac_dict.keys())
-        ys = [frac_dict[x][0] for x in xs]
-        err= [frac_dict[x][1] for x in xs]
-        lbl = f"{layer}-{act_key}-{cat}"
+    return data, raw_points
 
-        if data_type == "imagenet":
-            color_cat = "total"
-            color_act = "IT"
-        else:
-            color_cat = cat
-            color_act = act_key
 
-        try:
-            color = get_color_for_triple(layer, color_act, str(color_cat))
-            plt.errorbar(xs, ys, yerr=err, fmt='-o', capsize=4, label=lbl, color=color)
-        except Exception:
-            plt.errorbar(xs, ys, yerr=err, fmt='-o', capsize=4, label=lbl)
-
-        if scatter:
-            for x in xs:
-                jitter = np.random.normal(0, 0.005, size=len(raw_points[(layer, act_key, cat)].get(x, [])))
-                if len(jitter):
-                    try:
-                        plt.scatter([x + j for j in jitter],
-                                    raw_points[(layer, act_key, cat)].get(x, []),
-                                    alpha=0.5, s=10, color=color)
-                    except Exception:
-                        plt.scatter([x + j for j in jitter],
-                                    raw_points[(layer, act_key, cat)].get(x, []),
-                                    alpha=0.5, s=10)
-
-    plt.xlabel("Damage parameter")
+def _categ_corr_ylabel(data_type, metric, percentage):
     if data_type == "imagenet":
         ylabel = f"ImageNet {metric.upper()} accuracy"
     elif data_type == "selectivity":
@@ -2190,17 +2086,1850 @@ def categ_corr_lineplot(
         ylabel = "SVM accuracy"
     if percentage:
         ylabel += " (scaled %)"
-    plt.ylabel(ylabel)
-    plt.title(f"{data_type} vs damage — {damage_type}")
-    if ylim: plt.ylim(ylim)
-    plt.legend()
+    return ylabel
+
+
+def _lineplot_model_tag(main_dir):
+    if isinstance(main_dir, (list, tuple)):
+        main_dir = main_dir[0]
+    p = Path(str(main_dir).rstrip("/"))
+    return p.name or "model"
+
+
+def _coalesce_style_overrides(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _resolve_style_override(overrides, candidates=(), index=None):
+    if overrides is None:
+        return None
+
+    if isinstance(overrides, Mapping):
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            if candidate in overrides:
+                return overrides[candidate]
+            candidate_str = str(candidate)
+            if candidate_str in overrides:
+                return overrides[candidate_str]
+        return None
+
+    if isinstance(overrides, (list, tuple)):
+        if index is None:
+            return None
+        if 0 <= index < len(overrides):
+            return overrides[index]
+        return None
+
+    return overrides
+
+
+def _explicit_style_value(spec, *keys):
+    if not isinstance(spec, Mapping):
+        return None
+    for key in keys:
+        if key in spec and spec[key] is not None:
+            return spec[key]
+    return None
+
+
+def _style_name_variants(value):
+    if value is None:
+        return []
+
+    variants = [value]
+    alias_map = {
+        "animal": "animals",
+        "animals": "animal",
+        "face": "faces",
+        "faces": "face",
+        "object": "objects",
+        "objects": "object",
+        "place": "places",
+        "places": "place",
+    }
+    value_str = str(value)
+    if value_str in alias_map:
+        variants.append(alias_map[value_str])
+    return variants
+
+
+def _normalize_plot_save_mode(save_mode):
+    if save_mode is None or str(save_mode).strip() == "":
+        return "png"
+
+    mode = str(save_mode).strip().lower()
+    allowed_modes = {"png", "svg", "png+svg"}
+    if mode not in allowed_modes:
+        raise ValueError(
+            f"save_mode must be one of {sorted(allowed_modes)} or empty, got {save_mode!r}."
+        )
+    return mode
+
+
+def _normalize_group_cols(group_col):
+    if isinstance(group_col, (list, tuple)):
+        return list(group_col)
+    return [group_col]
+
+
+def _summary_axis_label(summary):
+    labels = {
+        "auc_loss": "AUC loss",
+        "mean_drop": "Mean drop",
+    }
+    return labels.get(summary, str(summary))
+
+
+BOOTSTRAP_CI_ITERATIONS = 10000
+BOOTSTRAP_CI_PERCENTILE = 95.0
+
+
+def _stable_bootstrap_seed(values):
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    digest = hashlib.md5(arr.tobytes()).hexdigest()
+    return int(digest[:8], 16)
+
+
+def _bootstrap_mean_ci(values, n_bootstrap=BOOTSTRAP_CI_ITERATIONS, ci=BOOTSTRAP_CI_PERCENTILE, seed=None):
+    """Percentile bootstrap CI for the mean of finite replicate values."""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if len(arr) == 0:
+        return np.nan, np.nan, np.nan
+
+    center = float(np.mean(arr))
+    if len(arr) == 1:
+        return center, center, center
+
+    rng = np.random.default_rng(_stable_bootstrap_seed(arr) if seed is None else seed)
+    boot_means = np.empty(int(n_bootstrap), dtype=float)
+    done = 0
+    batch_size = min(1000, int(n_bootstrap))
+    while done < int(n_bootstrap):
+        current = min(batch_size, int(n_bootstrap) - done)
+        idx = rng.integers(0, len(arr), size=(current, len(arr)))
+        boot_means[done:done + current] = np.mean(arr[idx], axis=1)
+        done += current
+
+    alpha = (100.0 - float(ci)) / 2.0
+    lower, upper = np.percentile(boot_means, [alpha, 100.0 - alpha])
+    return center, float(lower), float(upper)
+
+
+def _bootstrap_mean_error(values, center=None):
+    boot_center, lower, upper = _bootstrap_mean_ci(values)
+    if center is None:
+        center = boot_center
+    if not np.isfinite(center) or not np.isfinite(lower) or not np.isfinite(upper):
+        return 0.0, 0.0
+    return max(float(center) - lower, 0.0), max(upper - float(center), 0.0)
+
+
+def _ci95_mean(values):
+    """Bootstrap 95% CI half-width around the mean for finite replicate values."""
+    lower_err, upper_err = _bootstrap_mean_error(values)
+    return max(lower_err, upper_err)
+
+
+def _ci95_from_summary(std_value, n):
+    if n is None or int(n) <= 1 or not np.isfinite(std_value):
+        return 0.0
+    return float(1.96 * float(std_value) / np.sqrt(int(n)))
+
+
+def _error_values_to_yerr(error_values):
+    if error_values is None:
+        return None
+    if len(error_values) == 0:
+        return None
+    first = error_values[0]
+    if isinstance(first, (list, tuple, np.ndarray)) and len(first) == 2:
+        lower = [float(e[0]) for e in error_values]
+        upper = [float(e[1]) for e in error_values]
+        return np.asarray([lower, upper], dtype=float)
+    return error_values
+
+
+def _summary_yerr(summary_df, value_col, lower_col="ci95_lower", upper_col="ci95_upper"):
+    if lower_col not in summary_df.columns or upper_col not in summary_df.columns:
+        return None
+    values = summary_df[value_col].to_numpy(dtype=float)
+    lower = summary_df[lower_col].to_numpy(dtype=float)
+    upper = summary_df[upper_col].to_numpy(dtype=float)
+    if not (np.isfinite(lower).any() and np.isfinite(upper).any()):
+        return None
+    return np.vstack([
+        np.maximum(values - lower, 0.0),
+        np.maximum(upper - values, 0.0),
+    ])
+
+
+DEFAULT_BARPLOT_WIDTH = 0.8
+DEFAULT_BARPLOT_SCATTER_ALPHA = 0.25
+DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION = 0.8
+BARPLOT_AXIS_WIDTH = 2.2
+BARPLOT_AXIS_HEIGHT = 4.4
+BARPLOT_AXIS_BOX_ASPECT = BARPLOT_AXIS_HEIGHT / BARPLOT_AXIS_WIDTH
+
+
+def _resolve_bar_width(bar_width, default=DEFAULT_BARPLOT_WIDTH, name="bar_width"):
+    value = default if bar_width is None else bar_width
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a positive finite number.")
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive finite number.")
+    return value
+
+
+def _resolve_alpha(alpha, default=DEFAULT_BARPLOT_SCATTER_ALPHA, name="scatter_alpha"):
+    value = default if alpha is None else alpha
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a finite number between 0 and 1.")
+    if not np.isfinite(value) or value < 0 or value > 1:
+        raise ValueError(f"{name} must be a finite number between 0 and 1.")
+    return value
+
+
+def _barplot_figsize(ncols=1, nrows=1, figsize=None):
+    if figsize is not None:
+        if isinstance(figsize, str):
+            raise ValueError("figsize must contain exactly two values: [width, height].")
+        try:
+            values = list(figsize)
+        except TypeError:
+            raise ValueError("figsize must contain exactly two values: [width, height].")
+        if len(values) != 2:
+            raise ValueError("figsize must contain exactly two values: [width, height].")
+        try:
+            width, height = (float(values[0]), float(values[1]))
+        except (TypeError, ValueError):
+            raise ValueError("figsize values must be positive finite numbers.")
+        if not all(np.isfinite(v) and v > 0 for v in (width, height)):
+            raise ValueError("figsize values must be positive finite numbers.")
+        return width, height
+    return (
+        BARPLOT_AXIS_WIDTH * max(int(ncols), 1),
+        BARPLOT_AXIS_HEIGHT * max(int(nrows), 1),
+    )
+
+
+def _apply_barplot_axis_aspect(ax):
+    set_box_aspect = getattr(ax, "set_box_aspect", None)
+    if set_box_aspect is not None:
+        set_box_aspect(BARPLOT_AXIS_BOX_ASPECT)
+
+
+def _barplot_scatter_jitter(bar_width, n_points, width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION):
+    n_points = int(n_points)
+    if n_points <= 0:
+        return np.asarray([])
+    width_fraction = _resolve_bar_width(
+        width_fraction,
+        default=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
+        name="scatter_width_fraction",
+    )
+    half_width = float(bar_width) * width_fraction / 2.0
+    return np.random.uniform(-half_width, half_width, size=n_points)
+
+
+def _set_barplot_xlim(ax, x_pos, bar_width, bars_per_slot=1):
+    if len(x_pos) == 0:
+        return
+    half_group_width = float(bar_width) * max(int(bars_per_slot), 1) / 2.0
+    margin = max(0.5, half_group_width + 0.05)
+    ax.set_xlim(float(np.min(x_pos)) - margin, float(np.max(x_pos)) + margin)
+
+
+def _resolve_existing_column(df, requested, candidates, purpose):
+    """Use an explicit column if present; otherwise try known local variants."""
+    if requested in df.columns:
+        return requested
+    for candidate in candidates:
+        if candidate in df.columns:
+            return candidate
+    available = ", ".join(map(str, df.columns))
+    raise ValueError(
+        f"Could not find a column for {purpose}. Requested {requested!r}; "
+        f"tried {list(candidates)!r}. Available columns: {available}"
+    )
+
+
+def _nearest_numeric_level(levels, requested, tolerance=1e-6, label="damage_level", verbose=0):
+    levels_arr = np.asarray(sorted(pd.unique(pd.Series(levels).dropna()).tolist()), dtype=float)
+    if levels_arr.size == 0:
+        raise ValueError(f"No available values found for {label}.")
+
+    requested = float(requested)
+    idx = int(np.argmin(np.abs(levels_arr - requested)))
+    chosen = float(levels_arr[idx])
+    if abs(chosen - requested) > tolerance:
+        available = ", ".join(f"{v:g}" for v in levels_arr)
+        raise ValueError(
+            f"Requested {label}={requested:g}, but no available value is within "
+            f"tolerance {tolerance:g}. Available values: {available}"
+        )
+    if verbose and not np.isclose(chosen, requested, atol=0.0, rtol=0.0):
+        print(f"[INFO] Using nearest available {label}={chosen:g} for requested {requested:g}.")
+    return chosen
+
+
+def _integrate_trapezoid(y, x):
+    integrate = getattr(np, "trapezoid", None)
+    if integrate is None:
+        integrate = np.trapz
+    return float(integrate(y, x))
+
+
+def _relative_drop_summary_value(xs, ys, summary="auc_loss", baseline_x=0.0, baseline_tolerance=1e-8):
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    finite = np.isfinite(xs) & np.isfinite(ys)
+    xs = xs[finite]
+    ys = ys[finite]
+    if len(xs) == 0:
+        return np.nan
+
+    order = np.argsort(xs)
+    xs = xs[order]
+    ys = ys[order]
+    base_idx = int(np.argmin(np.abs(xs - float(baseline_x))))
+    actual_baseline_x = float(xs[base_idx])
+    if abs(actual_baseline_x - float(baseline_x)) > baseline_tolerance:
+        return np.nan
+
+    baseline_y = float(ys[base_idx])
+    if not np.isfinite(baseline_y) or np.isclose(baseline_y, 0.0):
+        return np.nan
+
+    relative_drop = 1.0 - (ys / baseline_y)
+    finite_drop = np.isfinite(relative_drop)
+    xs = xs[finite_drop]
+    relative_drop = relative_drop[finite_drop]
+
+    if summary == "auc_loss":
+        if len(xs) < 2:
+            return np.nan
+        damage_range = float(xs[-1] - xs[0])
+        if damage_range <= 0:
+            return np.nan
+        return _integrate_trapezoid(relative_drop, xs) / damage_range
+
+    non_baseline = np.abs(xs - actual_baseline_x) > baseline_tolerance
+    if not np.any(non_baseline):
+        return np.nan
+    return float(np.nanmean(relative_drop[non_baseline]))
+
+
+def _relative_drop_summary_replicate_values(
+    x_to_values,
+    summary="auc_loss",
+    baseline_x=0.0,
+    baseline_tolerance=1e-8,
+):
+    levels = sorted(float(x) for x in x_to_values.keys())
+    if not levels:
+        return []
+
+    value_lists = []
+    for level in levels:
+        vals = np.asarray(x_to_values.get(level, []), dtype=float)
+        vals = vals[np.isfinite(vals)]
+        value_lists.append(vals)
+
+    if any(len(vals) == 0 for vals in value_lists):
+        return []
+    n_reps = min(len(vals) for vals in value_lists)
+
+    summary_values = []
+    for idx in range(n_reps):
+        ys = [vals[idx] for vals in value_lists]
+        value = _relative_drop_summary_value(
+            levels,
+            ys,
+            summary=summary,
+            baseline_x=baseline_x,
+            baseline_tolerance=baseline_tolerance,
+        )
+        if np.isfinite(value):
+            summary_values.append(float(value))
+    return summary_values
+
+
+def compute_relative_drop_summary(
+    df,
+    group_col,
+    x_col,
+    y_col,
+    summary="auc_loss",
+    baseline_x=0.0,
+    baseline_tolerance=1e-8,
+):
+    """
+    Summarise baseline-relative differentiation drop for each plotted line.
+
+    Baseline normalisation is per group: relative_drop(d) = 1 - y(d) / y(0).
+    `auc_loss` uses trapezoidal integration over the actual x spacing; `mean_drop`
+    averages non-baseline damage levels only.
+    """
+    if summary not in ("auc_loss", "mean_drop"):
+        raise ValueError("summary must be 'auc_loss' or 'mean_drop'.")
+
+    group_cols = _normalize_group_cols(group_col)
+    required = [*group_cols, x_col, y_col]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns for relative-drop summary: {missing}")
+
+    work = df[required].copy()
+    work[x_col] = pd.to_numeric(work[x_col], errors="coerce")
+    work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
+    work = work.dropna(subset=[x_col, y_col])
+    if work.empty:
+        raise ValueError("No numeric x/y values available for relative-drop summary.")
+
+    grouped = (
+        work.groupby(group_cols + [x_col], dropna=False, as_index=False)[y_col]
+        .mean()
+    )
+
+    rows = []
+    groupby_arg = group_cols[0] if len(group_cols) == 1 else group_cols
+    for group_key, group_df in grouped.groupby(groupby_arg, dropna=False):
+        group_df = group_df.sort_values(x_col)
+        xs = group_df[x_col].to_numpy(dtype=float)
+        ys = group_df[y_col].to_numpy(dtype=float)
+        if len(xs) == 0:
+            continue
+
+        base_idx = int(np.argmin(np.abs(xs - float(baseline_x))))
+        actual_baseline_x = float(xs[base_idx])
+        if abs(actual_baseline_x - float(baseline_x)) > baseline_tolerance:
+            label = group_key if not isinstance(group_key, tuple) else group_key
+            raise ValueError(
+                f"No baseline x={baseline_x:g} found for group {label!r} within "
+                f"tolerance {baseline_tolerance:g}."
+            )
+
+        baseline_y = float(ys[base_idx])
+        value = _relative_drop_summary_value(
+            xs,
+            ys,
+            summary=summary,
+            baseline_x=baseline_x,
+            baseline_tolerance=baseline_tolerance,
+        )
+
+        row = {
+            "summary": summary,
+            "relative_drop_summary": value,
+            "baseline_x": actual_baseline_x,
+            "baseline_y": baseline_y,
+            "n_levels": int(len(group_df)),
+        }
+        if len(group_cols) == 1:
+            row[group_cols[0]] = group_key
+        else:
+            for col, value_part in zip(group_cols, group_key):
+                row[col] = value_part
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def compute_relative_drop_summary_bootstrap(
+    df,
+    group_col,
+    x_col,
+    y_col,
+    summary="auc_loss",
+    baseline_x=0.0,
+    baseline_tolerance=1e-8,
+    replicate_col=None,
+):
+    summary_df = compute_relative_drop_summary(
+        df,
+        group_col,
+        x_col,
+        y_col,
+        summary=summary,
+        baseline_x=baseline_x,
+        baseline_tolerance=baseline_tolerance,
+    )
+    if summary_df.empty:
+        return summary_df
+
+    group_cols = _normalize_group_cols(group_col)
+    required = [*group_cols, x_col, y_col]
+    if replicate_col is not None and replicate_col in df.columns:
+        required.append(replicate_col)
+
+    work = df[required].copy()
+    work[x_col] = pd.to_numeric(work[x_col], errors="coerce")
+    work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
+    work = work.dropna(subset=[x_col, y_col])
+
+    rows = []
+    groupby_arg = group_cols[0] if len(group_cols) == 1 else group_cols
+    for group_key, group_df in work.groupby(groupby_arg, dropna=False):
+        x_to_values = {}
+        for x, x_df in group_df.groupby(x_col, dropna=False):
+            if replicate_col is not None and replicate_col in x_df.columns:
+                x_df = x_df.sort_values(replicate_col)
+            x_to_values[float(x)] = x_df[y_col].to_numpy(dtype=float).tolist()
+
+        replicate_values = _relative_drop_summary_replicate_values(
+            x_to_values,
+            summary=summary,
+            baseline_x=baseline_x,
+            baseline_tolerance=baseline_tolerance,
+        )
+        center, lower, upper = _bootstrap_mean_ci(replicate_values)
+        row = {
+            "ci95_lower": lower,
+            "ci95_upper": upper,
+            "summary_values": replicate_values,
+            "n_summary_values": len(replicate_values),
+        }
+        if len(group_cols) == 1:
+            row[group_cols[0]] = group_key
+        else:
+            for col, value_part in zip(group_cols, group_key):
+                row[col] = value_part
+        rows.append(row)
+
+    ci_df = pd.DataFrame(rows)
+    return summary_df.merge(ci_df, on=group_cols, how="left")
+
+
+def _draw_relative_drop_sideplot(
+    ax,
+    summary_df,
+    label_col,
+    value_col="relative_drop_summary",
+    color_col=None,
+    order_col=None,
+    xlabel=None,
+):
+    if summary_df.empty:
+        ax.set_visible(False)
+        return
+
+    plot_df = summary_df.copy()
+    if order_col and order_col in plot_df.columns:
+        plot_df = plot_df.sort_values(order_col)
+
+    labels = plot_df[label_col].astype(str).tolist()
+    values = plot_df[value_col].astype(float).to_numpy()
+    positions = np.arange(len(plot_df))
+    xerr = _summary_yerr(plot_df, value_col)
+
+    if color_col and color_col in plot_df.columns:
+        colors = plot_df[color_col].tolist()
+    else:
+        colors = None
+
+    ax.barh(
+        positions,
+        values,
+        xerr=xerr,
+        capsize=3 if xerr is not None else 0,
+        color=colors,
+        alpha=0.9,
+        error_kw={"elinewidth": 1, "ecolor": "0.25"},
+    )
+    ax.axvline(0, color="0.35", linewidth=0.8)
+    ax.set_yticks(positions)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel(xlabel or "AUC loss")
+    ax.tick_params(axis="both", labelsize=8)
+    ax.grid(axis="x", alpha=0.25)
+
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size and np.nanmin(finite_values) >= 0:
+        ax.set_xlim(left=0)
+    sns.despine(ax=ax, left=False, bottom=False)
+
+
+def plot_lineplot_with_side_summary(
+    df,
+    group_col,
+    x_col,
+    y_col,
+    summary="auc_loss",
+    baseline_x=0.0,
+    baseline_tolerance=1e-8,
+    yerr_col=None,
+    order=None,
+    palette=None,
+    ax=None,
+    side_ax=None,
+    side_width_ratio=0.25,
+    xlabel=None,
+    ylabel=None,
+    title=None,
+):
+    """
+    Generic line plot plus compact right-side relative-drop summary.
+
+    This is intentionally separate from the project-specific plot collectors so
+    dataframe-shaped analyses can reuse the same baseline-normalisation logic.
+    """
+    for col in (group_col, x_col, y_col):
+        if col not in df.columns:
+            raise ValueError(f"Column {col!r} is required for plot_lineplot_with_side_summary().")
+
+    created_side_axes = ax is None or side_ax is None
+    if created_side_axes:
+        width_ratios = [1.0, float(side_width_ratio)]
+        fig, (ax, side_ax) = plt.subplots(
+            1,
+            2,
+            figsize=(8.0 * (1.0 + float(side_width_ratio)), 5),
+            gridspec_kw={"width_ratios": width_ratios, "wspace": 0.18},
+        )
+    else:
+        fig = ax.figure
+
+    groups = list(order) if order is not None else list(dict.fromkeys(df[group_col].tolist()))
+    if palette is None:
+        colors = sns.color_palette(n_colors=max(len(groups), 1))
+        palette = {group: colors[i] for i, group in enumerate(groups)}
+    elif not isinstance(palette, Mapping):
+        colors = list(palette)
+        palette = {group: colors[i % len(colors)] for i, group in enumerate(groups)}
+
+    summary_rows = []
+    for idx, group in enumerate(groups):
+        group_df = df[df[group_col] == group].copy()
+        if group_df.empty:
+            continue
+        agg_map = {y_col: "mean"}
+        if yerr_col is not None and yerr_col in group_df.columns:
+            agg_map[yerr_col] = "mean"
+        group_df[x_col] = pd.to_numeric(group_df[x_col], errors="coerce")
+        group_df[y_col] = pd.to_numeric(group_df[y_col], errors="coerce")
+        line_df = group_df.groupby(x_col, as_index=False).agg(agg_map).dropna(subset=[x_col, y_col])
+        line_df = line_df.sort_values(x_col)
+        color = palette.get(group, f"C{idx}")
+        if yerr_col is not None and yerr_col in line_df.columns:
+            yerr = line_df[yerr_col]
+        else:
+            errors = []
+            for x in line_df[x_col]:
+                vals = group_df[group_df[x_col] == x][y_col].to_numpy(dtype=float)
+                errors.append(_bootstrap_mean_error(vals, center=line_df.loc[line_df[x_col] == x, y_col].iloc[0]))
+            yerr = _error_values_to_yerr(errors)
+
+        if yerr is not None:
+            ax.errorbar(
+                line_df[x_col],
+                line_df[y_col],
+                yerr=yerr,
+                fmt="-o",
+                capsize=4,
+                color=color,
+                label=str(group),
+            )
+        else:
+            ax.plot(line_df[x_col], line_df[y_col], "-o", color=color, label=str(group))
+        for x_value, x_raw_df in group_df.groupby(x_col, dropna=False):
+            for replicate_idx, (_, row) in enumerate(x_raw_df.iterrows()):
+                summary_rows.append(
+                    {
+                        "_summary_group": group,
+                        x_col: x_value,
+                        y_col: row[y_col],
+                        "_summary_replicate": replicate_idx,
+                        "_summary_order": idx,
+                        "_summary_color": color,
+                    }
+                )
+
+    if summary_rows:
+        summary_input = pd.DataFrame(summary_rows)
+        summary_df = compute_relative_drop_summary_bootstrap(
+            summary_input,
+            "_summary_group",
+            x_col,
+            y_col,
+            summary=summary,
+            baseline_x=baseline_x,
+            baseline_tolerance=baseline_tolerance,
+            replicate_col="_summary_replicate",
+        )
+        style_df = (
+            summary_input.groupby("_summary_group", as_index=False)
+            .agg(_summary_order=("_summary_order", "min"), _summary_color=("_summary_color", "first"))
+        )
+        summary_df = summary_df.merge(style_df, on="_summary_group", how="left")
+        _draw_relative_drop_sideplot(
+            side_ax,
+            summary_df,
+            "_summary_group",
+            color_col="_summary_color",
+            order_col="_summary_order",
+            xlabel=_summary_axis_label(summary),
+        )
+    else:
+        summary_df = pd.DataFrame()
+        side_ax.set_visible(False)
+
+    ax.set_xlabel(xlabel or x_col)
+    ax.set_ylabel(ylabel or y_col)
+    if title:
+        ax.set_title(title)
+    ax.legend()
+    if not created_side_axes:
+        fig.tight_layout()
+    return fig, (ax, side_ax), summary_df
+
+
+_CATEGORY_DROP_PALETTE = {
+    "object": "#4C78A8",
+    "place": "#59A14F",
+    "face": "#E15759",
+    "animal": "#F28E2B",
+}
+
+
+def _normalize_category_name(category):
+    key = str(category).strip().lower()
+    aliases = {
+        "objects": "object",
+        "object": "object",
+        "places": "place",
+        "place": "place",
+        "scene": "place",
+        "scenes": "place",
+        "faces": "face",
+        "face": "face",
+        "animals": "animal",
+        "animal": "animal",
+    }
+    return aliases.get(key, key)
+
+
+def _category_display_label(category):
+    labels = {
+        "object": "objects",
+        "place": "places",
+        "face": "faces",
+        "animal": "animals",
+    }
+    return labels.get(category, str(category))
+
+
+def _category_relative_drop_from_df(
+    df,
+    damage_type="connections",
+    damage_level=0.5,
+    layer="IT",
+    category_col="category",
+    y_col="differentiation",
+    damage_type_col="damage_type",
+    damage_level_col="damage_level",
+    layer_col="layer",
+    activation_layer=None,
+    activation_layer_col=None,
+    percent=False,
+    tolerance=1e-6,
+    category_order=("object", "place", "face", "animal"),
+    match_cols=None,
+    verbose=0,
+):
+    category_col = _resolve_existing_column(
+        df, category_col, ("category", "cat", "stimulus_category"), "category"
+    )
+    y_col = _resolve_existing_column(
+        df,
+        y_col,
+        ("differentiation", "observed_difference", "value", "mean_selectivity", "score"),
+        "differentiation/value",
+    )
+    damage_type_col = _resolve_existing_column(
+        df, damage_type_col, ("damage_type", "damage", "damage_kind"), "damage type"
+    )
+    damage_level_col = _resolve_existing_column(
+        df, damage_level_col, ("damage_level", "damage_intensity", "intensity", "level"), "damage level"
+    )
+    layer_col = _resolve_existing_column(
+        df, layer_col, ("damage_layer", "damaged_layer", "layer", "area", "region"), "damaged layer"
+    )
+
+    work = df.copy()
+    work["_category_normalized"] = work[category_col].map(_normalize_category_name)
+    work[damage_level_col] = pd.to_numeric(work[damage_level_col], errors="coerce")
+    work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
+
+    filtered = work[
+        (work[damage_type_col].astype(str) == str(damage_type))
+        & (work[layer_col].astype(str) == str(layer))
+    ].copy()
+
+    if activation_layer is not None:
+        activation_layer_col = _resolve_existing_column(
+            filtered,
+            activation_layer_col or "activation_layer",
+            ("activation_layer", "act_layer", "activations_layer", "layer_name"),
+            "activation layer",
+        )
+        filtered = filtered[filtered[activation_layer_col].astype(str) == str(activation_layer)].copy()
+    elif activation_layer_col is not None and activation_layer_col in filtered.columns:
+        if filtered[activation_layer_col].dropna().nunique() > 1 and verbose:
+            vals = sorted(map(str, filtered[activation_layer_col].dropna().unique()))
+            print(
+                "[WARN] Multiple activation layers remain in the data; "
+                f"relative drops will be matched before averaging: {vals}"
+            )
+
+    filtered = filtered.dropna(subset=[damage_level_col, y_col, "_category_normalized"])
+    if filtered.empty:
+        raise ValueError(
+            f"No rows found for damage_type={damage_type!r}, layer={layer!r}. "
+            "Check the requested condition and column names."
+        )
+
+    selected_level = _nearest_numeric_level(
+        filtered[damage_level_col], damage_level, tolerance=tolerance,
+        label=damage_level_col, verbose=verbose
+    )
+    baseline_level = _nearest_numeric_level(
+        filtered[damage_level_col], 0.0, tolerance=tolerance,
+        label=f"{damage_level_col} baseline", verbose=verbose
+    )
+
+    if match_cols is None:
+        candidate_match_cols = (
+            "model_variant",
+            "model",
+            "model_name",
+            "include_bias",
+            "activation_layer",
+            "act_layer",
+            "activations_layer",
+            "data_type",
+            "metric",
+            "selectivity_fraction",
+            "selection_mode",
+        )
+        match_cols = [
+            col for col in candidate_match_cols
+            if col in filtered.columns
+            and col not in {category_col, y_col, damage_type_col, damage_level_col, layer_col}
+        ]
+    else:
+        match_cols = [col for col in match_cols if col in filtered.columns]
+
+    condition_cols = [
+        damage_type_col,
+        layer_col,
+        *match_cols,
+        "_category_normalized",
+        damage_level_col,
+    ]
+
+    # Average replicate/seed rows within each category-specific condition first.
+    condition_means = (
+        filtered.groupby(condition_cols, dropna=False, as_index=False)[y_col]
+        .mean()
+    )
+
+    level_mask = np.isclose(condition_means[damage_level_col], selected_level, atol=tolerance, rtol=0.0)
+    base_mask = np.isclose(condition_means[damage_level_col], baseline_level, atol=tolerance, rtol=0.0)
+    damaged = condition_means[level_mask].copy()
+    baseline = condition_means[base_mask].copy()
+    if baseline.empty:
+        raise ValueError(f"No baseline rows found at {damage_level_col}=0.")
+    if damaged.empty:
+        raise ValueError(f"No rows found at selected {damage_level_col}={selected_level:g}.")
+
+    merge_cols = [damage_type_col, layer_col, *match_cols, "_category_normalized"]
+    merged = baseline.merge(
+        damaged,
+        on=merge_cols,
+        suffixes=("_baseline", "_damaged"),
+        how="inner",
+    )
+    if merged.empty:
+        raise ValueError(
+            "Baseline and damaged rows could not be matched by category/condition. "
+            f"Match columns were: {merge_cols}"
+        )
+
+    merged["relative_drop"] = 1.0 - (merged[f"{y_col}_damaged"] / merged[f"{y_col}_baseline"])
+    merged.loc[np.isclose(merged[f"{y_col}_baseline"], 0.0), "relative_drop"] = np.nan
+    if percent:
+        merged["relative_drop"] = merged["relative_drop"] * 100.0
+
+    summary = (
+        merged.groupby("_category_normalized", as_index=False)["relative_drop"]
+        .agg(
+            relative_drop="mean",
+            ci95=lambda v: _ci95_mean(v),
+            sem=lambda v: float(np.nanstd(v, ddof=1) / np.sqrt(np.sum(~pd.isna(v)))) if np.sum(~pd.isna(v)) > 1 else 0.0,
+            n="count",
+            raw_values=lambda v: [float(x) for x in pd.Series(v).dropna().tolist()],
+        )
+    )
+    summary[["ci95_center", "ci95_lower", "ci95_upper"]] = summary["raw_values"].apply(
+        lambda vals: pd.Series(_bootstrap_mean_ci(vals))
+    )
+
+    order = [_normalize_category_name(c) for c in category_order]
+    present = [cat for cat in order if cat in set(summary["_category_normalized"])]
+    extras = [cat for cat in summary["_category_normalized"].tolist() if cat not in present]
+    ordered_cats = present + extras
+    summary["_order"] = summary["_category_normalized"].map({cat: i for i, cat in enumerate(ordered_cats)})
+    summary = summary.sort_values("_order").drop(columns="_order")
+    summary["category"] = summary["_category_normalized"]
+    summary["category_label"] = summary["category"].map(_category_display_label)
+    summary["damage_type"] = damage_type
+    summary["damage_level_requested"] = float(damage_level)
+    summary["damage_level_used"] = selected_level
+    summary["baseline_level_used"] = baseline_level
+    summary["layer"] = layer
+    if activation_layer is not None:
+        summary["activation_layer"] = activation_layer
+
+    requested = set(order)
+    missing = [cat for cat in order if cat in requested and cat not in set(summary["category"])]
+    if missing and verbose:
+        print(f"[WARN] Missing categories in relative-drop plot: {missing}")
+
+    return summary, merged
+
+
+def _category_scaled_percent_from_df(
+    df,
+    damage_type="connections",
+    damage_level=0.5,
+    layer="IT",
+    category_col="category",
+    y_col="differentiation",
+    damage_type_col="damage_type",
+    damage_level_col="damage_level",
+    layer_col="layer",
+    activation_layer=None,
+    activation_layer_col=None,
+    tolerance=1e-6,
+    category_order=("object", "place", "face", "animal"),
+    match_cols=None,
+    replicate_col="replicate",
+    verbose=0,
+):
+    category_col = _resolve_existing_column(
+        df, category_col, ("category", "cat", "stimulus_category"), "category"
+    )
+    y_col = _resolve_existing_column(
+        df,
+        y_col,
+        ("differentiation", "observed_difference", "value", "mean_selectivity", "score"),
+        "differentiation/value",
+    )
+    damage_type_col = _resolve_existing_column(
+        df, damage_type_col, ("damage_type", "damage", "damage_kind"), "damage type"
+    )
+    damage_level_col = _resolve_existing_column(
+        df, damage_level_col, ("damage_level", "damage_intensity", "intensity", "level"), "damage level"
+    )
+    layer_col = _resolve_existing_column(
+        df, layer_col, ("damage_layer", "damaged_layer", "layer", "area", "region"), "damaged layer"
+    )
+
+    work = df.copy()
+    work["_category_normalized"] = work[category_col].map(_normalize_category_name)
+    work[damage_level_col] = pd.to_numeric(work[damage_level_col], errors="coerce")
+    work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
+    filtered = work[
+        (work[damage_type_col].astype(str) == str(damage_type))
+        & (work[layer_col].astype(str) == str(layer))
+    ].copy()
+
+    if activation_layer is not None:
+        activation_layer_col = _resolve_existing_column(
+            filtered,
+            activation_layer_col or "activation_layer",
+            ("activation_layer", "act_layer", "activations_layer", "layer_name"),
+            "activation layer",
+        )
+        filtered = filtered[filtered[activation_layer_col].astype(str) == str(activation_layer)].copy()
+
+    filtered = filtered.dropna(subset=[damage_level_col, y_col, "_category_normalized"])
+    if filtered.empty:
+        raise ValueError(
+            f"No rows found for damage_type={damage_type!r}, layer={layer!r}. "
+            "Check the requested condition and column names."
+        )
+
+    selected_level = _nearest_numeric_level(
+        filtered[damage_level_col], damage_level, tolerance=tolerance,
+        label=damage_level_col, verbose=verbose
+    )
+    baseline_level = _nearest_numeric_level(
+        filtered[damage_level_col], 0.0, tolerance=tolerance,
+        label=f"{damage_level_col} baseline", verbose=verbose
+    )
+
+    if match_cols is None:
+        candidate_match_cols = (
+            "model_variant",
+            "model",
+            "model_name",
+            "include_bias",
+            "activation_layer",
+            "act_layer",
+            "activations_layer",
+            "data_type",
+            "metric",
+            "selectivity_fraction",
+            "selection_mode",
+        )
+        match_cols = [
+            col for col in candidate_match_cols
+            if col in filtered.columns
+            and col not in {category_col, y_col, damage_type_col, damage_level_col, layer_col}
+        ]
+    else:
+        match_cols = [col for col in match_cols if col in filtered.columns]
+
+    base_match_cols = [damage_type_col, layer_col, *match_cols, "_category_normalized"]
+    if replicate_col in filtered.columns:
+        base_match_cols.append(replicate_col)
+
+    base_mask = np.isclose(filtered[damage_level_col], baseline_level, atol=tolerance, rtol=0.0)
+    level_mask = np.isclose(filtered[damage_level_col], selected_level, atol=tolerance, rtol=0.0)
+    baseline = filtered[base_mask].copy()
+    damaged = filtered[level_mask].copy()
+    if baseline.empty:
+        raise ValueError(f"No baseline rows found at {damage_level_col}=0.")
+    if damaged.empty:
+        raise ValueError(f"No rows found at selected {damage_level_col}={selected_level:g}.")
+
+    if replicate_col in filtered.columns:
+        # Match each damaged replicate to the category-specific baseline replicate.
+        baseline = baseline.groupby(base_match_cols, dropna=False, as_index=False)[y_col].mean()
+        damaged = damaged.groupby(base_match_cols, dropna=False, as_index=False)[y_col].mean()
+        matched = baseline.merge(
+            damaged,
+            on=base_match_cols,
+            suffixes=("_baseline", "_damaged"),
+            how="inner",
+        )
+        matched["scaled_percent"] = 100.0 * (
+            matched[f"{y_col}_damaged"] / matched[f"{y_col}_baseline"]
+        )
+        matched.loc[np.isclose(matched[f"{y_col}_baseline"], 0.0), "scaled_percent"] = np.nan
+    else:
+        # If no replicate id exists, pair raw values by sorted order within each condition,
+        # mirroring the legacy percentage-scaling behavior used by the other bar plots.
+        matched_rows = []
+        group_cols = [damage_type_col, layer_col, *match_cols, "_category_normalized"]
+        for group_key, base_group in baseline.groupby(group_cols, dropna=False):
+            dmg_group = damaged
+            group_key_tuple = group_key if isinstance(group_key, tuple) else (group_key,)
+            for col, value in zip(group_cols, group_key_tuple):
+                dmg_group = dmg_group[dmg_group[col] == value]
+            if dmg_group.empty:
+                continue
+            base_vals = base_group[y_col].to_numpy(dtype=float)
+            dmg_vals = dmg_group[y_col].to_numpy(dtype=float)
+            n_vals = min(len(base_vals), len(dmg_vals))
+            for idx in range(n_vals):
+                baseline_value = base_vals[idx]
+                scaled = np.nan if np.isclose(baseline_value, 0.0) else 100.0 * (dmg_vals[idx] / baseline_value)
+                row = dict(zip(group_cols, group_key_tuple))
+                row.update({
+                    f"{y_col}_baseline": baseline_value,
+                    f"{y_col}_damaged": dmg_vals[idx],
+                    "scaled_percent": scaled,
+                    replicate_col: idx,
+                })
+                matched_rows.append(row)
+        matched = pd.DataFrame(matched_rows)
+        if matched.empty:
+            raise ValueError(
+                "Baseline and damaged rows could not be matched by category/condition."
+            )
+
+    summary = (
+        matched.groupby("_category_normalized", as_index=False)["scaled_percent"]
+        .agg(
+            scaled_percent="mean",
+            ci95=lambda v: _ci95_mean(v),
+            n="count",
+            raw_values=lambda v: [float(x) for x in pd.Series(v).dropna().tolist()],
+        )
+    )
+    summary[["ci95_center", "ci95_lower", "ci95_upper"]] = summary["raw_values"].apply(
+        lambda vals: pd.Series(_bootstrap_mean_ci(vals))
+    )
+
+    order = [_normalize_category_name(c) for c in category_order]
+    present = [cat for cat in order if cat in set(summary["_category_normalized"])]
+    extras = [cat for cat in summary["_category_normalized"].tolist() if cat not in present]
+    ordered_cats = present + extras
+    summary["_order"] = summary["_category_normalized"].map({cat: i for i, cat in enumerate(ordered_cats)})
+    summary = summary.sort_values("_order").drop(columns="_order")
+    summary["category"] = summary["_category_normalized"]
+    summary["category_label"] = summary["category"].map(_category_display_label)
+    summary["damage_type"] = damage_type
+    summary["damage_level_requested"] = float(damage_level)
+    summary["damage_level_used"] = selected_level
+    summary["baseline_level_used"] = baseline_level
+    summary["layer"] = layer
+    if activation_layer is not None:
+        summary["activation_layer"] = activation_layer
+    return summary, matched
+
+
+def plot_category_relative_drop_bar(
+    df=None,
+    damage_type="connections",
+    damage_level=0.5,
+    layer="IT",
+    category_col="category",
+    y_col="differentiation",
+    damage_type_col="damage_type",
+    damage_level_col="damage_level",
+    layer_col="layer",
+    percent=False,
+    ax=None,
+    *,
+    main_dir=None,
+    activation_layer="IT",
+    activation_layer_col=None,
+    categories=("object", "place", "face", "animal"),
+    metric="observed_difference",
+    data_type="selectivity",
+    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",
+    selectivity_fraction=None,
+    selection_mode="percentage",
+    selectivity_file="unit_selectivity/all_layers_units_mannwhitneyu.pkl",
+    model_tag=None,
+    tolerance=1e-6,
+    match_cols=None,
+    palette=None,
+    title=True,
+    add_zero_line=True,
+    ylim=None,
+    plot_dir=None,
+    save_mode="png",
+    verbose=0,
+    return_data=False,
+    value_mode="relative_drop",
+    scatter=False,
+    bar_width=None,
+    scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
+    scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
+    figsize=None,
+):
+    """
+    Plot category-specific relative differentiation drop at one damage level.
+
+    If `df` is omitted, the function reads the existing on-disk selectivity
+    layout via `_collect_categ_corr_lineplot_data()`.
+    """
+    if df is None:
+        if main_dir is None:
+            raise ValueError("plot_category_relative_drop_bar requires either df or main_dir.")
+        collector_categories = tuple(_normalize_category_name(c) for c in categories)
+        data, raw_points = _collect_categ_corr_lineplot_data(
+            damage_layers=[layer],
+            activations_layers=[activation_layer],
+            damage_type=damage_type,
+            main_dir=main_dir,
+            categories=collector_categories,
+            metric=metric,
+            subdir_regex=subdir_regex,
+            data_type=data_type,
+            verbose=verbose,
+            percentage=False,
+            selectivity_fraction=selectivity_fraction,
+            selection_mode=selection_mode,
+            selectivity_file=selectivity_file,
+            model_tag=model_tag,
+        )
+        rows = []
+        for cat in collector_categories:
+            frac_dict = data.get((layer, activation_layer, cat), {})
+            raw_dict = raw_points.get((layer, activation_layer, cat), {})
+            for lvl, rec in frac_dict.items():
+                vals = raw_dict.get(lvl, [])
+                if not vals:
+                    vals = [rec[0]]
+                for replicate, val in enumerate(vals):
+                    rows.append(
+                        {
+                            "damage_type": damage_type,
+                            "damage_layer": layer,
+                            "activation_layer": activation_layer,
+                            "damage_level": lvl,
+                            "category": cat,
+                            "replicate": replicate,
+                            "differentiation": val,
+                        }
+                    )
+        if not rows:
+            raise RuntimeError(
+                "No category-level differentiation data could be collected. "
+                "Check main_dir, damage_type, layer, activation_layer, and categories."
+            )
+        df = pd.DataFrame(rows)
+        damage_type_col = "damage_type"
+        damage_level_col = "damage_level"
+        layer_col = "damage_layer"
+        category_col = "category"
+        y_col = "differentiation"
+        activation_layer_col = "activation_layer"
+
+    if value_mode == "scaled_percent":
+        summary_df, matched_df = _category_scaled_percent_from_df(
+            df,
+            damage_type=damage_type,
+            damage_level=damage_level,
+            layer=layer,
+            category_col=category_col,
+            y_col=y_col,
+            damage_type_col=damage_type_col,
+            damage_level_col=damage_level_col,
+            layer_col=layer_col,
+            activation_layer=activation_layer if activation_layer_col is not None else None,
+            activation_layer_col=activation_layer_col,
+            tolerance=tolerance,
+            category_order=categories,
+            match_cols=match_cols,
+            verbose=verbose,
+        )
+        value_col = "scaled_percent"
+        err_col = "ci95"
+        ylabel = "Differentiation (scaled %)"
+        file_value_tag = "scaled-percent"
+    else:
+        summary_df, matched_df = _category_relative_drop_from_df(
+            df,
+            damage_type=damage_type,
+            damage_level=damage_level,
+            layer=layer,
+            category_col=category_col,
+            y_col=y_col,
+            damage_type_col=damage_type_col,
+            damage_level_col=damage_level_col,
+            layer_col=layer_col,
+            activation_layer=activation_layer if activation_layer_col is not None else None,
+            activation_layer_col=activation_layer_col,
+            percent=percent,
+            tolerance=tolerance,
+            category_order=categories,
+            match_cols=match_cols,
+            verbose=verbose,
+        )
+        value_col = "relative_drop"
+        err_col = "ci95"
+        ylabel = "Relative differentiation drop (%)" if percent else "Relative differentiation drop"
+        file_value_tag = "relative-drop-percent" if percent else "relative-drop"
+
+    resolved_bar_width = _resolve_bar_width(bar_width)
+    resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=_barplot_figsize(figsize=figsize))
+    else:
+        fig = ax.figure
+    _apply_barplot_axis_aspect(ax)
+
+    if palette is None:
+        palette = _CATEGORY_DROP_PALETTE
+    elif not isinstance(palette, Mapping):
+        colors = list(palette)
+        palette = {
+            cat: colors[i % len(colors)]
+            for i, cat in enumerate(summary_df["category"].tolist())
+        }
+
+    x_pos = np.arange(len(summary_df))
+    colors = [palette.get(cat, f"C{i}") for i, cat in enumerate(summary_df["category"])]
+    yerr = _summary_yerr(summary_df, value_col)
+    finite_yerr = yerr[np.isfinite(yerr)] if yerr is not None else np.asarray([])
+    ax.bar(
+        x_pos,
+        summary_df[value_col].to_numpy(dtype=float),
+        yerr=yerr,
+        width=resolved_bar_width,
+        capsize=4 if finite_yerr.size and np.nanmax(finite_yerr) > 0 else 0,
+        facecolor="none",
+        edgecolor=colors,
+        linewidth=2,
+    )
+    if scatter:
+        for idx, row in summary_df.reset_index(drop=True).iterrows():
+            vals = row.get("raw_values", [])
+            if not vals:
+                continue
+            jitter = _barplot_scatter_jitter(
+                resolved_bar_width,
+                len(vals),
+                width_fraction=scatter_width_fraction,
+            )
+            ax.scatter(
+                x_pos[idx] + jitter,
+                vals,
+                alpha=resolved_scatter_alpha,
+                s=20,
+                zorder=0,
+                color=colors[idx],
+                marker="o",
+            )
+    if add_zero_line:
+        ax.axhline(0, color="0.35", linewidth=0.8)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(summary_df["category_label"], rotation=0)
+    _set_barplot_xlim(ax, x_pos, resolved_bar_width)
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel("Category")
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    elif percent:
+        ax.set_ylim(bottom=min(0, ax.get_ylim()[0]))
+    else:
+        ax.set_ylim(bottom=min(0, ax.get_ylim()[0]))
+    if title:
+        used = summary_df["damage_level_used"].iloc[0]
+        layer_label = f", {layer}" if layer is not None else ""
+        ax.set_title(f"{damage_type}{layer_label}, damage={used:g}")
+    sns.despine(ax=ax)
+    fig.tight_layout()
+
+    saved_paths = []
+    if plot_dir is not None:
+        os.makedirs(plot_dir, exist_ok=True)
+        model_part = _lineplot_model_tag(main_dir) if main_dir is not None else "dataframe"
+        base = os.path.join(
+            plot_dir,
+            f"{model_part}_category-{file_value_tag}_{str(damage_type).replace('/', '-')}_{layer}_dmg{summary_df['damage_level_used'].iloc[0]:g}",
+        )
+        mode = _normalize_plot_save_mode(save_mode)
+        if "png" in mode:
+            path = base + ".png"
+            fig.savefig(path, dpi=500, format="png")
+            saved_paths.append(path)
+        if "svg" in mode:
+            path = base + ".svg"
+            fig.savefig(path, format="svg")
+            saved_paths.append(path)
+        if verbose:
+            print(f"[PLOT] saved to {', '.join(saved_paths)}")
+
+    if return_data:
+        return fig, ax, summary_df, matched_df
+    return fig, ax
+
+
+def plot_total_differentiation_bar(
+    main_dir="data/haupt_stim_activ/damaged/cornet_rt5_c/",
+    damage_layers=("IT",),
+    activations_layers=("IT",),
+    damage_pairs=None,
+    categories=("total",),
+    metric="observed_difference",
+    data_type="selectivity",
+    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",
+    plot_dir="plots/",
+    verbose=0,
+    ylim=None,
+    percentage=False,
+    selectivity_fraction: float | None = None,
+    selection_mode: str = "percentage",
+    selectivity_file: str | None = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
+    model_tag: str | None = None,
+    save_mode: str | None = "png",
+    line_colors=None,
+    line_colours=None,
+    line_color=None,
+    line_colour=None,
+    point_shapes=None,
+    point_markers=None,
+    point_shape=None,
+    point_marker=None,
+    scatter=False,
+    bar_width=None,
+    scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
+    scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
+    figsize=None,
+    tolerance=1e-6,
+):
+    """
+    Plot one bar per requested damage condition using the total across categories.
+
+    This is the compact counterpart to `plot_categ_differences(..., comparison=True)`
+    for paper panels that need total differentiation rather than one subplot per
+    focal category.
+    """
+    if damage_pairs is None:
+        raise ValueError("plot_total_differentiation_bar requires damage_pairs.")
+
+    damage_layers = list(_as_list(damage_layers))
+    activations_layers = list(_as_list(activations_layers))
+    if len(damage_layers) != 1 or len(activations_layers) != 1:
+        raise ValueError("plot_total_differentiation_bar expects exactly one damage layer and one activation layer.")
+    damage_layer = damage_layers[0]
+    activation_layer = activations_layers[0]
+
+    category = categories[0] if categories else "total"
+    main_dirs = list(_as_list(main_dir)) or [main_dir]
+    color_overrides = _coalesce_style_overrides(
+        line_colors, line_colours, line_color, line_colour
+    )
+    marker_overrides = _coalesce_style_overrides(
+        point_shapes, point_markers, point_shape, point_marker
+    )
+
+    def _condition_label(dmg_type, level):
+        return f"{dmg_type}, dmg={level}"
+
+    def _lookup_level(frac_dict, requested_level):
+        if not frac_dict:
+            return None
+        levels = np.asarray(sorted(frac_dict.keys()), dtype=float)
+        requested = float(requested_level)
+        idx = int(np.argmin(np.abs(levels - requested)))
+        chosen = float(levels[idx])
+        if abs(chosen - requested) <= tolerance:
+            return chosen
+        return None
+
+    records = []
+    for damage_type, levels in damage_pairs.items():
+        for level in _as_list(levels):
+            found = None
+            found_raw = None
+            found_dir = None
+            found_level = None
+            for candidate_main_dir in main_dirs:
+                try:
+                    data, raw_points = _collect_categ_corr_lineplot_data(
+                        damage_layers=[damage_layer],
+                        activations_layers=[activation_layer],
+                        damage_type=damage_type,
+                        main_dir=candidate_main_dir,
+                        categories=categories,
+                        metric=metric,
+                        subdir_regex=subdir_regex,
+                        data_type=data_type,
+                        verbose=verbose,
+                        percentage=percentage,
+                        selectivity_fraction=selectivity_fraction,
+                        selection_mode=selection_mode,
+                        selectivity_file=selectivity_file,
+                        model_tag=model_tag,
+                    )
+                except Exception as exc:
+                    if verbose:
+                        print(f"[WARN] Could not collect {damage_type} from {candidate_main_dir}: {exc}")
+                    continue
+
+                key = (damage_layer, activation_layer, category)
+                frac_dict = data.get(key, {})
+                chosen_level = _lookup_level(frac_dict, level)
+                if chosen_level is None:
+                    continue
+                found = frac_dict[chosen_level]
+                found_raw = raw_points.get(key, {}).get(chosen_level, [])
+                found_dir = candidate_main_dir
+                found_level = chosen_level
+                break
+
+            if found is None:
+                raise ValueError(
+                    f"No total differentiation value found for damage_type={damage_type!r}, "
+                    f"damage_level={level!r}, damage_layer={damage_layer!r}, "
+                    f"activation_layer={activation_layer!r} in {main_dirs}."
+                )
+
+            records.append(
+                {
+                    "damage_type": damage_type,
+                    "damage_level_requested": level,
+                    "damage_level_used": found_level,
+                    "label": _condition_label(damage_type, level),
+                    "mean": float(found[0]),
+                    "std": float(found[1]),
+                    "n": int(found[2]),
+                    "raw": list(map(float, found_raw)) if found_raw is not None else [],
+                    "main_dir": found_dir,
+                }
+            )
+
+    if not records:
+        raise RuntimeError("plot_total_differentiation_bar found no plottable conditions.")
+
+    resolved_bar_width = _resolve_bar_width(bar_width)
+    resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
+
+    fig, ax = plt.subplots(figsize=_barplot_figsize(figsize=figsize))
+    _apply_barplot_axis_aspect(ax)
+    x_pos = np.arange(len(records))
+    means = [rec["mean"] for rec in records]
+    errs = []
+    for rec in records:
+        vals = np.asarray(rec["raw"], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) > 1:
+            errs.append(_bootstrap_mean_error(vals, center=rec["mean"]))
+        else:
+            errs.append(_ci95_from_summary(rec["std"], rec["n"]))
+    yerr = _error_values_to_yerr(errs)
+    colors = []
+    markers = []
+    labels = []
+    for idx, rec in enumerate(records):
+        candidates = (
+            rec["label"],
+            (rec["damage_type"], str(rec["damage_level_requested"])),
+            rec["damage_type"],
+        )
+        color = _resolve_style_override(color_overrides, candidates=candidates, index=idx)
+        marker = _resolve_style_override(marker_overrides, candidates=candidates, index=idx)
+        colors.append(color if color is not None else f"C{idx}")
+        markers.append(marker if marker is not None else "o")
+        labels.append(rec["label"])
+
+    ax.bar(
+        x_pos,
+        means,
+        yerr=yerr,
+        width=resolved_bar_width,
+        capsize=4,
+        facecolor="none",
+        edgecolor=colors,
+        linewidth=2,
+    )
+    if scatter:
+        for idx, rec in enumerate(records):
+            vals = rec["raw"]
+            if not vals:
+                continue
+            jitter = _barplot_scatter_jitter(
+                resolved_bar_width,
+                len(vals),
+                width_fraction=scatter_width_fraction,
+            )
+            ax.scatter(
+                x_pos[idx] + jitter,
+                vals,
+                alpha=resolved_scatter_alpha,
+                s=20,
+                color=colors[idx],
+                marker=markers[idx],
+                zorder=0,
+            )
+
+    ax.axhline(0, color="0.35", linewidth=0.8)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(labels, rotation=35, ha="right")
+    _set_barplot_xlim(ax, x_pos, resolved_bar_width)
+    ax.set_ylabel(_categ_corr_ylabel(data_type, metric, percentage))
+    title_layer = f"{damage_layer}->{activation_layer}" if damage_layer != activation_layer else str(damage_layer)
+    ax.set_title(f"Total differentiation — {title_layer}")
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+
+    os.makedirs(plot_dir, exist_ok=True)
+    model_part = "-".join(sorted({_lineplot_model_tag(rec["main_dir"]) for rec in records}))
+    level_tag = "-".join(
+        f"{rec['damage_type']}{rec['damage_level_used']:g}".replace("/", "-")
+        for rec in records
+    )
+    name_parts = [
+        model_part,
+        "total-differentiation-bar",
+        damage_layer,
+        activation_layer,
+        level_tag,
+    ]
+    if percentage:
+        name_parts.append("percentage")
+    if selectivity_fraction is not None:
+        name_parts.append(f"top{selectivity_fraction:.2f}-{selection_mode}")
+    plot_base_path = os.path.join(plot_dir, "_".join(name_parts))
+    mode = _normalize_plot_save_mode(save_mode)
+    saved_paths = []
+    if "png" in mode:
+        path = plot_base_path + ".png"
+        fig.savefig(path, dpi=500, format="png")
+        saved_paths.append(path)
+    if "svg" in mode:
+        path = plot_base_path + ".svg"
+        fig.savefig(path, format="svg")
+        saved_paths.append(path)
+    if verbose:
+        print(f"[PLOT] saved to {', '.join(saved_paths)}")
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def _layer_name_match_candidates(layer_name):
+    """Return likely table-name variants for a filesystem-safe layer name."""
+    if layer_name is None:
+        return []
+
+    base = str(layer_name).strip()
+    if not base:
+        return []
+
+    candidates = []
+
+    def add(value):
+        if value and value not in candidates:
+            candidates.append(value)
+
+    add(base)
+    if base.startswith("module."):
+        add(base.removeprefix("module."))
+    else:
+        add("module." + base)
+
+    unprefixed = base.removeprefix("module.")
+    parts = unprefixed.split("_")
+    if len(parts) > 1:
+        # Try every underscore/dot assignment. This handles names like
+        # Mixed_7c_branch_pool_bn -> Mixed_7c.branch_pool.bn without changing paths.
+        for separators in product(("_", "."), repeat=len(parts) - 1):
+            variant_parts = [parts[0]]
+            for sep, part in zip(separators, parts[1:]):
+                variant_parts.extend((sep, part))
+            variant = "".join(variant_parts)
+            add(variant)
+            add("module." + variant)
+
+    return candidates
+
+
+def categ_corr_lineplot(
+    damage_layers,
+    activations_layers,
+    damage_type,
+    main_dir="data/haupt_stim_activ/damaged/cornet_rt5_all/",
+    categories=("overall",),
+    metric="observed_difference",
+    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",   # handles damaged_1.0, damaged_1.0_123, damaged_1.0/...
+    plot_dir="plots/",
+    data_type="selectivity",
+    scatter=False,
+    verbose=0,
+    ylim=None,
+    percentage=False,
+    selectivity_fraction: float|None = None,
+    selection_mode: str = "percentage",
+    selectivity_file: str|None   = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
+    flip_x_axis=False,  # Used for e.g., gain control plots
+    model_tag: str | None = None,
+    line_colors=None,
+    line_colours=None,
+    line_color=None,
+    line_colour=None,
+    point_shapes=None,
+    point_markers=None,
+    point_shape=None,
+    point_marker=None,
+    save_mode: str | None = "png",
+    side_summary: bool = False,
+    side_summary_metric: str = "auc_loss",
+    side_summary_width_ratio: float = 0.25,
+    side_summary_baseline: float = 0.0,
+    side_summary_tolerance: float = 1e-8,
+):
+    """
+    Aggregate replicate files into mean±std curves.
+
+    save_mode:
+      Save the plot as "png", "svg", or "png+svg". Empty/None defaults to "png".
+
+    side_summary:
+      When True, add a compact right-side horizontal bar plot. Bars use the
+      same line colours and summarise baseline-relative drop with either
+      "auc_loss" or "mean_drop".
+
+    Enhancement:
+      - If selectivity RDMs are missing at RDM_{fraction}_{selection_mode}/<act>/<cat>_selective/,
+        compute them from activation .zarr files on the fly, save to disk, and proceed.
+    """
+    data, raw_points = _collect_categ_corr_lineplot_data(
+        damage_layers=damage_layers,
+        activations_layers=activations_layers,
+        damage_type=damage_type,
+        main_dir=main_dir,
+        categories=categories,
+        metric=metric,
+        subdir_regex=subdir_regex,
+        data_type=data_type,
+        verbose=verbose,
+        percentage=percentage,
+        selectivity_fraction=selectivity_fraction,
+        selection_mode=selection_mode,
+        selectivity_file=selectivity_file,
+        model_tag=model_tag,
+    )
+
+    color_overrides = _coalesce_style_overrides(
+        line_colors, line_colours, line_color, line_colour
+    )
+    marker_overrides = _coalesce_style_overrides(
+        point_shapes, point_markers, point_shape, point_marker
+    )
+
+    # ------------ 6. plotting ----------------------
+    if side_summary:
+        fig, (main_ax, side_ax) = plt.subplots(
+            1,
+            2,
+            figsize=(8.0 * (1.0 + float(side_summary_width_ratio)), 5),
+            gridspec_kw={"width_ratios": [1.0, float(side_summary_width_ratio)], "wspace": 0.18},
+        )
+    else:
+        fig = plt.gcf()
+        main_ax = plt.gca()
+        side_ax = None
+
+    side_summary_rows = []
+
+    for series_index, ((layer, act_key, cat), frac_dict) in enumerate(data.items()):
+        if not frac_dict or cat not in categories:
+            continue
+        xs = sorted(frac_dict.keys())
+        ys = [frac_dict[x][0] for x in xs]
+        err = []
+        for x in xs:
+            vals = raw_points.get((layer, act_key, cat), {}).get(x, [])
+            if vals:
+                err.append(_bootstrap_mean_error(vals, center=frac_dict[x][0]))
+            else:
+                err.append(_ci95_from_summary(frac_dict[x][1], frac_dict[x][2]))
+        yerr = _error_values_to_yerr(err)
+        lbl = f"{layer}-{act_key}-{cat}"
+        series_key = (layer, act_key, cat)
+        category_candidates = []
+        for cat_name in _style_name_variants(cat):
+            category_candidates.append(cat_name)
+            category_candidates.append((layer, act_key, cat_name))
+
+        marker = _resolve_style_override(
+            marker_overrides,
+            candidates=(series_key, lbl, layer, act_key, *category_candidates),
+            index=series_index,
+        )
+        if marker is None:
+            marker = "o"
+
+        if data_type == "imagenet":
+            color_cat = "total"
+            color_act = "IT"
+        else:
+            color_cat = cat
+            color_act = act_key
+
+        color = _resolve_style_override(
+            color_overrides,
+            candidates=(series_key, lbl, layer, act_key, *category_candidates),
+            index=series_index,
+        )
+        try:
+            if color is None:
+                color = get_color_for_triple(layer, color_act, str(color_cat))
+            main_ax.errorbar(xs, ys, yerr=yerr, fmt='-', marker=marker, capsize=4, label=lbl, color=color)
+        except Exception:
+            color = None
+            main_ax.errorbar(xs, ys, yerr=yerr, fmt='-', marker=marker, capsize=4, label=lbl)
+
+        if side_summary:
+            if len(categories) == 1 and len(activations_layers) == 1:
+                summary_label = str(layer)
+            else:
+                summary_label = lbl
+            for x, y in zip(xs, ys):
+                vals = raw_points.get((layer, act_key, cat), {}).get(x, [])
+                if not vals:
+                    vals = [y]
+                for replicate_idx, val in enumerate(vals):
+                    side_summary_rows.append(
+                        {
+                            "_summary_group": summary_label,
+                            "damage_level": x,
+                            "differentiation": val,
+                            "_summary_replicate": replicate_idx,
+                            "_summary_order": series_index,
+                            "_summary_color": color if color is not None else f"C{series_index}",
+                        }
+                    )
+
+        if scatter:
+            for x in xs:
+                jitter = np.random.normal(0, 0.005, size=len(raw_points[(layer, act_key, cat)].get(x, [])))
+                if len(jitter):
+                    try:
+                        main_ax.scatter([x + j for j in jitter],
+                                        raw_points[(layer, act_key, cat)].get(x, []),
+                                        alpha=0.5, s=10, color=color, marker=marker)
+                    except Exception:
+                        main_ax.scatter([x + j for j in jitter],
+                                        raw_points[(layer, act_key, cat)].get(x, []),
+                                        alpha=0.5, s=10, marker=marker)
+
+    if side_summary:
+        if not side_summary_rows:
+            side_ax.set_visible(False)
+        else:
+            side_input = pd.DataFrame(side_summary_rows)
+            side_df = compute_relative_drop_summary_bootstrap(
+                side_input,
+                "_summary_group",
+                "damage_level",
+                "differentiation",
+                summary=side_summary_metric,
+                baseline_x=side_summary_baseline,
+                baseline_tolerance=side_summary_tolerance,
+                replicate_col="_summary_replicate",
+            )
+            side_style = (
+                side_input.groupby("_summary_group", as_index=False)
+                .agg(_summary_order=("_summary_order", "min"), _summary_color=("_summary_color", "first"))
+            )
+            side_df = side_df.merge(side_style, on="_summary_group", how="left")
+            _draw_relative_drop_sideplot(
+                side_ax,
+                side_df,
+                "_summary_group",
+                color_col="_summary_color",
+                order_col="_summary_order",
+                xlabel=_summary_axis_label(side_summary_metric),
+            )
+
+    main_ax.set_xlabel("Damage parameter")
+    main_ax.set_ylabel(_categ_corr_ylabel(data_type, metric, percentage))
+    main_ax.set_title(f"{data_type} vs damage — {damage_type}")
+    if ylim: main_ax.set_ylim(ylim)
+    main_ax.legend()
 
     if flip_x_axis:
-        plt.gca().invert_xaxis()
+        main_ax.invert_xaxis()
 
-    plt.tight_layout()
+    if not side_summary:
+        fig.tight_layout()
     os.makedirs(plot_dir, exist_ok=True)
-    name_parts = [main_dir.strip("/").split("/")[-1],
+    name_parts = [_lineplot_model_tag(main_dir),
                   damage_type.replace("/", "-"),
                   "-".join(damage_layers),
                   "-".join(activations_layers)]
@@ -2208,6 +3937,405 @@ def categ_corr_lineplot(
                      else ("overall" if "overall" in categories
                            else "".join(cat[0] for cat in categories)))
     name_parts.append(categ_letters)
+    if percentage:
+        name_parts.append("percentage")
+    if selectivity_fraction is not None:
+        name_parts.append(f"top{selectivity_fraction:.2f}-{selection_mode}")
+    if side_summary:
+        name_parts.append(f"side-{side_summary_metric}")
+    plot_base_path = os.path.join(plot_dir, "_".join(name_parts))
+    save_mode = _normalize_plot_save_mode(save_mode)
+    saved_paths = []
+    if "png" in save_mode:
+        png_path = plot_base_path + ".png"
+        fig.savefig(png_path, dpi=500, format="png")
+        saved_paths.append(png_path)
+    if "svg" in save_mode:
+        svg_path = plot_base_path + ".svg"
+        fig.savefig(svg_path, format="svg")
+        saved_paths.append(svg_path)
+    if verbose:
+        print(f"[PLOT] saved to {', '.join(saved_paths)}")
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def grouped_categ_corr_lineplot(
+    line_specs,
+    aggregate_by="damage_type",
+    main_dir=None,
+    categories=("overall",),
+    metric="observed_difference",
+    subdir_regex=r"damaged_([\d\.]+)(?:_|/|$)",
+    plot_dir="plots/",
+    data_type="selectivity",
+    scatter=False,
+    verbose=0,
+    ylim=None,
+    percentage=False,
+    selectivity_fraction: float | None = None,
+    selection_mode: str = "percentage",
+    selectivity_file: str | None = "unit_selectivity/all_layers_units_mannwhitneyu.pkl",
+    flip_x_axis=False,
+    model_tag: str | None = None,
+    title: str | None = None,
+    aggregate_error: str = "std",
+    aggregate_alpha: float = 0.18,
+    constituent_alpha: float = 0.28,
+    constituent_linewidth: float = 1.0,
+    aggregate_linewidth: float = 2.8,
+    line_colors=None,
+    line_colours=None,
+    line_color=None,
+    line_colour=None,
+    point_shapes=None,
+    point_markers=None,
+    point_shape=None,
+    point_marker=None,
+):
+    """
+    Plot multiple categ_corr_lineplot-style series together and add aggregate traces.
+
+    Each item in `line_specs` should define a single line, for example:
+      {
+        "label": "cornet_rt5_c IT noise",
+        "main_dir": "data/haupt_stim_activ/damaged/cornet_rt5_c/",
+        "damage_layer": "IT",
+        "activation_layer": "IT",
+        "damage_type": "noise",
+        "tags": {"stage": "late"},
+      }
+
+    `aggregate_by` can be a string like "damage_type" or a list like
+    ["damage_type", "activation_layer"]. The requested fields can be normal
+    top-level spec keys or custom tag keys stored in `tags`. Aggregate lines
+    are drawn as the mean of all constituent raw datapoints at each x, with
+    shaded error bands.
+    """
+
+    def _dbg(msg, level=1):
+        if isinstance(verbose, int) and verbose >= level:
+            print(msg)
+
+    def _normalize_single(name, spec, singular_key, plural_key):
+        if singular_key in spec:
+            return spec[singular_key]
+        if plural_key in spec:
+            vals = spec[plural_key]
+            if isinstance(vals, (list, tuple)) and len(vals) == 1:
+                return vals[0]
+            raise ValueError(f"{name}: '{plural_key}' must contain exactly one entry.")
+        raise ValueError(f"{name}: missing '{singular_key}' (or one-item '{plural_key}').")
+
+    def _normalize_main_dir(spec):
+        if "main_dir" in spec:
+            return spec["main_dir"]
+        if main_dir is not None:
+            return main_dir
+        raise ValueError("Each line spec must provide 'main_dir' unless a global main_dir is passed.")
+
+    def _normalize_aggregate_by(value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return [str(v) for v in value]
+
+    def _spec_label(spec):
+        if "label" in spec and spec["label"]:
+            return str(spec["label"])
+        return (
+            f"{_lineplot_model_tag(spec['main_dir'])} | "
+            f"{spec['damage_layer']}->{spec['activation_layer']} | {spec['damage_type']}"
+        )
+
+    def _group_field_value(spec, field):
+        if field in spec:
+            return spec[field]
+        tags = spec.get("tags", {})
+        if isinstance(tags, Mapping) and field in tags:
+            return tags[field]
+        if field == "group_tag":
+            if "group_tag" in spec:
+                return spec["group_tag"]
+            if isinstance(tags, Mapping) and "group_tag" in tags:
+                return tags["group_tag"]
+        return None
+
+    def _aggregate_group_key(spec, fields):
+        if not fields:
+            return None
+        return tuple((field, _group_field_value(spec, field)) for field in fields)
+
+    def _format_group_label(group_key):
+        if not group_key:
+            return "aggregate"
+        return "aggregate: " + ", ".join(f"{field}={value}" for field, value in group_key)
+
+    def _compute_error(values):
+        arr = np.asarray(values, dtype=float)
+        arr = arr[~np.isnan(arr)]
+        if len(arr) <= 1:
+            return 0.0
+        if aggregate_error == "sem":
+            return float(np.std(arr, ddof=1) / np.sqrt(len(arr)))
+        if aggregate_error == "ci95":
+            return float(np.std(arr, ddof=1) / np.sqrt(len(arr)) * 1.96)
+        return float(np.std(arr, ddof=1))
+
+    if not line_specs:
+        raise ValueError("grouped_categ_corr_lineplot requires at least one entry in line_specs.")
+
+    agg_fields = _normalize_aggregate_by(aggregate_by)
+    line_records = []
+    group_order = []
+    color_overrides = _coalesce_style_overrides(
+        line_colors, line_colours, line_color, line_colour
+    )
+    marker_overrides = _coalesce_style_overrides(
+        point_shapes, point_markers, point_shape, point_marker
+    )
+
+    for idx, raw_spec in enumerate(line_specs):
+        spec = dict(raw_spec)
+        spec_name = f"line_specs[{idx}]"
+        spec["main_dir"] = _normalize_main_dir(spec)
+        spec["damage_layer"] = _normalize_single(spec_name, spec, "damage_layer", "damage_layers")
+        spec["activation_layer"] = _normalize_single(spec_name, spec, "activation_layer", "activations_layers")
+        if "damage_type" not in spec:
+            raise ValueError(f"{spec_name}: missing 'damage_type'.")
+        spec["label"] = _spec_label(spec)
+        spec_model_tag = spec.get("model_tag", model_tag)
+
+        data, raw_points = _collect_categ_corr_lineplot_data(
+            damage_layers=[spec["damage_layer"]],
+            activations_layers=[spec["activation_layer"]],
+            damage_type=spec["damage_type"],
+            main_dir=spec["main_dir"],
+            categories=categories,
+            metric=metric,
+            subdir_regex=subdir_regex,
+            data_type=data_type,
+            verbose=verbose,
+            percentage=percentage,
+            selectivity_fraction=selectivity_fraction,
+            selection_mode=selection_mode,
+            selectivity_file=selectivity_file,
+            model_tag=spec_model_tag,
+        )
+
+        group_key = _aggregate_group_key(spec, agg_fields)
+        if group_key is not None and group_key not in group_order:
+            group_order.append(group_key)
+
+        for cat in categories:
+            key = (spec["damage_layer"], spec["activation_layer"], cat)
+            frac_dict = data.get(key, {})
+            raw_dict = raw_points.get(key, {})
+            if not frac_dict:
+                _dbg(f"[WARN] no data for {spec['label']} / category={cat}", 1)
+                continue
+
+            xs = sorted(frac_dict.keys())
+            ys = [frac_dict[x][0] for x in xs]
+            err = []
+            for x in xs:
+                vals = raw_dict.get(x, [])
+                if vals:
+                    err.append(_bootstrap_mean_error(vals, center=frac_dict[x][0]))
+                else:
+                    err.append(_ci95_from_summary(frac_dict[x][1], frac_dict[x][2]))
+            line_records.append(
+                {
+                    "spec": spec,
+                    "category": cat,
+                    "group_key": group_key,
+                    "xs": xs,
+                    "ys": ys,
+                    "err": err,
+                    "raw_points": {x: list(map(float, raw_dict.get(x, []))) for x in xs},
+                    "label": spec["label"] if len(categories) == 1 else f"{spec['label']} | {cat}",
+                }
+            )
+
+    if not line_records:
+        raise RuntimeError("grouped_categ_corr_lineplot found no plottable data for the requested specs.")
+
+    plt.figure(figsize=(8, 5))
+    color_cycle = plt.rcParams["axes.prop_cycle"].by_key().get("color", [f"C{i}" for i in range(10)])
+
+    if group_order:
+        color_map = {group_key: color_cycle[i % len(color_cycle)] for i, group_key in enumerate(group_order)}
+    else:
+        color_map = {}
+
+    for idx, rec in enumerate(line_records):
+        explicit_color = _explicit_style_value(
+            rec["spec"], "line_color", "line_colour", "color", "colour"
+        )
+        explicit_marker = _explicit_style_value(
+            rec["spec"], "point_shape", "point_marker", "marker"
+        )
+        color_key = rec["group_key"] if rec["group_key"] is not None else ("__line__", idx, rec["category"])
+        resolved_color = _resolve_style_override(
+            color_overrides,
+            candidates=(
+                rec["label"],
+                rec["spec"].get("label"),
+                (rec["spec"]["damage_layer"], rec["spec"]["activation_layer"], rec["category"]),
+                rec["group_key"],
+                _format_group_label(rec["group_key"]) if rec["group_key"] is not None else None,
+                rec["spec"]["damage_layer"],
+                rec["spec"]["activation_layer"],
+                rec["category"],
+                rec["spec"].get("damage_type"),
+            ),
+            index=idx,
+        )
+        if explicit_color is not None:
+            color = explicit_color
+        elif resolved_color is not None:
+            color = resolved_color
+        else:
+            if color_key not in color_map:
+                color_map[color_key] = color_cycle[len(color_map) % len(color_cycle)]
+            color = color_map[color_key]
+        marker = _resolve_style_override(
+            marker_overrides,
+            candidates=(
+                rec["label"],
+                rec["spec"].get("label"),
+                (rec["spec"]["damage_layer"], rec["spec"]["activation_layer"], rec["category"]),
+                rec["group_key"],
+                _format_group_label(rec["group_key"]) if rec["group_key"] is not None else None,
+                rec["spec"]["damage_layer"],
+                rec["spec"]["activation_layer"],
+                rec["category"],
+                rec["spec"].get("damage_type"),
+            ),
+            index=idx,
+        )
+        if explicit_marker is not None:
+            marker = explicit_marker
+        if marker is None:
+            marker = "o"
+
+        plt.errorbar(
+            rec["xs"],
+            rec["ys"],
+            yerr=_error_values_to_yerr(rec["err"]),
+            fmt="-",
+            marker=marker,
+            capsize=4,
+            linewidth=constituent_linewidth,
+            alpha=constituent_alpha,
+            color=color,
+            label=rec["label"],
+        )
+
+        if scatter:
+            for x in rec["xs"]:
+                vals = rec["raw_points"].get(x, [])
+                if not vals:
+                    continue
+                jitter = np.random.normal(0, 0.005, size=len(vals))
+                plt.scatter(
+                    [x + j for j in jitter],
+                    vals,
+                    alpha=max(constituent_alpha * 0.7, 0.1),
+                    s=10,
+                    color=color,
+                    marker=marker,
+                )
+
+    if agg_fields:
+        aggregate_records = defaultdict(lambda: defaultdict(list))
+        for rec in line_records:
+            aggregate_records[(rec["group_key"], rec["category"])]["records"].append(rec)
+            for x in rec["xs"]:
+                aggregate_records[(rec["group_key"], rec["category"])][x].extend(rec["raw_points"].get(x, []))
+
+        for (group_key, cat), grouped in aggregate_records.items():
+            color = _resolve_style_override(
+                color_overrides,
+                candidates=(group_key, _format_group_label(group_key), cat),
+            )
+            if color is None:
+                color = color_map[group_key]
+            marker = _resolve_style_override(
+                marker_overrides,
+                candidates=(group_key, _format_group_label(group_key), cat),
+            )
+            if marker is None:
+                marker = "o"
+            x_values = sorted(x for x in grouped.keys() if x != "records")
+            if not x_values:
+                continue
+
+            mean_vals = []
+            err_vals = []
+            for x in x_values:
+                vals = grouped[x]
+                arr = np.asarray(vals, dtype=float)
+                arr = arr[~np.isnan(arr)]
+                if len(arr) == 0:
+                    mean_vals.append(np.nan)
+                    err_vals.append(np.nan)
+                    continue
+                mean_vals.append(float(np.mean(arr)))
+                err_vals.append(_compute_error(arr))
+
+            mean_arr = np.asarray(mean_vals, dtype=float)
+            err_arr = np.asarray(err_vals, dtype=float)
+            label = _format_group_label(group_key)
+            if len(categories) > 1:
+                label = f"{label} | {cat}"
+
+            plt.plot(
+                x_values,
+                mean_arr,
+                linestyle="-",
+                marker=marker,
+                linewidth=aggregate_linewidth,
+                color=color,
+                label=label,
+            )
+            plt.fill_between(
+                x_values,
+                mean_arr - err_arr,
+                mean_arr + err_arr,
+                color=color,
+                alpha=aggregate_alpha,
+            )
+
+    plt.xlabel("Damage parameter")
+    plt.ylabel(_categ_corr_ylabel(data_type, metric, percentage))
+    if title is not None:
+        plt.title(title)
+    elif agg_fields:
+        plt.title(f"{data_type} vs damage — grouped by {', '.join(agg_fields)}")
+    else:
+        plt.title(f"{data_type} vs damage")
+    if ylim:
+        plt.ylim(ylim)
+    if flip_x_axis:
+        plt.gca().invert_xaxis()
+
+    plt.legend()
+    plt.tight_layout()
+    os.makedirs(plot_dir, exist_ok=True)
+
+    model_tag_name = "-".join(sorted({_lineplot_model_tag(rec["spec"]["main_dir"]) for rec in line_records}))
+    category_tag = (
+        "total"
+        if "total" in categories
+        else ("overall" if "overall" in categories else "".join(str(cat)[0] for cat in categories))
+    )
+    name_parts = [model_tag_name, "grouped_categ_corr"]
+    if agg_fields:
+        name_parts.append("by-" + "-".join(agg_fields))
+    name_parts.append(category_tag)
     if percentage:
         name_parts.append("percentage")
     if selectivity_fraction is not None:
@@ -2585,8 +4713,8 @@ def plot_correlation_heatmap(correlation_matrix, sorted_image_names, layer_name=
 def plot_categ_differences(
     damage_layers,
     activations_layers,
-    damage_type,
-    main_dir="data/haupt_stim_activ/damaged/cornet_rt/",
+    damage_type: str|None = None,  # Damage type to plot; required only if damage_pairs is None
+    main_dir: str|list[str] = "data/haupt_stim_activ/damaged/cornet_rt/",  # Single dir or list of fallback dirs to search
     image_dir="stimuli/",
     mode='dirs',
     file_prefix='damaged_',
@@ -2597,7 +4725,23 @@ def plot_categ_differences(
     scatter=False,
     ylim=None,
     data_type="selectivity",   # "selectivity" or e.g. "svm_15"
-    percentage=False
+    percentage=False,
+    selectivity_fraction: float|None = None,
+    selection_mode: str = "percentage",
+    damage_pairs: dict[str, list]|None = None,  # {damage_type: [levels, ...], ...} to plot multiple damage types; None uses (damage_type, damage_levels)
+    save_mode: str = "png",  # Save format: "png", "svg", or "png+svg" for both
+    line_colors=None,
+    line_colours=None,
+    line_color=None,
+    line_colour=None,
+    point_shapes=None,
+    point_markers=None,
+    point_shape=None,
+    point_marker=None,
+    bar_width=None,
+    scatter_alpha=DEFAULT_BARPLOT_SCATTER_ALPHA,
+    scatter_width_fraction=DEFAULT_BARPLOT_SCATTER_WIDTH_FRACTION,
+    figsize=None,
 ):
     """
     Plot either:
@@ -2616,7 +4760,27 @@ def plot_categ_differences(
     data_type:
        "selectivity" -> correlation-based data from ".../RDM/<act_layer>"
        "svm_..." -> classification accuracy from ".../svm_15/<act_layer>".
+
+    bar_width:
+       Width of a single bar in x-axis units. When comparison=True and no
+       value is supplied, bars are auto-sized to occupy 80% of each group.
     """
+    # ---------- Normalize main_dir to a list (for fallback dirs) ----------
+    if isinstance(main_dir, str):
+        main_dir_list = [main_dir]
+    else:
+        main_dir_list = list(main_dir)
+    if not main_dir_list:
+        raise ValueError("main_dir cannot be empty")
+
+    color_overrides = _coalesce_style_overrides(
+        line_colors, line_colours, line_color, line_colour
+    )
+    marker_overrides = _coalesce_style_overrides(
+        point_shapes, point_markers, point_shape, point_marker
+    )
+    resolved_scatter_alpha = _resolve_alpha(scatter_alpha)
+    
     # ---------------- NEW COMMON IO HELPERS --------------------------
 
     def load_svm_dataframes(item_path: str | os.PathLike) -> list[pd.DataFrame]:
@@ -2726,7 +4890,7 @@ def plot_categ_differences(
             for oc in other_cats:
                 arr = np.array(accum[cat][oc])
                 mean_vals.append(arr.mean())
-                std_vals.append(arr.std() * 1.96)  # 95% CI
+                std_vals.append(_bootstrap_mean_error(arr, center=mean_vals[-1]))
                 raw_arrays.append(arr)
             diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
         return diffs_dict
@@ -2772,7 +4936,7 @@ def plot_categ_differences(
             for oc in other_cats:
                 arr = np.array(accum[cat][oc])
                 mean_vals.append(arr.mean())
-                std_vals.append(arr.std() * 1.96)  # 95% CI
+                std_vals.append(_bootstrap_mean_error(arr, center=mean_vals[-1]))
                 raw_arrays.append(arr)
             diffs_dict[cat] = (other_cats, mean_vals, std_vals, raw_arrays)
         return diffs_dict
@@ -2837,11 +5001,26 @@ def plot_categ_differences(
 
                 ratio_arr = np.array(ratio_arr)
                 new_mean_vals.append(np.nanmean(ratio_arr))
-                new_std_vals.append(np.nanstd(ratio_arr) * 1.96)
+                new_std_vals.append(_bootstrap_mean_error(ratio_arr, center=new_mean_vals[-1]))
                 new_raw_arrays.append(ratio_arr.tolist())
 
             scaled_dict[cat] = (scaled_oc_list, new_mean_vals, new_std_vals, new_raw_arrays)
         return scaled_dict
+
+    # ---------- Helper to save plot in multiple formats ----------
+    def _save_plot(fig, base_path, mode="png", dpi=500):
+        """
+        Save figure in format(s) specified by mode.
+        
+        mode: "png", "svg", or "png+svg"
+        Saves to base_path + appropriate extension (.png, .svg, or both)
+        """
+        if "png" in mode:
+            png_path = base_path + ".png"
+            fig.savefig(png_path, dpi=dpi, format="png")
+        if "svg" in mode:
+            svg_path = base_path + ".svg"
+            fig.savefig(svg_path, format="svg")
 
     # ---------- 1) LOAD & GROUP IMAGES BY CATEGORY -----------
     if not os.path.isdir(image_dir):
@@ -2865,15 +5044,101 @@ def plot_categ_differences(
     n_categories = len(categories_list)
 
     # ---------- 2) GATHER RESULTS (matrices or dataframes) -----------
-    def get_base_path(dmg_layer, act_layer):
-        if data_type.startswith("svm"):
-            # e.g. .../<dmg_layer>/svm_15/<act_layer>/
-            return os.path.join(main_dir, damage_type, dmg_layer, data_type, act_layer)
-        else:
-            # selectivity => correlation RDM
-            return os.path.join(main_dir, damage_type, dmg_layer, "RDM", act_layer)
+    # If damage_pairs not provided, use old (damage_type, damage_levels) behavior
+    if damage_pairs is None:
+        if damage_type is None:
+            raise ValueError("Either 'damage_type' or 'damage_pairs' must be provided.")
+        damage_pairs = {damage_type: damage_levels}
+    
+    def find_valid_base_paths(dmg_layer, act_layer, dmg_type):
+        """
+        Return every existing base_path across main_dir_list, preserving order.
+        Each requested suffix is then resolved against these base paths in order,
+        so a list of main_dir values behaves like per-suffix fallbacks.
+        """
+        found_paths = []
+        for md in main_dir_list:
+            if data_type.startswith("svm"):
+                candidate = os.path.join(md, dmg_type, dmg_layer, data_type, act_layer)
+            else:
+                # selectivity => correlation RDM
+                if selectivity_fraction is not None:
+                    candidate = os.path.join(
+                        md,
+                        dmg_type,
+                        dmg_layer,
+                        f"RDM_{selectivity_fraction:.2f}_{selection_mode}",
+                        act_layer,
+                    )
+                else:
+                    candidate = os.path.join(md, dmg_type, dmg_layer, "RDM", act_layer)
 
-    all_results = []  # list of (dmg_layer, act_layer, suffix, item_path, diffs_dict)
+            if os.path.isdir(candidate):
+                found_paths.append((candidate, md))
+        return found_paths
+    
+    def get_base_path(dmg_layer, act_layer, dmg_type, used_main_dir):
+        """Construct base path using the selected main_dir."""
+        if data_type.startswith("svm"):
+            return os.path.join(used_main_dir, dmg_type, dmg_layer, data_type, act_layer)
+        else:
+            if selectivity_fraction is not None:
+                return os.path.join(used_main_dir, dmg_type, dmg_layer, 
+                                    f"RDM_{selectivity_fraction:.2f}_{selection_mode}", act_layer)
+            else:
+                return os.path.join(used_main_dir, dmg_type, dmg_layer, "RDM", act_layer)
+
+    def _damage_type_tag() -> str:
+        if damage_type is not None:
+            return str(damage_type).replace("/", "-")
+        return "+".join(str(dt).replace("/", "-") for dt in damage_pairs.keys())
+
+    def _level_count_tag() -> int:
+        return sum(len(levels) for levels in damage_pairs.values())
+
+    def _combo_label(combo_key) -> str:
+        if len(combo_key) == 4:
+            dmg_layer, act_layer, dmg_type_key, suffix = combo_key
+        else:
+            dmg_layer, act_layer, dmg_type_key, suffix, _item_path = combo_key
+
+        label = f"{dmg_layer}, {act_layer}, dmg={suffix}"
+        if len(damage_pairs) > 1 or damage_type is None:
+            label = f"{dmg_type_key}, {label}"
+        return label
+
+    def _resolve_categ_diff_style(overrides, *, index=None, **context):
+        if overrides is None:
+            return None
+        candidates = []
+        combo_key = context.get("combo_key")
+        combo_label = context.get("combo_label")
+        if combo_key is not None:
+            candidates.append(combo_key)
+        if combo_label is not None:
+            candidates.append(combo_label)
+
+        damage_type_value = context.get("damage_type")
+        suffix_value = context.get("suffix")
+        if damage_type_value is not None and suffix_value is not None:
+            candidates.append(f"{damage_type_value}, dmg={suffix_value}")
+            candidates.append((damage_type_value, suffix_value))
+
+        tuple_candidate = tuple(
+            context.get(k)
+            for k in ("damage_layer", "activation_layer", "damage_type", "suffix", "category", "other_category")
+            if k in context
+        )
+        if tuple_candidate:
+            candidates.append(tuple_candidate)
+
+        for key in ("damage_layer", "activation_layer", "damage_type", "suffix", "category", "other_category"):
+            if key in context and context[key] is not None:
+                candidates.extend(_style_name_variants(context[key]))
+
+        return _resolve_style_override(overrides, candidates=tuple(candidates), index=index)
+
+    all_results = []  # list of (dmg_layer, act_layer, damage_type, suffix, item_path, diffs_dict, selective_cat)
 
     if not damage_layers:
         raise ValueError("No damage_layers specified.")
@@ -2882,69 +5147,187 @@ def plot_categ_differences(
 
     for dmg_layer in damage_layers:
         for act_layer in activations_layers:
-            base_path = get_base_path(dmg_layer, act_layer)
-            if not os.path.isdir(base_path):
-                raise FileNotFoundError(
-                    f"Directory '{base_path}' does not exist.\n"
-                    f"Check your damage_type='{damage_type}', damage_layer='{dmg_layer}', or activation_layer='{act_layer}'."
-                )
+            for current_damage_type, current_damage_levels in damage_pairs.items():
+                # Find every valid base path so each requested suffix can resolve independently.
+                candidate_base_paths = find_valid_base_paths(dmg_layer, act_layer, current_damage_type)
 
-            for suffix in damage_levels:
-                # find items (dirs or files) that match <file_prefix>*<suffix>
-                items = []
-                if mode == 'files':
-                    for f in os.listdir(base_path):
-                        fullpath = os.path.join(base_path, f)
-                        if os.path.isfile(fullpath):
-                            if f.startswith(file_prefix) and f.endswith(suffix):
-                                items.append(fullpath)
-                elif mode == 'dirs':
-                    for d in os.listdir(base_path):
-                        full_dpath = os.path.join(base_path, d)
-                        if os.path.isdir(full_dpath):
-                            if d.startswith(file_prefix) and d.endswith(suffix):
-                                items.append(full_dpath)
-                else:
-                    raise ValueError("mode must be 'files' or 'dirs'.")
-
-                if not items:
-                    raise FileNotFoundError(
-                        f"No matching items found in '{base_path}' for dmg_layer='{dmg_layer}', "
-                        f"act_layer='{act_layer}', suffix='{suffix}', prefix='{file_prefix}', mode='{mode}'."
-                    )
-
-                # load each item and compute diffs
-                for item_path in items:
-                    if data_type.startswith("svm"):
-                        dfs = load_svm_dataframes(item_path)
-                        diffs_dict = compute_svm_pairwise_accuracies(dfs, categories_list)
+                if not candidate_base_paths:
+                    if data_type == "selectivity" and selectivity_fraction is not None:
+                        raise FileNotFoundError(
+                            f"Selective RDM directory not found for dmg_layer='{dmg_layer}', "
+                            f"act_layer='{act_layer}', damage_type='{current_damage_type}' "
+                            f"in any of {len(main_dir_list)} provided main_dir(s).\n"
+                            f"Searched: {main_dir_list}\n"
+                            f"Please run categ_corr_lineplot() first with selectivity_fraction={selectivity_fraction} "
+                            f"and selection_mode='{selection_mode}' to generate the selectivity fraction files."
+                        )
                     else:
-                        mats = load_all_corr_mats(item_path)
-                        diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
+                        raise FileNotFoundError(
+                            f"RDM directory not found for dmg_layer='{dmg_layer}', "
+                            f"act_layer='{act_layer}', damage_type='{current_damage_type}' "
+                            f"in any of {len(main_dir_list)} provided main_dir(s).\n"
+                            f"Searched: {main_dir_list}\n"
+                            f"Check your damage_type, damage_layer, or activation_layer settings."
+                        )
 
-                    all_results.append((dmg_layer, act_layer, suffix, item_path, diffs_dict))
+                # ===== Selective RDM mode =====
+                if data_type == "selectivity" and selectivity_fraction is not None:
+                    # base_path is now RDM_{frac}_{mode}/
+                    # subdirs are like: animal_selective/, face_selective/, object_selective/, place_selective/
+                    # Each contains: damaged_X.XX/ with .pkl/.zarr files
+                    
+                    def _load_corr_files_from_folder(folder_path):
+                        mats = []
+                        p = Path(folder_path)
+                        if not p.exists():
+                            return mats
+                        for child in sorted(p.iterdir()):
+                            if child.is_file() and child.suffix.lower() == ".pkl":
+                                mats.extend(load_all_corr_mats(child))
+                            elif child.is_dir() and child.suffix.lower() == ".zarr":
+                                mats.extend(load_all_corr_mats(child))
+                        return mats
+
+                    results_before = len(all_results)
+                    base_categories = ["animal", "face", "object", "place"]
+                    for focal_cat in base_categories:
+                        for suffix in current_damage_levels:
+                            expected_name = f"{file_prefix}{suffix}"
+                            items = []
+                            for base_path, used_main_dir in candidate_base_paths:
+                                cat_dir = os.path.join(base_path, f"{focal_cat}_selective")
+                                if not os.path.isdir(cat_dir) and focal_cat == "place":
+                                    cat_dir = os.path.join(base_path, "scene_selective")
+                                if not os.path.isdir(cat_dir):
+                                    continue
+
+                                full_dpath = os.path.join(cat_dir, expected_name)
+                                if os.path.isdir(full_dpath):
+                                    items.append(full_dpath)
+                                    break
+
+                            if not items:
+                                if verbose:
+                                    print(
+                                        f"[WARN] No matching damage dirs found for focal_cat='{focal_cat}', "
+                                        f"suffix='{suffix}' in any of: {[bp for bp, _ in candidate_base_paths]}"
+                                    )
+                                continue
+                            
+                            # Load and compute diffs for this category
+                            for item_path in items:
+                                mats = _load_corr_files_from_folder(item_path)
+                                if not mats:
+                                    if verbose:
+                                        print(f"[WARN] No RDM files found in {item_path}")
+                                    continue
+                                diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
+                                if focal_cat not in diffs_dict:
+                                    if verbose:
+                                        print(
+                                            f"[WARN] No focal category '{focal_cat}' found in {item_path}; "
+                                            "skipping this selective result."
+                                        )
+                                    continue
+                                focal_diffs_dict = {focal_cat: diffs_dict[focal_cat]}
+                                all_results.append(
+                                    (
+                                        dmg_layer,
+                                        act_layer,
+                                        current_damage_type,
+                                        suffix,
+                                        item_path,
+                                        focal_diffs_dict,
+                                        focal_cat,
+                                    )
+                                )
+                    
+                    # After selective loop: check if we found anything for this (dmg, act, dmg_type) combo
+                    if len(all_results) == results_before:
+                        raise FileNotFoundError(
+                            f"No selective RDM files found for damage_layer='{dmg_layer}', act_layer='{act_layer}', "
+                            f"damage_type='{current_damage_type}' with selectivity_fraction={selectivity_fraction} "
+                            f"and selection_mode='{selection_mode}'.\n"
+                            f"Please run categ_corr_lineplot() first to generate the selectivity fraction files."
+                        )
+                
+                # ===== Standard (non-selective) mode =====
+                else:
+                    for suffix in current_damage_levels:
+                        expected_name = f"{file_prefix}{suffix}"
+                        items = []
+                        for base_path, used_main_dir in candidate_base_paths:
+                            if mode == 'files':
+                                fullpath = os.path.join(base_path, expected_name)
+                                if os.path.isfile(fullpath):
+                                    items.append(fullpath)
+                                    break
+                            elif mode == 'dirs':
+                                full_dpath = os.path.join(base_path, expected_name)
+                                if os.path.isdir(full_dpath):
+                                    items.append(full_dpath)
+                                    break
+                            else:
+                                raise ValueError("mode must be 'files' or 'dirs'.")
+
+                        if not items:
+                            raise FileNotFoundError(
+                                f"No matching items found in any candidate base path for dmg_layer='{dmg_layer}', "
+                                f"act_layer='{act_layer}', damage_type='{current_damage_type}', "
+                                f"suffix='{suffix}', prefix='{file_prefix}', mode='{mode}'.\n"
+                                f"Searched: {[bp for bp, _ in candidate_base_paths]}"
+                            )
+
+                        # load each item and compute diffs
+                        for item_path in items:
+                            if data_type.startswith("svm"):
+                                dfs = load_svm_dataframes(item_path)
+                                diffs_dict = compute_svm_pairwise_accuracies(dfs, categories_list)
+                            else:
+                                mats = load_all_corr_mats(item_path)
+                                diffs_dict = compute_differences_selectivity(mats, sorted_filenames, categories_list)
+
+                            all_results.append(
+                                (
+                                    dmg_layer,
+                                    act_layer,
+                                    current_damage_type,
+                                    suffix,
+                                    item_path,
+                                    diffs_dict,
+                                    None,
+                                )
+                            )
 
     # ---------- 3) (OPTIONAL) CONVERT TO PERCENTAGES -----------
     if percentage:
-        # Group entries by (damage_layer, act_layer) so we can scale 
-        # each suffix to the baseline suffix = damage_levels[0] in that group.
-        baseline_sfx = damage_levels[0]
+        # Group entries by (damage_layer, act_layer, damage_type) to handle multiple damage types
+        # For each group, use the first damage level in damage_pairs as the baseline
         group_map = defaultdict(list)
-        # We'll keep track of the index in all_results so we can overwrite.
-        for idx, (dmg_layer, act_layer, sfx, ipath, diffs) in enumerate(all_results):
-            group_map[(dmg_layer, act_layer)].append((sfx, ipath, diffs, idx))
+        for idx, (dmg_layer, act_layer, current_damage_type, sfx, ipath, diffs, selective_cat) in enumerate(all_results):
+            group_key = (dmg_layer, act_layer, current_damage_type, selective_cat)
+            group_map[group_key].append((sfx, ipath, diffs, idx))
 
         updated_all_results = list(all_results)  # make a mutable copy
         for group_key, items in group_map.items():
+            dmg_layer, act_layer, dmg_type, selective_cat = group_key
+            # Use the first level of this damage_type as the baseline
+            baseline_sfx_list = damage_pairs.get(dmg_type, [])
+            if not baseline_sfx_list:
+                continue
+            baseline_sfx = baseline_sfx_list[0]
+            
             # Find the baseline item for this group (the one with suffix == baseline_sfx)
             baseline_item = None
             for (sfx, ipath, diffs_d, idx_in_all) in items:
-                if sfx == baseline_sfx:
+                if str(sfx) == str(baseline_sfx):
                     baseline_item = (sfx, ipath, diffs_d, idx_in_all)
                     break
 
             if baseline_item is None:
                 # no baseline in this group, skip
+                if verbose:
+                    print(f"[WARN] No baseline ({baseline_sfx}) found for {group_key}")
                 continue
             baseline_diffs = baseline_item[2]
 
@@ -2954,38 +5337,124 @@ def plot_categ_differences(
                 scaled_diffs = scale_to_baseline(current_diffs, baseline_diffs)
                 # Overwrite in updated_all_results
                 old_tuple = list(updated_all_results[idx_in_all])
-                old_tuple[4] = scaled_diffs
+                old_tuple[5] = scaled_diffs
                 updated_all_results[idx_in_all] = tuple(old_tuple)
 
         all_results = updated_all_results
+
+    # ---------- 3b) AGGREGATE REPLICATES WHEN damage_pairs IS SET AND comparison=True -----------
+    # When damage_pairs is used, multiple item_paths per suffix should be aggregated into one bar.
+    # This prevents 4x bars per subplot when there are 4 replicates.
+    if damage_pairs is not None and comparison and len(damage_pairs) > 0:
+        # Aggregate all_results by (dmg_layer, act_layer, suffix) instead of including item_path
+        aggregated_results = {}  # key: (dmg_layer, act_layer, suffix), value: aggregated diffs_dict
+        
+        for (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in all_results:
+            agg_key = (dmg_layer, act_layer, current_damage_type, suffix, selective_cat)
+            
+            if agg_key not in aggregated_results:
+                # Initialize: deep copy the diffs_dict structure
+                aggregated_results[agg_key] = {}
+                for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_dict.items():
+                    # Store raw arrays as lists for accumulation; means/stds will be recalculated
+                    aggregated_results[agg_key][cat] = (
+                        oc_list,
+                        [list(arr) if isinstance(arr, np.ndarray) else arr for arr in raw_arrays]
+                    )
+            else:
+                # Merge: concatenate raw arrays for this result
+                for cat, (oc_list, mean_vals, std_vals, raw_arrays) in diffs_dict.items():
+                    if cat in aggregated_results[agg_key]:
+                        existing_oc_list, existing_raw_arrays = aggregated_results[agg_key][cat]
+                        # Assume oc_list is in same order; concatenate raw arrays
+                        for idx, oc in enumerate(oc_list):
+                            if idx < len(existing_raw_arrays):
+                                arr_to_add = list(raw_arrays[idx]) if isinstance(raw_arrays[idx], np.ndarray) else list(raw_arrays[idx])
+                                existing_raw_arrays[idx].extend(arr_to_add)
+        
+        # Convert aggregated results back to all_results format
+        all_results_agg = []
+        for (dmg_layer, act_layer, current_damage_type, suffix, selective_cat), agg_dict in aggregated_results.items():
+            # Recalculate means and stds from aggregated raw arrays
+            final_diffs_dict = {}
+            for cat, (oc_list, raw_arrays) in agg_dict.items():
+                mean_vals, std_vals = [], []
+                for raw_arr in raw_arrays:
+                    arr_np = np.array(raw_arr)
+                    mean_vals.append(np.mean(arr_np))
+                    std_vals.append(_bootstrap_mean_error(arr_np, center=mean_vals[-1]))
+                final_diffs_dict[cat] = (oc_list, mean_vals, std_vals, raw_arrays)
+            
+            all_results_agg.append(
+                (
+                    dmg_layer,
+                    act_layer,
+                    current_damage_type,
+                    suffix,
+                    f"aggregated_{suffix}",
+                    final_diffs_dict,
+                    selective_cat,
+                )
+            )
+        
+        all_results = all_results_agg
 
     # ---------- 4) PLOTTING -----------
     if not comparison:
         # One row per (dmg_layer, act_layer, suffix, item_path)
         # columns = categories
         num_rows = len(all_results)
+        resolved_bar_width = _resolve_bar_width(bar_width)
         fig, axes = plt.subplots(
             num_rows, n_categories,
-            figsize=(3*n_categories, 3*num_rows),
+            figsize=_barplot_figsize(n_categories, num_rows, figsize=figsize),
             sharey=True
         )
         axes = np.array(axes, ndmin=2)  # ensure 2D
 
-        for i, (dmg_layer, act_layer, suffix, item_path, diffs_dict) in enumerate(all_results):
+        for i, (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in enumerate(all_results):
             for j, cat in enumerate(categories_list):
                 ax = axes[i, j]
+                _apply_barplot_axis_aspect(ax)
                 if cat not in diffs_dict:
                     ax.set_visible(False)
                     continue
 
                 other_cats, mean_vals, std_vals, raw_diffs = diffs_dict[cat]
                 x_pos = np.arange(len(other_cats))
+                bar_colors = []
+                point_markers_for_cat = []
+                for idx_oc, other_cat in enumerate(other_cats):
+                    resolved_color = _resolve_categ_diff_style(
+                        color_overrides,
+                        index=idx_oc,
+                        damage_layer=dmg_layer,
+                        activation_layer=act_layer,
+                        damage_type=current_damage_type,
+                        suffix=suffix,
+                        category=cat,
+                        other_category=other_cat,
+                    )
+                    bar_colors.append(resolved_color if resolved_color is not None else f"C{idx_oc}")
+                    resolved_marker = _resolve_categ_diff_style(
+                        marker_overrides,
+                        index=idx_oc,
+                        damage_layer=dmg_layer,
+                        activation_layer=act_layer,
+                        damage_type=current_damage_type,
+                        suffix=suffix,
+                        category=cat,
+                        other_category=other_cat,
+                    )
+                    point_markers_for_cat.append(resolved_marker if resolved_marker is not None else "o")
 
                 # bars
                 ax.bar(
                     x_pos, mean_vals,
-                    yerr=std_vals,
-                    capsize=4
+                    yerr=_error_values_to_yerr(std_vals),
+                    width=resolved_bar_width,
+                    capsize=4,
+                    color=bar_colors,
                 )
 
                 # scatter if desired
@@ -2993,15 +5462,22 @@ def plot_categ_differences(
                     for idx_oc, arr in enumerate(raw_diffs):
                         if len(arr) == 0:
                             continue
-                        jitter = np.random.normal(0, 0.05, size=len(arr))
+                        jitter = _barplot_scatter_jitter(
+                            resolved_bar_width,
+                            len(arr),
+                            width_fraction=scatter_width_fraction,
+                        )
                         ax.scatter(
                             x_pos[idx_oc] + jitter,
                             arr,
-                            alpha=0.4, s=20, zorder=0
+                            alpha=resolved_scatter_alpha, s=20, zorder=0,
+                            color=bar_colors[idx_oc],
+                            marker=point_markers_for_cat[idx_oc],
                         )
 
                 ax.set_xticks(x_pos)
                 ax.set_xticklabels(other_cats, rotation=45, ha='right')
+                _set_barplot_xlim(ax, x_pos, resolved_bar_width)
                 if ylim is not None:
                     ax.set_ylim(ylim)
 
@@ -3013,17 +5489,22 @@ def plot_categ_differences(
                     ylabel += " (scaled %)"
 
                 ax.set_ylabel(ylabel)
-                ax.set_title(f"{dmg_layer}, {act_layer}, dmg={suffix}\n{cat}")
+                if len(damage_pairs) > 1 or damage_type is None:
+                    title = f"{current_damage_type}, {dmg_layer}, {act_layer}, dmg={suffix}\n{cat}"
+                else:
+                    title = f"{dmg_layer}, {act_layer}, dmg={suffix}\n{cat}"
+                ax.set_title(title)
 
         plt.tight_layout()
         os.makedirs(plot_dir, exist_ok=True)
-        model_name = main_dir.strip("/").split("/")[-1]
-        plot_name = f"{model_name}_{data_type}_categ-diff_{damage_type}"
+        model_dir = main_dir[0] if isinstance(main_dir, (list, tuple)) else main_dir
+        model_name = str(model_dir).strip("/").split("/")[-1]
+        plot_name = f"{model_name}_{data_type}_categ-diff_{_damage_type_tag()}"
         for layer in damage_layers:
             plot_name += f"_{layer}"
         for al in activations_layers:
             plot_name += f"_{al}"
-        plot_name += f"_{len(damage_levels)}-levels"
+        plot_name += f"_{_level_count_tag()}-levels"
         if scatter:
             plot_name += "_with-points"
         if percentage:
@@ -3033,10 +5514,10 @@ def plot_categ_differences(
         if verbose == 1:
             save_plot = input(f"Save plot under {plot_path}? Y/N: ")
             if save_plot.capitalize() == "Y":
-                plt.savefig(plot_path, dpi=500)
+                _save_plot(fig, plot_path, save_mode, dpi=500)
             plt.show()
         elif verbose == 0:
-            plt.savefig(plot_path, dpi=500)
+            _save_plot(fig, plot_path, save_mode, dpi=500)
             plt.show()
         else:
             raise ValueError(f"{verbose} is not valid. Use 0 or 1.")
@@ -3044,23 +5525,46 @@ def plot_categ_differences(
     else:
         # comparison=True => group all combos in fewer subplots
         # (1 subplot per category, grouped bars for each combo).
-        fig, axes = plt.subplots(1, n_categories, figsize=(4*n_categories, 4), sharey=True)
+        fig, axes = plt.subplots(
+            1,
+            n_categories,
+            figsize=_barplot_figsize(n_categories, figsize=figsize),
+            sharey=True,
+        )
         if n_categories == 1:
             axes = [axes]
 
         # group results by category
         results_by_cat = {cat: {} for cat in categories_list}
         combos = []
-        for (dmg_layer, act_layer, suffix, item_path, diffs_dict) in all_results:
-            combo_key = (dmg_layer, act_layer, suffix, item_path)
+        for (dmg_layer, act_layer, current_damage_type, suffix, item_path, diffs_dict, selective_cat) in all_results:
+            # When damage_pairs is used, combo_key is based on (dmg_layer, act_layer, suffix)
+            # to ensure one bar per damage pair (not one per replicate).
+            # When damage_pairs is None, we use item_path for legacy behavior (one bar per item).
+            if damage_pairs is not None and comparison and len(damage_pairs) > 0:
+                combo_key = (dmg_layer, act_layer, current_damage_type, suffix)
+            else:
+                combo_key = (dmg_layer, act_layer, current_damage_type, suffix, item_path)
+            
             if combo_key not in combos:
                 combos.append(combo_key)
             for cat in categories_list:
+                # In selective mode, only use RDMs from the matching selective category for each subplot
+                if selective_cat is not None and selective_cat != cat:
+                    continue
                 results_by_cat[cat][combo_key] = diffs_dict.get(cat, ([], [], [], []))
 
-        bar_width = 0.8 / len(combos)
+        combo_count = max(len(combos), 1)
+        resolved_bar_width = _resolve_bar_width(
+            bar_width,
+            default=DEFAULT_BARPLOT_WIDTH / combo_count,
+        )
+        bar_offsets = (
+            np.arange(combo_count, dtype=float) - (combo_count - 1) / 2.0
+        ) * resolved_bar_width
         for idx_cat, cat in enumerate(categories_list):
             ax = axes[idx_cat]
+            _apply_barplot_axis_aspect(ax)
             if data_type.startswith("svm"):
                 ylabel = "Classification Accuracy"
             else:
@@ -3070,9 +5574,11 @@ def plot_categ_differences(
 
             ax.set_ylabel(ylabel)
             ax.set_title(f"{cat}")
+            cat_x_pos = None
+            cat_labels = None
 
             for i, combo_key in enumerate(combos):
-                (oc_list, mean_vals, std_vals, raw_diffs) = results_by_cat[cat][combo_key]
+                (oc_list, mean_vals, std_vals, raw_diffs) = results_by_cat[cat].get(combo_key, ([], [], [], []))
                 if not oc_list:
                     continue
 
@@ -3085,15 +5591,41 @@ def plot_categ_differences(
                 new_raw_diffs = [raw_diffs[index_map[c]] for c in new_oc_list]
 
                 x_pos = np.arange(len(new_oc_list))
-                offset = i * bar_width
-                color_id = f"C{i}"
+                cat_x_pos = x_pos
+                cat_labels = new_oc_list
+                offset = bar_offsets[i]
+                label = _combo_label(combo_key)
+                resolved_color = _resolve_categ_diff_style(
+                    color_overrides,
+                    index=i,
+                    combo_key=combo_key,
+                    combo_label=label,
+                    damage_layer=combo_key[0],
+                    activation_layer=combo_key[1],
+                    damage_type=combo_key[2],
+                    suffix=combo_key[3],
+                    category=cat,
+                )
+                color_id = resolved_color if resolved_color is not None else f"C{i}"
+                resolved_marker = _resolve_categ_diff_style(
+                    marker_overrides,
+                    index=i,
+                    combo_key=combo_key,
+                    combo_label=label,
+                    damage_layer=combo_key[0],
+                    activation_layer=combo_key[1],
+                    damage_type=combo_key[2],
+                    suffix=combo_key[3],
+                    category=cat,
+                )
+                point_marker_value = resolved_marker if resolved_marker is not None else "o"
 
                 ax.bar(
                     x_pos + offset,
                     new_mean_vals,
-                    yerr=new_std_vals,
-                    width=bar_width,
-                    label=f"{combo_key[0]}, {combo_key[1]}, dmg={combo_key[2]}",
+                    yerr=_error_values_to_yerr(new_std_vals),
+                    width=resolved_bar_width,
+                    label=label,
                     capsize=4,
                     facecolor="none",
                     edgecolor=color_id,
@@ -3104,16 +5636,25 @@ def plot_categ_differences(
                     for idx_oc, arr in enumerate(new_raw_diffs):
                         if len(arr) == 0:
                             continue
-                        jitter = np.random.normal(0, bar_width/6, size=len(arr))
+                        jitter = _barplot_scatter_jitter(
+                            resolved_bar_width,
+                            len(arr),
+                            width_fraction=scatter_width_fraction,
+                        )
                         ax.scatter(
                             (x_pos[idx_oc] + offset) + jitter,
                             arr,
-                            alpha=0.4, s=20, zorder=0,
-                            color=color_id
+                            alpha=resolved_scatter_alpha, s=20, zorder=0,
+                            color=color_id,
+                            marker=point_marker_value,
                         )
 
-            ax.set_xticks(x_pos + bar_width*(len(combos)/2 - 0.5))
-            ax.set_xticklabels(new_oc_list, rotation=45, ha='right')
+            if cat_x_pos is not None and cat_labels is not None:
+                ax.set_xticks(cat_x_pos)
+                ax.set_xticklabels(cat_labels, rotation=45, ha='right')
+                _set_barplot_xlim(ax, cat_x_pos, resolved_bar_width, bars_per_slot=combo_count)
+            else:
+                ax.set_visible(False)
             if ylim is not None:
                 ax.set_ylim(ylim)
 
@@ -3121,13 +5662,14 @@ def plot_categ_differences(
         plt.tight_layout()
 
         os.makedirs(plot_dir, exist_ok=True)
-        model_name = main_dir.strip("/").split("/")[-1]
-        plot_name = f"{model_name}_{data_type}_categ-diff_{damage_type}"
+        model_dir = main_dir[0] if isinstance(main_dir, (list, tuple)) else main_dir
+        model_name = str(model_dir).strip("/").split("/")[-1]
+        plot_name = f"{model_name}_{data_type}_categ-diff_{_damage_type_tag()}"
         for layer in damage_layers:
             plot_name += f"_{layer}"
         for al in activations_layers:
             plot_name += f"_{al}"
-        plot_name += f"_{len(damage_levels)}-levels_comparison"
+        plot_name += f"_{_level_count_tag()}-levels_comparison"
         if scatter:
             plot_name += "_with-points"
         if percentage:
@@ -3137,10 +5679,10 @@ def plot_categ_differences(
         if verbose == 1:
             save_plot = input(f"Save plot under {plot_path}? Y/N: ")
             if save_plot.capitalize() == "Y":
-                plt.savefig(plot_path, dpi=500)
+                _save_plot(fig, plot_path, save_mode, dpi=500)
             plt.show()
         elif verbose == 0:
-            plt.savefig(plot_path, dpi=500)
+            _save_plot(fig, plot_path, save_mode, dpi=500)
             plt.show()
         else:
             raise ValueError(f"{verbose} is not valid. Use 0 or 1.")
@@ -3387,7 +5929,8 @@ def pair_corr_scatter_subplots(
     plt.subplots_adjust(top=0.93)
 
     # Build a filename
-    model_name = main_dir.strip("/").split("/")[-1]
+    model_dir = main_dir[0] if isinstance(main_dir, (list, tuple)) else main_dir
+    model_name = str(model_dir).strip("/").split("/")[-1]
     plot_name = (
         f"{model_name}_scatter_grid_{damage_type}_"
         f"{image1}_vs_{image2}_permut{n_permutations}"
@@ -4513,22 +7056,26 @@ def generate_category_selective_RDMs(
 
     print(sel_df.head())
     print(sel_path)
-    layer_key = activation_layer
     if "layer" not in sel_df.columns or "unit" not in sel_df.columns:
         raise ValueError("Selectivity file must include 'layer' and 'unit' columns.")
 
-    # Filter to activation layer rows (strict, then a suffix fallback)
-    rows = sel_df[sel_df["layer"] == layer_key]
+    # Filter to activation layer rows. The activation folder may use a
+    # filesystem-safe name while the selectivity table keeps module path dots.
+    tried_layer_keys = _layer_name_match_candidates(activation_layer)
+    rows = pd.DataFrame()
+    layer_key = activation_layer
+    for candidate_key in tried_layer_keys:
+        candidate_rows = sel_df[sel_df["layer"] == candidate_key]
+        if not candidate_rows.empty:
+            rows = candidate_rows
+            layer_key = candidate_key
+            break
     if rows.empty:
-        layer_key = layer_key.replace("_", ".")
-        print("trying key: ", layer_key)
-        rows = sel_df[sel_df["layer"] == layer_key]
-    if rows.empty:
-        layer_key = "module." + activation_layer
-        rows = sel_df[sel_df["layer"] == layer_key]
-    if rows.empty:
-        raise ValueError(f"No rows in selectivity file for layer '{layer_key}' "
-                         f"(or suffix '/{activation_layer}').")
+        tried = ", ".join(repr(key) for key in tried_layer_keys)
+        raise ValueError(
+            f"No rows in selectivity file for activation layer '{activation_layer}'. "
+            f"Tried layer keys: {tried}."
+        )
 
     missing_cols = [c for c in col_map.values() if c not in sel_df.columns]
     if missing_cols:

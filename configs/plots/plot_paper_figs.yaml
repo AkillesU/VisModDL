@@ -1,0 +1,507 @@
+subdir: "study1_figs/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "mean_drop"
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "mean_drop"
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "mean_drop"
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "eccentricity_gradual_band0.30-1.00"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      data_type: "selectivity"
+      flip_x_axis: False
+      save_mode: "png+svg"
+      selectivity_fraction: 0.05
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      line_colours:
+        animal: "#00A087"
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+      point_markers:
+        animal: "o"
+        object: "s"
+        place: "^"
+        face: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "eccentricity_gradual_band0.30-1.00"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      data_type: "selectivity"
+      flip_x_axis: False
+      save_mode: "png+svg"
+      selectivity_fraction: 0.05
+      side_summary: True
+      side_summary_metric: "mean_drop"
+      line_colours:
+        animal: "#00A087"
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+      point_markers:
+        animal: "o"
+        object: "s"
+        place: "^"
+        face: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "eccentricity_gradual_band0.00-0.30"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      data_type: "selectivity"
+      flip_x_axis: False
+      selectivity_fraction: 0.05
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      line_colours:
+        animal: "#00A087"
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+      point_markers:
+        animal: "o"
+        object: "s"
+        place: "^"
+        face: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "eccentricity_gradual_band0.00-0.30"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      data_type: "selectivity"
+      flip_x_axis: False
+      selectivity_fraction: 0.05
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "mean_drop"
+      line_colours:
+        animal: "#00A087"
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+      point_markers:
+        animal: "o"
+        object: "s"
+        place: "^"
+        face: "D"
+
+  - function: plot_total_differentiation_bar
+    parameters:
+      main_dir: ["data/haupt_stim_activ/damaged/cornet_rt5_c/", "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"]
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      verbose: 0
+      ylim: [-0.05,0.4]
+      scatter: True
+      figsize: [3.0, 6.0]
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percentage: False
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      damage_pairs:
+        connections: ["0.0", "0.75"]
+        noise: ["2.2"]
+        units: ["0.25"]
+      save_mode: "png+svg"
+      line_colours:
+        "connections, dmg=0.0": "#4477AA"
+        "connections, dmg=0.75": "#EE6677"
+        "noise, dmg=2.2": "#228833"
+        "units, dmg=0.25": "#AA3377"
+      point_markers:
+        "connections, dmg=0.0": "o"
+        "connections, dmg=0.75": "s"
+        "noise, dmg=2.2": "^"
+        "units, dmg=0.25": "D"
+  - function: plot_category_relative_drop_bar
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_type: "connections"
+      damage_level: 0.75
+      layer: "IT"
+      activation_layer: "IT"
+      categories: ["object","place","face","animal"]
+      metric: "observed_difference"
+      verbose: 0
+      value_mode: "scaled_percent"
+      scatter: True
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percent: False
+      ylim: [-20,110]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      palette:
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+        animal: "#00A087"
+  - function: plot_category_relative_drop_bar
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_type: "noise"
+      damage_level: 2.2
+      layer: "IT"
+      activation_layer: "IT"
+      categories: ["object","place","face","animal"]
+      metric: "observed_difference"
+      verbose: 0
+      value_mode: "scaled_percent"
+      scatter: True
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percent: False
+      ylim: [-20,110]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      palette:
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+        animal: "#00A087"
+  - function: plot_category_relative_drop_bar
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_type: "units"
+      damage_level: 0.25
+      layer: "IT"
+      activation_layer: "IT"
+      categories: ["object","place","face","animal"]
+      metric: "observed_difference"
+      verbose: 0
+      value_mode: "scaled_percent"
+      scatter: True
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percent: False
+      ylim: [-20,110]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      palette:
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+        animal: "#00A087"
+
+  - function: plot_categ_differences
+    parameters:
+      main_dir: ["data/haupt_stim_activ/damaged/cornet_rt5_c/", "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"]
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      verbose: 0
+      ylim: [-0.05,1]
+      comparison: True
+      scatter: True
+      bar_width: 0.18
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percentage: False
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      damage_pairs:
+        connections: ["0.0", "0.75"]
+        noise: ["2.2"]
+        units: ["0.25"]
+      save_mode: "png+svg"
+      line_colours:
+        "connections, dmg=0.0": "#4477AA"
+        "connections, dmg=0.75": "#EE6677"
+        "noise, dmg=2.2": "#228833"
+        "units, dmg=0.25": "#AA3377"
+      point_markers:
+        "connections, dmg=0.0": "o"
+        "connections, dmg=0.75": "s"
+        "noise, dmg=2.2": "^"
+        "units, dmg=0.25": "D"
+  - function: plot_categ_differences
+    parameters:
+      main_dir: ["data/haupt_stim_activ/damaged/cornet_rt5_c/", "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"]
+      damage_layers: ["V4"]
+      activations_layers: ["IT"]
+      verbose: 0
+      ylim: [-0.05,1]
+      comparison: True
+      scatter: True
+      bar_width: 0.18
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percentage: False
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      damage_pairs:
+        connections: ["0.0", "0.5"]
+        noise: ["1.8"]
+        units: ["0.4"]
+      save_mode: "png+svg"
+      line_colours:
+        "connections, dmg=0.0": "#4477AA"
+        "connections, dmg=0.5": "#EE6677"
+        "noise, dmg=1.8": "#228833"
+        "units, dmg=0.4": "#AA3377"
+      point_markers:
+        "connections, dmg=0.0": "o"
+        "connections, dmg=0.5": "s"
+        "noise, dmg=1.8": "^"
+        "units, dmg=0.4": "D"
+  - function: plot_categ_differences
+    parameters:
+      main_dir: ["data/haupt_stim_activ/damaged/cornet_rt5_c/", "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"]
+      damage_layers: ["V2"]
+      activations_layers: ["IT"]
+      verbose: 0
+      ylim: [-0.05,1]
+      comparison: True
+      scatter: True
+      bar_width: 0.18
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percentage: False
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      damage_pairs:
+        connections: ["0.0", "0.5"]
+        noise: ["1.8"]
+        units: ["0.4"]
+      save_mode: "png+svg"
+      line_colours:
+        "connections, dmg=0.0": "#4477AA"
+        "connections, dmg=0.5": "#EE6677"
+        "noise, dmg=1.8": "#228833"
+        "units, dmg=0.4": "#AA3377"
+      point_markers:
+        "connections, dmg=0.0": "o"
+        "connections, dmg=0.5": "s"
+        "noise, dmg=1.8": "^"
+        "units, dmg=0.4": "D"
+  - function: plot_categ_differences
+    parameters:
+      main_dir: ["data/haupt_stim_activ/damaged/cornet_rt5_c/", "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"]
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      verbose: 0
+      ylim: [-0.05,1]
+      comparison: True
+      scatter: True
+      bar_width: 0.18
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percentage: False
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      damage_pairs:
+        connections: ["0.0", "0.45"]
+        noise: ["1.3"]
+        units: ["0.4"]
+      save_mode: "png+svg"
+      line_colours:
+        "connections, dmg=0.0": "#4477AA"
+        "connections, dmg=0.45": "#EE6677"
+        "noise, dmg=1.3": "#228833"
+        "units, dmg=0.4": "#AA3377"
+      point_markers:
+        "connections, dmg=0.0": "o"
+        "connections, dmg=0.45": "s"
+        "noise, dmg=1.3": "^"
+        "units, dmg=0.4": "D"
