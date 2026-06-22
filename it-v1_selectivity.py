@@ -14,6 +14,7 @@ For a top-fraction of IT units:
 from __future__ import annotations
 
 import sys
+import argparse
 import yaml
 import pathlib
 import math
@@ -34,8 +35,59 @@ from statsmodels.stats.multitest import multipletests
 from typing import List, Iterable
 import threading
 import gc, uuid
+from utils import resolve_selectivity_table
 
 _thread_cache = threading.local()      # each executor thread gets its own slot
+
+
+def _as_save_formats(value) -> list[str]:
+    """Normalize a config/CLI save format value into matplotlib suffixes."""
+    if value is None:
+        return ["png"]
+    if isinstance(value, str):
+        parts = value.replace(",", " ").split()
+    else:
+        parts = list(value)
+    formats = []
+    for fmt in parts:
+        fmt = str(fmt).strip().lower().lstrip(".")
+        if fmt:
+            formats.append(fmt)
+    return formats or ["png"]
+
+
+def _finite_minmax(arrays: Iterable[np.ndarray]) -> tuple[float | None, float | None]:
+    finite_chunks = []
+    for arr in arrays:
+        vals = np.asarray(arr, dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            finite_chunks.append(vals)
+    if not finite_chunks:
+        return None, None
+    vals = np.concatenate(finite_chunks)
+    return float(np.nanmin(vals)), float(np.nanmax(vals))
+
+
+def _plot_heatmap(arr: np.ndarray,
+                  title: str,
+                  colorbar_label: str,
+                  cmap: str,
+                  out_base: pathlib.Path,
+                  save_formats: list[str],
+                  vmin: float | None = None,
+                  vmax: float | None = None):
+    plt.figure(figsize=(6, 5))
+    imshow_kwargs = {"cmap": cmap, "interpolation": "nearest"}
+    if vmin is not None and vmax is not None and vmin != vmax:
+        imshow_kwargs.update(vmin=vmin, vmax=vmax)
+    plt.imshow(arr, **imshow_kwargs)
+    plt.title(title)
+    plt.axis("off")
+    plt.colorbar(label=colorbar_label)
+    for fmt in save_formats:
+        plt.savefig(out_base.with_suffix(f".{fmt}"), dpi=300)
+    plt.close()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Utility helpers – unchanged
@@ -618,13 +670,31 @@ def run_per_image_overlays(
 #                                 MAIN
 # ──────────────────────────────────────────────────────────────────────────────
 
-def main(cfg_path: str | pathlib.Path):
+def main(cfg_path: str | pathlib.Path,
+         common_heatmap_scale: bool | None = None,
+         heatmap_cmap: str | None = None,
+         q_cmap: str | None = None,
+         save_formats=None):
     random.seed(1234)
     cfg = yaml.safe_load(open(cfg_path, 'r'))
+    if common_heatmap_scale is not None:
+        cfg["common_heatmap_scale"] = common_heatmap_scale
+    if heatmap_cmap is not None:
+        cfg["heatmap_cmap"] = heatmap_cmap
+    if q_cmap is not None:
+        cfg["q_cmap"] = q_cmap
+    if save_formats is not None:
+        cfg["save_formats"] = save_formats
+
     collapse_method = cfg.get("collapse_method", None)  # None, "mean", or "median"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_random_repeats = cfg.get("n_random_repeats", 100)
     effect_size = str(cfg.get("effect_size", "hedges_g")).lower()  # "hedges_g" | "cliffs_delta" | "mw_u"
+    use_common_heatmap_scale = bool(cfg.get("common_heatmap_scale", False))
+    heatmap_cmap = str(cfg.get("heatmap_cmap", "bwr"))
+    q_cmap = str(cfg.get("q_cmap", "viridis"))
+    save_formats = _as_save_formats(cfg.get("save_formats", ["png"]))
+    heatmap_specs = []
     allowed_effects = {"hedges_g", "cliffs_delta", "mw_u"}
     if effect_size not in allowed_effects:
         raise ValueError(f"effect_size must be one of {allowed_effects}, got {effect_size!r}")
@@ -674,10 +744,10 @@ def main(cfg_path: str | pathlib.Path):
 
         print(f"\n=== Processing top_frac={top_frac} ===")
         
-        # Load selectivity file using the suffix if untrained
-        sel_filename = f"{model_name}{ut_suffix}_all_layers_units_mannwhitneyu.pkl"
-        sel_path = pathlib.Path(cfg["selectivity_csv_dir"]) / sel_filename
-        sel      = pd.read_pickle(sel_path)
+        # Load selectivity file using the model-specific selectivity table if present
+        sel_dir = pathlib.Path(cfg["selectivity_csv_dir"]).expanduser()
+        sel_path = resolve_selectivity_table(sel_dir, model_tag=f"{model_name}{ut_suffix}")
+        sel = pd.read_pickle(sel_path)
         mw_col   = f"mw_{cat}"
         if mw_col not in sel.columns:
             sys.exit(f"[ERROR] column {mw_col!r} not found in {sel_path}")
@@ -1024,34 +1094,39 @@ def main(cfg_path: str | pathlib.Path):
             print(f"Saved histograms ➜ {outdir}")
 
         # ──────────────── PLOTS ─────────────────────────────────────────
-        plt.figure(figsize=(6,5))
-        plt.imshow(obs_map, cmap="bwr", interpolation='nearest')
-        plt.title(f"Mean |grad| diff  (sel−rand, top_frac={top_frac})")
-        plt.axis('off')
-        plt.colorbar(label="Δ |grad|")
-        plt.savefig(outdir / f"{prefix}_A_mean_diff.png", dpi=300)
-
-        # Cliff’s δ – show only significant voxels (others as NaN/white)
+        # Queue plots until all top_frac values have been processed so optional
+        # common scaling can use the same color limits for every generated map.
         delta_plot = np.where(sig_mask, delta_map, np.nan)
-        plt.figure(figsize=(6,5))
-        plt.imshow(delta_plot, cmap="bwr", interpolation='nearest')
-        plt.axis('off')
         eff_label  = {"hedges_g": "Hedges’ g", "cliffs_delta": "Cliff’s δ", "mw_u": "Mann–Whitney U"}[effect_size]
         file_suffix = {"hedges_g": "hedges_g", "cliffs_delta": "cliffs_delta", "mw_u": "mw_u"}[effect_size]
+        heatmap_specs.append({
+            "kind": "mean_diff",
+            "array": obs_map.copy(),
+            "title": f"Mean |grad| diff  (sel-rand, top_frac={top_frac})",
+            "label": "Delta |grad|",
+            "cmap": heatmap_cmap,
+            "out_base": outdir / f"{prefix}_A_mean_diff",
+        })
+        heatmap_specs.append({
+            "kind": "effect",
+            "array": delta_plot.copy(),
+            "title": eff_label,
+            "label": eff_label,
+            "cmap": heatmap_cmap,
+            "out_base": outdir / f"{prefix}_B_{file_suffix}",
+        })
 
-        plt.title(eff_label)
-        plt.colorbar(label=eff_label)
-        plt.savefig(outdir / f"{prefix}_B_{file_suffix}.png", dpi=300)
-
-        # –log10(q) significance map, same mask
-        q = q_map
+        # FDR q significance map, same mask
+        q = q_map.copy()
         q[~sig_mask] = np.nan
-        plt.figure(figsize=(6,5))
-        plt.imshow(q, cmap="viridis", interpolation='nearest')
-        plt.title("FDR q")
-        plt.axis('off')
-        plt.colorbar(label="q")
-        plt.savefig(outdir / f"{prefix}_C_q.png", dpi=300)
+        heatmap_specs.append({
+            "kind": "q",
+            "array": q,
+            "title": "FDR q",
+            "label": "q",
+            "cmap": q_cmap,
+            "out_base": outdir / f"{prefix}_C_q",
+        })
 
         # ───────── DIAGNOSTIC HISTOGRAMS ───────────────────────
         # How many voxels to visualise
@@ -1164,10 +1239,59 @@ def main(cfg_path: str | pathlib.Path):
 
 
 
-       
+    common_limits = {}
+    if use_common_heatmap_scale:
+        for kind in {spec["kind"] for spec in heatmap_specs}:
+            vmin, vmax = _finite_minmax(
+                spec["array"] for spec in heatmap_specs if spec["kind"] == kind
+            )
+            common_limits[kind] = (vmin, vmax)
+
+    for spec in heatmap_specs:
+        vmin, vmax = common_limits.get(spec["kind"], (None, None))
+        _plot_heatmap(
+            arr=spec["array"],
+            title=spec["title"],
+            colorbar_label=spec["label"],
+            cmap=spec["cmap"],
+            out_base=spec["out_base"],
+            save_formats=save_formats,
+            vmin=vmin,
+            vmax=vmax,
+        )
+    if heatmap_specs:
+        scale_msg = "common" if use_common_heatmap_scale else "per-heatmap"
+        print(f"Saved {len(heatmap_specs)} average heatmaps using {scale_msg} color scales and formats: {', '.join(save_formats)}")
 
 
 if __name__=="__main__":
-    if len(sys.argv)!=2:
-        sys.exit("usage: python it2v1_featuremap_contrib.py <config.yaml>")
-    main(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        description="Generate IT-to-V1 selective-vs-random gradient heatmaps."
+    )
+    parser.add_argument("config", help="Path to the YAML config.")
+    parser.add_argument(
+        "--common-heatmap-scale",
+        action="store_true",
+        help="Use one color scale per heatmap type across all generated heatmaps in this run.",
+    )
+    parser.add_argument(
+        "--heatmap-cmap",
+        help="Matplotlib colormap for mean-difference and effect-size heatmaps, e.g. bwr, viridis, magma.",
+    )
+    parser.add_argument(
+        "--q-cmap",
+        help="Matplotlib colormap for FDR q heatmaps.",
+    )
+    parser.add_argument(
+        "--save-formats",
+        nargs="+",
+        help="One or more matplotlib output formats for average heatmaps, e.g. png svg.",
+    )
+    args = parser.parse_args()
+    main(
+        args.config,
+        common_heatmap_scale=args.common_heatmap_scale or None,
+        heatmap_cmap=args.heatmap_cmap,
+        q_cmap=args.q_cmap,
+        save_formats=args.save_formats,
+    )
