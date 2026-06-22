@@ -19,10 +19,15 @@ model:
   time_steps: 5
   device: auto
 
+common_heatmap_scale: true
+heatmap_cmap: viridis
+q_cmap: viridis
+save_formats: [png, svg]
 
 
 shared_heatmap_scale:
   enabled: true
+  kinds: [effect]
   heatmap_cmap: viridis
   q_cmap: viridis
   save_formats: [png, svg]

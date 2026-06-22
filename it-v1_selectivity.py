@@ -126,7 +126,8 @@ def _config_prefixes(cfg: dict) -> list[tuple[object, str, pathlib.Path]]:
 
 def _read_heatmap_specs_from_csv(cfg: dict,
                                  heatmap_cmap: str,
-                                 q_cmap: str) -> list[dict]:
+                                 q_cmap: str,
+                                 plot_kinds: set[str] | None = None) -> list[dict]:
     effect_size = str(cfg.get("effect_size", "hedges_g")).lower()
     eff_label = {"hedges_g": "Hedges' g", "cliffs_delta": "Cliff's delta", "mw_u": "Mann-Whitney U"}[effect_size]
     file_suffix = {"hedges_g": "hedges_g", "cliffs_delta": "cliffs_delta", "mw_u": "mw_u"}[effect_size]
@@ -171,7 +172,7 @@ def _read_heatmap_specs_from_csv(cfg: dict,
         q_plot = q_map.copy()
         q_plot[~sig_mask] = np.nan
 
-        specs.extend([
+        candidates = [
             {
                 "kind": "mean_diff",
                 "array": obs_map.copy(),
@@ -196,7 +197,11 @@ def _read_heatmap_specs_from_csv(cfg: dict,
                 "cmap": q_cmap,
                 "out_base": outdir / f"{prefix}_C_q",
             },
-        ])
+        ]
+        specs.extend(
+            spec for spec in candidates
+            if plot_kinds is None or spec["kind"] in plot_kinds
+        )
     return specs
 
 
@@ -214,6 +219,7 @@ def run_shared_heatmap_scale_replot(cfg: dict, cfg_path: str | pathlib.Path):
     heatmap_cmap = str(shared_cfg.get("heatmap_cmap", cfg.get("heatmap_cmap", "bwr")))
     q_cmap = str(shared_cfg.get("q_cmap", cfg.get("q_cmap", "viridis")))
     save_formats = _as_save_formats(shared_cfg.get("save_formats", cfg.get("save_formats", ["png"])))
+    plot_kinds = set(shared_cfg.get("kinds", ["effect"]))
 
     shared_specs = []
     for path in config_paths:
@@ -225,7 +231,7 @@ def run_shared_heatmap_scale_replot(cfg: dict, cfg_path: str | pathlib.Path):
             continue
         with open(config_path, "r") as f:
             other_cfg = yaml.safe_load(f)
-        shared_specs.extend(_read_heatmap_specs_from_csv(other_cfg, heatmap_cmap, q_cmap))
+        shared_specs.extend(_read_heatmap_specs_from_csv(other_cfg, heatmap_cmap, q_cmap, plot_kinds))
 
     if not shared_specs:
         print("[WARN] Shared heatmap scale found no CSV-backed heatmaps to replot.")
