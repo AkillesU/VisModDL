@@ -86,7 +86,7 @@ def _plot_heatmap(arr: np.ndarray,
     plt.axis("off")
     plt.colorbar(label=colorbar_label)
     for fmt in save_formats:
-        plt.savefig(out_base.with_suffix(f".{fmt}"), dpi=300)
+        plt.savefig(out_base.parent / f"{out_base.name}.{fmt}", dpi=300)
     plt.close()
 
 
