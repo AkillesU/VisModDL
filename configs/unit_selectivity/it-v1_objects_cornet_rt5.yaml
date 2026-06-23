@@ -20,7 +20,7 @@ model:
   device: auto
 
 common_heatmap_scale: false
-heatmap_cmap: RdBu
+heatmap_cmap: plasma
 q_cmap: viridis
 save_formats: [png, svg]
 
@@ -28,7 +28,7 @@ save_formats: [png, svg]
 shared_heatmap_scale:
   enabled: false
   kinds: [effect]
-  heatmap_cmap: RdBu
+  heatmap_cmap: plasma
   q_cmap: viridis
   save_formats: [png, svg]
   configs:
