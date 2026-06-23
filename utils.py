@@ -2196,6 +2196,16 @@ def _stable_bootstrap_seed(values):
     return int(digest[:8], 16)
 
 
+def _stable_bootstrap_seed_from_x_values(levels, value_lists):
+    digest = hashlib.md5()
+    for level, values in zip(levels, value_lists):
+        digest.update(np.asarray([level], dtype=float).tobytes())
+        arr = np.asarray(values, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        digest.update(arr.tobytes())
+    return int(digest.hexdigest()[:8], 16)
+
+
 def _bootstrap_mean_ci(values, n_bootstrap=BOOTSTRAP_CI_ITERATIONS, ci=BOOTSTRAP_CI_PERCENTILE, seed=None):
     """Percentile bootstrap CI for the mean of finite replicate values."""
     arr = np.asarray(values, dtype=float)
@@ -2465,6 +2475,74 @@ def _relative_drop_summary_replicate_values(
     return summary_values
 
 
+def _relative_drop_summary_curve_bootstrap_ci(
+    x_to_values,
+    summary="auc_loss",
+    baseline_x=0.0,
+    baseline_tolerance=1e-8,
+    n_bootstrap=BOOTSTRAP_CI_ITERATIONS,
+    ci=BOOTSTRAP_CI_PERCENTILE,
+    seed=None,
+):
+    """
+    Percentile bootstrap CI for the summary of the mean curve.
+
+    Replicates are treated as unpaired across x levels: each bootstrap draw
+    resamples values independently within each level, builds a bootstrapped
+    mean curve, and computes the AUC/mean-drop summary from that curve.
+    """
+    levels = sorted(float(x) for x in x_to_values.keys())
+    if not levels:
+        return np.nan, np.nan, np.nan, []
+
+    value_lists = []
+    for level in levels:
+        vals = np.asarray(x_to_values.get(level, []), dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            return np.nan, np.nan, np.nan, []
+        value_lists.append(vals)
+
+    mean_curve = [float(np.mean(vals)) for vals in value_lists]
+    center = _relative_drop_summary_value(
+        levels,
+        mean_curve,
+        summary=summary,
+        baseline_x=baseline_x,
+        baseline_tolerance=baseline_tolerance,
+    )
+    if not np.isfinite(center):
+        return np.nan, np.nan, np.nan, []
+
+    if all(len(vals) == 1 for vals in value_lists):
+        return center, center, center, [center]
+
+    rng_seed = _stable_bootstrap_seed_from_x_values(levels, value_lists) if seed is None else seed
+    rng = np.random.default_rng(rng_seed)
+    boot_values = np.empty(int(n_bootstrap), dtype=float)
+
+    for boot_idx in range(int(n_bootstrap)):
+        boot_curve = []
+        for vals in value_lists:
+            sample_idx = rng.integers(0, len(vals), size=len(vals))
+            boot_curve.append(float(np.mean(vals[sample_idx])))
+        boot_values[boot_idx] = _relative_drop_summary_value(
+            levels,
+            boot_curve,
+            summary=summary,
+            baseline_x=baseline_x,
+            baseline_tolerance=baseline_tolerance,
+        )
+
+    boot_values = boot_values[np.isfinite(boot_values)]
+    if len(boot_values) == 0:
+        return center, np.nan, np.nan, []
+
+    alpha = (100.0 - float(ci)) / 2.0
+    lower, upper = np.percentile(boot_values, [alpha, 100.0 - alpha])
+    return center, float(lower), float(upper), boot_values.tolist()
+
+
 def compute_relative_drop_summary(
     df,
     group_col,
@@ -2556,6 +2634,14 @@ def compute_relative_drop_summary_bootstrap(
     baseline_tolerance=1e-8,
     replicate_col=None,
 ):
+    """
+    Compute baseline-relative summaries and bootstrap CIs for their mean curves.
+
+    The CI bootstrap treats replicates as unpaired across x levels. Each
+    bootstrap draw resamples observed y values independently within each x
+    level, computes a bootstrapped mean curve, and then computes the requested
+    summary from that curve.
+    """
     summary_df = compute_relative_drop_summary(
         df,
         group_col,
@@ -2587,18 +2673,19 @@ def compute_relative_drop_summary_bootstrap(
                 x_df = x_df.sort_values(replicate_col)
             x_to_values[float(x)] = x_df[y_col].to_numpy(dtype=float).tolist()
 
-        replicate_values = _relative_drop_summary_replicate_values(
+        center, lower, upper, bootstrap_values = _relative_drop_summary_curve_bootstrap_ci(
             x_to_values,
             summary=summary,
             baseline_x=baseline_x,
             baseline_tolerance=baseline_tolerance,
         )
-        center, lower, upper = _bootstrap_mean_ci(replicate_values)
         row = {
             "ci95_lower": lower,
             "ci95_upper": upper,
-            "summary_values": replicate_values,
-            "n_summary_values": len(replicate_values),
+            "summary_values": bootstrap_values,
+            "bootstrap_values": bootstrap_values,
+            "n_summary_values": len(bootstrap_values),
+            "n_bootstrap_values": len(bootstrap_values),
         }
         if len(group_cols) == 1:
             row[group_cols[0]] = group_key
