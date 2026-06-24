@@ -18,6 +18,7 @@ tasks:
       save_mode: "png+svg"
       side_summary: True
       side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -46,6 +47,7 @@ tasks:
       save_mode: "png+svg"
       side_summary: True
       side_summary_metric: "mean_drop"
+      side_summary_errorbars: false
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -74,6 +76,7 @@ tasks:
       save_mode: "png+svg"
       side_summary: True
       side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -102,6 +105,7 @@ tasks:
       save_mode: "png+svg"
       side_summary: True
       side_summary_metric: "mean_drop"
+      side_summary_errorbars: false
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -130,6 +134,7 @@ tasks:
       save_mode: "png+svg"
       side_summary: True
       side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -158,6 +163,7 @@ tasks:
       save_mode: "png+svg"
       side_summary: True
       side_summary_metric: "mean_drop"
+      side_summary_errorbars: false
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -184,6 +190,7 @@ tasks:
       selectivity_fraction: 0.05
       side_summary: True
       side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
       line_colours:
         animal: "#00A087"
         object: "#F39C12"
@@ -210,6 +217,7 @@ tasks:
       selectivity_fraction: 0.05
       side_summary: True
       side_summary_metric: "mean_drop"
+      side_summary_errorbars: false
       line_colours:
         animal: "#00A087"
         object: "#F39C12"
@@ -236,6 +244,7 @@ tasks:
       save_mode: "png+svg"
       side_summary: True
       side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
       line_colours:
         animal: "#00A087"
         object: "#F39C12"
@@ -262,6 +271,7 @@ tasks:
       save_mode: "png+svg"
       side_summary: True
       side_summary_metric: "mean_drop"
+      side_summary_errorbars: false
       line_colours:
         animal: "#00A087"
         object: "#F39C12"

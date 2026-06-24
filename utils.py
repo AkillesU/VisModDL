@@ -2706,6 +2706,7 @@ def _draw_relative_drop_sideplot(
     color_col=None,
     order_col=None,
     xlabel=None,
+    errorbars=True,
 ):
     if summary_df.empty:
         ax.set_visible(False)
@@ -2718,7 +2719,7 @@ def _draw_relative_drop_sideplot(
     labels = plot_df[label_col].astype(str).tolist()
     values = plot_df[value_col].astype(float).to_numpy()
     positions = np.arange(len(plot_df))
-    xerr = _summary_yerr(plot_df, value_col)
+    xerr = _summary_yerr(plot_df, value_col) if errorbars else None
 
     if color_col and color_col in plot_df.columns:
         colors = plot_df[color_col].tolist()
@@ -3838,6 +3839,7 @@ def categ_corr_lineplot(
     side_summary_width_ratio: float = 0.25,
     side_summary_baseline: float = 0.0,
     side_summary_tolerance: float = 1e-8,
+    side_summary_errorbars: bool = True,
 ):
     """
     Aggregate replicate files into mean±std curves.
@@ -3849,6 +3851,9 @@ def categ_corr_lineplot(
       When True, add a compact right-side horizontal bar plot. Bars use the
       same line colours and summarise baseline-relative drop with either
       "auc_loss" or "mean_drop".
+
+    side_summary_errorbars:
+      When False, omit CI error bars from the side-summary bars.
 
     Enhancement:
       - If selectivity RDMs are missing at RDM_{fraction}_{selection_mode}/<act>/<cat>_selective/,
@@ -4002,6 +4007,7 @@ def categ_corr_lineplot(
                 color_col="_summary_color",
                 order_col="_summary_order",
                 xlabel=_summary_axis_label(side_summary_metric),
+                errorbars=side_summary_errorbars,
             )
 
     main_ax.set_xlabel("Damage parameter")
