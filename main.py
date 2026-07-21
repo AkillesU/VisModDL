@@ -11,6 +11,54 @@ from utils import (
 
 random.seed(1234)
 
+
+def _parameter_count(params):
+    """Return the requested number of levels from a [start, count, step] value."""
+    if not isinstance(params, (list, tuple)) or len(params) != 3:
+        raise ValueError(f"Expected [start, count, step], got {params!r}.")
+    return int(params[1])
+
+
+def resolve_manipulation_method(
+    requested_method,
+    fraction_to_mask_params,
+    noise_levels_params,
+    groupnorm_scaling_params,
+    ecc_fraction_to_mask_params,
+    noise_activations=False,
+):
+    """Resolve legacy configs to the single active damage manipulation."""
+    aliases = {"masking": "connections"}
+    requested = aliases.get(requested_method, requested_method)
+
+    active_methods = []
+    if _parameter_count(fraction_to_mask_params) > 0:
+        active_methods.append("connections")
+    if _parameter_count(noise_levels_params) > 0:
+        active_methods.append("noise_activations" if noise_activations else "noise")
+    if _parameter_count(groupnorm_scaling_params) > 0:
+        active_methods.append("groupnorm_scaling")
+    if _parameter_count(ecc_fraction_to_mask_params) > 0:
+        active_methods.append(
+            "eccentricity_gradual"
+            if requested == "eccentricity_gradual"
+            else "eccentricity"
+        )
+
+    if noise_activations and "noise_activations" in active_methods:
+        return "noise_activations"
+    if requested in active_methods:
+        return requested
+    if len(active_methods) == 1:
+        return active_methods[0]
+    if not active_methods:
+        raise ValueError("The config does not request any damage levels (all counts are zero).")
+    raise ValueError(
+        f"Config enables multiple manipulation methods {active_methods!r}; "
+        f"set manipulation_method to one of them."
+    )
+
+
 def main():
     # ... (existing config loading logic remains the same)
     if len(sys.argv) > 1:
@@ -48,7 +96,7 @@ def main():
     only_conv = config.get("only_conv", True)
     resume_existing_damage = config.get("resume_existing_damage", False)
     # Add the new parameter for GroupNorm scaling
-    groupnorm_scaling_params = config.get("groupnorm_scaling", [1.0, 1, 0.0])
+    groupnorm_scaling_params = config.get("groupnorm_scaling", [1.0, 0, 0.0])
     gain_control_noise = config.get("gain_control_noise", 0.0)
     groupnorm_scaling_targets = config.get(
     "groupnorm_scaling_targets",
@@ -56,11 +104,13 @@ def main():
 )
     # New eccentricity params
     eccentricity_layer_path       = config.get("eccentricity_layer_path", None)
-    eccentricity_bands            = config.get("eccentricity_bands", [])   # e.g. [[0.60, 1.00]]
-    ecc_fraction_to_mask_params          = config.get("ecc_fraction_to_mask",[0, 21, 0.05])
+    eccentricity_bands            = config.get("eccentricity_bands")   # e.g. [[0.60, 1.00]]
+    ecc_fraction_to_mask_params          = config.get("ecc_fraction_to_mask", [0, 0, 0.05])
     # -----------------------------------------------------------------------
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device_name = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
+    print(f"Using PyTorch device: {device} ({device_name})")
 
     common_kwargs = dict(                     
         model_info              = model_info,
@@ -81,41 +131,31 @@ def main():
         resume_existing_damage  = resume_existing_damage
     )
 
-    # Noise ---------------------------------------------------------
-    if config.get("noise_activations", False):
-        print("Running activation noise...")
-        run_damage(**common_kwargs, manipulation_method="noise_activations")
-    else:
-        print("Running weight noise...")
-        run_damage(**common_kwargs, manipulation_method="noise")
-
-    # Connection / unit masking ------------------------------------
-    run_damage(**common_kwargs, manipulation_method="connections")
-
-    # GroupNorm scaling --------------------------------------------
-    run_damage(
-        **common_kwargs,
-        manipulation_method="groupnorm_scaling",
-        gain_control_noise=gain_control_noise
+    resolved_method = resolve_manipulation_method(
+        requested_method=manipulation_method,
+        fraction_to_mask_params=fraction_to_mask_params,
+        noise_levels_params=noise_levels_params,
+        groupnorm_scaling_params=groupnorm_scaling_params,
+        ecc_fraction_to_mask_params=ecc_fraction_to_mask_params,
+        noise_activations=config.get("noise_activations", False),
     )
+    print(f"Running {resolved_method} alteration...")
 
-    # Eccentricity-based activation thinning ------------------
-    #     (creates sub-folders eccentricity_0.60-1.00/)
     run_damage(
         **common_kwargs,
-        manipulation_method=manipulation_method,
+        manipulation_method=resolved_method,
+        gain_control_noise=gain_control_noise,
         eccentricity_layer_path = eccentricity_layer_path,
-        eccentricity_bands      = eccentricity_bands,
-        ecc_fraction_to_mask_params    = ecc_fraction_to_mask_params
-    )
-
-    # Eccentricity-based activation thinning (graded)
-    run_damage(
-        **common_kwargs,
-        manipulation_method=manipulation_method,
-        eccentricity_layer_path = eccentricity_layer_path,
-        eccentricity_bands      = config.get("eccentricity_bands_gradual", eccentricity_bands),
-        ecc_fraction_to_mask_params = config.get("ecc_fraction_to_mask_gradual", ecc_fraction_to_mask_params),
+        eccentricity_bands      = (
+            config.get("eccentricity_bands_gradual", eccentricity_bands)
+            if resolved_method == "eccentricity_gradual"
+            else eccentricity_bands
+        ),
+        ecc_fraction_to_mask_params = (
+            config.get("ecc_fraction_to_mask_gradual", ecc_fraction_to_mask_params)
+            if resolved_method == "eccentricity_gradual"
+            else ecc_fraction_to_mask_params
+        ),
         ecc_profile             = config.get("ecc_profile", "linear"),
         ecc_mode                = config.get("ecc_mode", "dropout"),
         ecc_per_channel         = config.get("ecc_per_channel", False),

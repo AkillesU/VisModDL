@@ -324,11 +324,11 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
             else:
                 model = torch.hub.load(model_repo, load_model_name, weights=model_weights)
 
-        model.cuda() if torch.cuda.is_available() else model.cpu()
-
     else:
         raise ValueError(f"Check model source: {model_source}")
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
     model.eval()
     activations = {}
 
@@ -354,12 +354,13 @@ def load_model(model_info: dict, pretrained=True, layer_name='IT', layer_path=""
     return model, activations
 
 
-def preprocess_image(image_path):
+def preprocess_image(image_path, device=None):
     """
     Preprocess a single image for model input.
 
     Parameters:
         image_path (str): Path to the image file.
+        device (torch.device | str | None): Optional destination device.
 
     Returns:
         input_tensor (torch.Tensor): Preprocessed image tensor.
@@ -374,7 +375,42 @@ def preprocess_image(image_path):
     ])
     img = Image.open(image_path).convert('RGB')
     input_tensor = preprocess(img).unsqueeze(0)  # Add batch dimension
+    if device is not None:
+        input_tensor = input_tensor.to(device)
     return input_tensor
+
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp"}
+
+
+def discover_image_files(image_dir):
+    """Return image paths and stable IDs from a flat or nested directory."""
+    root = Path(image_dir)
+    if not root.is_dir():
+        raise FileNotFoundError(f"Image directory '{image_dir}' does not exist.")
+
+    image_paths = [
+        path for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    ]
+    if not image_paths:
+        raise FileNotFoundError(
+            f"No supported images found in '{image_dir}' or its subdirectories. "
+            f"Supported extensions: {', '.join(sorted(IMAGE_EXTENSIONS))}."
+        )
+
+    def sort_key(path):
+        relative = path.relative_to(root)
+        prefix, numeric_index = extract_string_numeric_parts(path.stem)
+        return (
+            relative.parent.as_posix().lower(),
+            str(prefix).lower(),
+            numeric_index,
+            relative.name.lower(),
+        )
+
+    image_paths.sort(key=sort_key)
+    return [(path, path.relative_to(root).as_posix()) for path in image_paths]
 
 
 def extract_activations(model, activations, image_dir, layer_name='IT'):
@@ -392,17 +428,16 @@ def extract_activations(model, activations, image_dir, layer_name='IT'):
     """
     all_activations = []
     image_names = []
+    device = next(model.parameters()).device
 
-    for image_file in os.listdir(image_dir):
-        if image_file.lower().endswith(('.png', '.jpg', '.jpeg')):
-            img_path = os.path.join(image_dir, image_file)
-            input_tensor = preprocess_image(img_path)
+    for image_path, image_id in discover_image_files(image_dir):
+        input_tensor = preprocess_image(image_path, device=device)
 
-            with torch.no_grad():
-                model(input_tensor)
+        with torch.no_grad():
+            model(input_tensor)
 
-            all_activations.append(activations[layer_name].flatten())
-            image_names.append(image_file)
+        all_activations.append(activations[layer_name].flatten())
+        image_names.append(image_id)
 
     activations_df = pd.DataFrame(all_activations, index=image_names)
     return activations_df
@@ -887,18 +922,13 @@ def sort_activations_by_numeric_index(activations_df):
     # Ensure the index is string
     activations_df.index = activations_df.index.astype(str)
     
-    # Extract the string part (all non-digits at the start).
-    # This will be used for alphabetical sorting of the prefix.
-    activations_df['string_part'] = activations_df.index.str.extract(r'^([^\d]+)', expand=False).fillna('')
-    
-    # Extract the numeric part (digits) -> 'numeric_index'.
-    # Fallback to '0' if no digits found (i.e., purely alphabetic name).
-    activations_df['numeric_index'] = (
-        activations_df.index
-            .str.extract(r'(\d+)', expand=False)
-            .fillna('0')
-            .astype(int)
-    )
+    # Parse only the basename so category directories do not affect sorting.
+    sort_parts = [
+        extract_string_numeric_parts(Path(image_name).stem)
+        for image_name in activations_df.index
+    ]
+    activations_df['string_part'] = [str(prefix).lower() for prefix, _ in sort_parts]
+    activations_df['numeric_index'] = [numeric_index for _, numeric_index in sort_parts]
     
     # Sort first by string_part (alphabetical), then by numeric_index (numerical)
     activations_df_sorted = activations_df.sort_values(['string_part', 'numeric_index'])
@@ -944,10 +974,10 @@ def assign_categories(sorted_image_names):
     """
     categories = []
     for image_name in sorted_image_names:
-        # Split off the extension, e.g. "animal1.jpg" -> "animal1"
-        base_name = image_name.rsplit('.', 1)[0]
+        # Ignore category directories when IDs are relative nested paths.
+        base_name = Path(image_name).stem
         # Remove all digits from the base name using a regex
-        category_name = re.sub(r'\d+', '', base_name)
+        category_name = re.sub(r'\d+', '', base_name).rstrip("_-. ")
         categories.append(category_name)
     
     return np.array(categories)
@@ -1260,6 +1290,7 @@ def run_damage(
     # Always treat inputs as lists from here on
     activation_layers_list = _as_list(activation_layers_to_save)
     damage_layers_list     = _as_list(layer_paths_to_damage)
+    image_records          = discover_image_files(image_dir)
 
     # Load a no-hook model to build the hierarchy
     model, _ = load_model(model_info, pretrained=pretrained, layer_path="")
@@ -1281,9 +1312,10 @@ def run_damage(
     else:
         base_dir_tag = manipulation_method
 
-    eccentricity_bands = (
-        eccentricity_bands if eccentricity_bands is not None else [[0.60, 1.00]]
-    )
+    # Every manipulation uses this as the outer iteration dimension. For
+    # non-eccentricity configs it is normally omitted, so an empty/None value
+    # must still contribute one neutral band rather than erase the whole plan.
+    eccentricity_bands = eccentricity_bands or [[0.60, 1.00]]
 
     if manipulation_method == "noise":
         base_dir_tag = "noise"
@@ -1339,6 +1371,17 @@ def run_damage(
             f"Resume mode: skipping {skipped_iterations} completed permutations; "
             f"running {total_iterations} remaining."
         )
+    else:
+        print(
+            f"Planned {total_iterations} permutations "
+            f"({len(damage_levels_list)} damage levels x {mc_permutations} Monte Carlo runs)."
+        )
+
+    if total_iterations == 0 and skipped_iterations == 0:
+        raise ValueError(
+            "The damage iteration plan is empty. Check the level count, "
+            "mc_permutations, and eccentricity_bands in the config."
+        )
 
     # ------------------------------------------------------------
     # E) Main loops (reload WITH hooks; apply damage; save)
@@ -1354,6 +1397,7 @@ def run_damage(
                 layer_path=final_layers_to_hook     # LIST is okay
             )
             model.eval()
+            device = next(model.parameters()).device
 
             # 2) Apply chosen damage to ALL requested target blocks
             if manipulation_method == "connections":
@@ -1422,14 +1466,10 @@ def run_damage(
 
             # 3) Extract activations
             per_layer_data = {lp: [] for lp in final_layers_to_hook}
-            image_files = sorted([
-                f for f in os.listdir(image_dir)
-                if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-            ])
+            image_files = [image_id for _, image_id in image_records]
 
-            for image_file in image_files:
-                img_path = os.path.join(image_dir, image_file)
-                input_tensor = preprocess_image(img_path)
+            for image_path, image_id in image_records:
+                input_tensor = preprocess_image(image_path, device=device)
                 with torch.no_grad():
                     model(input_tensor)
                 for lp in final_layers_to_hook:
@@ -1489,15 +1529,7 @@ def get_sorted_filenames(image_dir):
     """
     List and sort image filenames in a directory by alphabetical prefix and numeric suffix.
     """
-    valid_exts = {".png", ".jpg", ".jpeg", ".bmp"}
-    all_files = os.listdir(image_dir)
-
-    # Extract valid filenames and their base names
-    base_names = [os.path.splitext(f)[0] for f in all_files 
-                    if os.path.splitext(f)[1].lower() in valid_exts]
-
-    # Sort using a helper function
-    return sorted(base_names, key=lambda name: extract_string_numeric_parts(name))
+    return [Path(image_id).stem for _, image_id in discover_image_files(image_dir)]
 
 
 def extract_string_numeric_parts(name):
