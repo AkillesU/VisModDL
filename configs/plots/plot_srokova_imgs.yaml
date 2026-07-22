@@ -1,0 +1,104 @@
+subdir: "study1_figs/"
+tasks:
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c_srokova/"
+      damage_layers: ["IT"]
+      activations_layers: ["IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.5]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      line_colours:
+        IT: "#AA3377"
+      point_markers:
+        IT: "D"
+
+  - function: plot_category_relative_drop_bar
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c_srokova/"
+      damage_type: "connections"
+      damage_level: 0.75
+      layer: "IT"
+      activation_layer: "IT"
+      categories: ["objects","places"]
+      metric: "observed_difference"
+      verbose: 0
+      value_mode: "scaled_percent"
+      scatter: True
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percent: False
+      ylim: [-20,110]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      palette:
+        objects: "#F39C12"
+        places: "#3C78D8"
+
+  - function: plot_category_relative_drop_bar
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c_srokova/"
+      damage_type: "connections"
+      damage_level: 0.25
+      layer: "IT"
+      activation_layer: "IT"
+      categories: ["objects","places"]
+      metric: "observed_difference"
+      verbose: 0
+      value_mode: "scaled_percent"
+      scatter: True
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percent: False
+      ylim: [-20,110]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      palette:
+        objects: "#F39C12"
+        places: "#3C78D8"
+
+  - function: plot_category_relative_drop_bar
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c_srokova/"
+      damage_type: "connections"
+      damage_level: 0.5
+      layer: "IT"
+      activation_layer: "IT"
+      categories: ["objects","places"]
+      metric: "observed_difference"
+      verbose: 0
+      value_mode: "scaled_percent"
+      scatter: True
+      bar_width: 0.65
+      scatter_alpha: 0.25
+      scatter_width_fraction: 0.8
+      percent: False
+      ylim: [-20,110]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: "percentage"
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      palette:
+        objects: "#F39C12"
+        places: "#3C78D8"
+
