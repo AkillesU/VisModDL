@@ -3872,9 +3872,11 @@ def categ_corr_lineplot(
     side_summary_baseline: float = 0.0,
     side_summary_tolerance: float = 1e-8,
     side_summary_errorbars: bool = True,
+    error_shading: bool = False,
+    error_shading_alpha: float = 0.2,
 ):
     """
-    Aggregate replicate files into mean±std curves.
+    Aggregate replicate files into mean curves with 95% confidence intervals.
 
     save_mode:
       Save the plot as "png", "svg", or "png+svg". Empty/None defaults to "png".
@@ -3887,10 +3889,21 @@ def categ_corr_lineplot(
     side_summary_errorbars:
       When False, omit CI error bars from the side-summary bars.
 
+    error_shading:
+      When True, replace the main plot's capped error bars with translucent
+      95% confidence bands. This can be enabled from a run_plots.py YAML task.
+
+    error_shading_alpha:
+      Opacity of the confidence bands. The default keeps overlapping bands
+      distinguishable while leaving the central lines visually prominent.
+
     Enhancement:
       - If selectivity RDMs are missing at RDM_{fraction}_{selection_mode}/<act>/<cat>_selective/,
         compute them from activation .zarr files on the fly, save to disk, and proceed.
     """
+    if not 0.0 <= float(error_shading_alpha) <= 1.0:
+        raise ValueError("error_shading_alpha must be between 0 and 1.")
+
     data, raw_points = _collect_categ_corr_lineplot_data(
         damage_layers=damage_layers,
         activations_layers=activations_layers,
@@ -3973,10 +3986,40 @@ def categ_corr_lineplot(
         try:
             if color is None:
                 color = get_color_for_triple(layer, color_act, str(color_cat))
-            main_ax.errorbar(xs, ys, yerr=yerr, fmt='-', marker=marker, capsize=4, label=lbl, color=color)
+            if error_shading:
+                line, = main_ax.plot(xs, ys, "-", marker=marker, label=lbl, color=color, zorder=2)
+            else:
+                main_ax.errorbar(
+                    xs, ys, yerr=yerr, fmt="-", marker=marker,
+                    capsize=4, label=lbl, color=color,
+                )
         except Exception:
             color = None
-            main_ax.errorbar(xs, ys, yerr=yerr, fmt='-', marker=marker, capsize=4, label=lbl)
+            if error_shading:
+                line, = main_ax.plot(xs, ys, "-", marker=marker, label=lbl, zorder=2)
+            else:
+                main_ax.errorbar(
+                    xs, ys, yerr=yerr, fmt="-", marker=marker,
+                    capsize=4, label=lbl,
+                )
+
+        if error_shading and yerr is not None:
+            ys_array = np.asarray(ys, dtype=float)
+            yerr_array = np.asarray(yerr, dtype=float)
+            if yerr_array.ndim == 2:
+                lower_error, upper_error = yerr_array
+            else:
+                lower_error = upper_error = yerr_array
+            band_color = color if color is not None else line.get_color()
+            main_ax.fill_between(
+                xs,
+                ys_array - lower_error,
+                ys_array + upper_error,
+                color=band_color,
+                alpha=float(error_shading_alpha),
+                linewidth=0,
+                zorder=1,
+            )
 
         if side_summary:
             if len(categories) == 1 and len(activations_layers) == 1:
@@ -4068,6 +4111,8 @@ def categ_corr_lineplot(
         name_parts.append(f"top{selectivity_fraction:.2f}-{selection_mode}")
     if side_summary:
         name_parts.append(f"side-{side_summary_metric}")
+    if error_shading:
+        name_parts.append("shaded")
     plot_base_path = os.path.join(plot_dir, "_".join(name_parts))
     save_mode = _normalize_plot_save_mode(save_mode)
     saved_paths = []

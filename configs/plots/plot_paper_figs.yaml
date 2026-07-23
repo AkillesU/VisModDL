@@ -19,6 +19,7 @@ tasks:
       side_summary: True
       side_summary_metric: "auc_loss"
       side_summary_errorbars: false
+      error_shading: true
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -48,6 +49,7 @@ tasks:
       side_summary: True
       side_summary_metric: "mean_drop"
       side_summary_errorbars: false
+      error_shading: true
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -77,6 +79,7 @@ tasks:
       side_summary: True
       side_summary_metric: "auc_loss"
       side_summary_errorbars: false
+      error_shading: true
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -106,6 +109,7 @@ tasks:
       side_summary: True
       side_summary_metric: "mean_drop"
       side_summary_errorbars: false
+      error_shading: true
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -135,6 +139,7 @@ tasks:
       side_summary: True
       side_summary_metric: "auc_loss"
       side_summary_errorbars: false
+      error_shading: true
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -164,6 +169,7 @@ tasks:
       side_summary: True
       side_summary_metric: "mean_drop"
       side_summary_errorbars: false
+      error_shading: true
       line_colours:
         V1: "#4477AA"
         V2: "#EE6677"
@@ -191,6 +197,7 @@ tasks:
       side_summary: True
       side_summary_metric: "auc_loss"
       side_summary_errorbars: false
+      error_shading: true
       line_colours:
         animal: "#00A087"
         object: "#F39C12"
@@ -218,6 +225,7 @@ tasks:
       side_summary: True
       side_summary_metric: "mean_drop"
       side_summary_errorbars: false
+      error_shading: true
       line_colours:
         animal: "#00A087"
         object: "#F39C12"
@@ -245,6 +253,7 @@ tasks:
       side_summary: True
       side_summary_metric: "auc_loss"
       side_summary_errorbars: false
+      error_shading: true
       line_colours:
         animal: "#00A087"
         object: "#F39C12"
@@ -272,6 +281,7 @@ tasks:
       side_summary: True
       side_summary_metric: "mean_drop"
       side_summary_errorbars: false
+      error_shading: true
       line_colours:
         animal: "#00A087"
         object: "#F39C12"
@@ -515,3 +525,500 @@ tasks:
         "connections, dmg=0.45": "s"
         "noise, dmg=1.3": "^"
         "units, dmg=0.4": "D"
+
+
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.01
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "eccentricity_gradual_band0.30-1.00"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      data_type: "selectivity"
+      flip_x_axis: False
+      save_mode: "png+svg"
+      selectivity_fraction: 0.01
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        animal: "#00A087"
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+      point_markers:
+        animal: "o"
+        object: "s"
+        place: "^"
+        face: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "eccentricity_gradual_band0.00-0.30"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      data_type: "selectivity"
+      flip_x_axis: False
+      selectivity_fraction: 0.01
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        animal: "#00A087"
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+      point_markers:
+        animal: "o"
+        object: "s"
+        place: "^"
+        face: "D"
+
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c+b/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.1
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.1
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_c/"
+      damage_layers: ["V1","V2","V4","IT"]
+      activations_layers: ["IT"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.1
+      selection_mode: percentage
+      model_tag: cornet_rt
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        V1: "#4477AA"
+        V2: "#EE6677"
+        V4: "#228833"
+        IT: "#AA3377"
+      point_markers:
+        V1: "o"
+        V2: "s"
+        V4: "^"
+        IT: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "eccentricity_gradual_band0.30-1.00"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      data_type: "selectivity"
+      flip_x_axis: False
+      save_mode: "png+svg"
+      selectivity_fraction: 0.1
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        animal: "#00A087"
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+      point_markers:
+        animal: "o"
+        object: "s"
+        place: "^"
+        face: "D"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/cornet_rt5_all/"
+      damage_layers: ["V1"]
+      activations_layers: ["IT"]
+      damage_type: "eccentricity_gradual_band0.00-0.30"
+      categories: ["animal","face","object","place"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: True
+      data_type: "selectivity"
+      flip_x_axis: False
+      selectivity_fraction: 0.1
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        animal: "#00A087"
+        object: "#F39C12"
+        place: "#3C78D8"
+        face: "#D948A1"
+      point_markers:
+        animal: "o"
+        object: "s"
+        place: "^"
+        face: "D"
+
+
+
+
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c+b/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: alexnet
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        block1: "#4477AA"
+        block2: "#EE6677"
+        block3: "#228833"
+        block4: "#AA3377"
+        block5: "#55A087"
+      point_markers:
+        block1: "o"
+        block2: "s"
+        block3: "^"
+        block4: "D"
+        block5: "*"
+
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: alexnet
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        block1: "#4477AA"
+        block2: "#EE6677"
+        block3: "#228833"
+        block4: "#AA3377"
+        block5: "#55A087"
+      point_markers:
+        block1: "o"
+        block2: "s"
+        block3: "^"
+        block4: "D"
+        block5: "*"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/alexnet_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_12"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: alexnet
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        block1: "#4477AA"
+        block2: "#EE6677"
+        block3: "#228833"
+        block4: "#AA3377"
+        block5: "#55A087"
+      point_markers:
+        block1: "o"
+        block2: "s"
+        block3: "^"
+        block4: "D"
+        block5: "*"
+
+
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/vgg16_c+b/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_30"]
+      damage_type: "units"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: vgg16
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        block1: "#4477AA"
+        block2: "#EE6677"
+        block3: "#228833"
+        block4: "#AA3377"
+        block5: "#55A087"
+      point_markers:
+        block1: "o"
+        block2: "s"
+        block3: "^"
+        block4: "D"
+        block5: "*"
+
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_30"]
+      damage_type: "connections"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: vgg16
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        block1: "#4477AA"
+        block2: "#EE6677"
+        block3: "#228833"
+        block4: "#AA3377"
+        block5: "#55A087"
+      point_markers:
+        block1: "o"
+        block2: "s"
+        block3: "^"
+        block4: "D"
+        block5: "*"
+  - function: categ_corr_lineplot
+    parameters:
+      main_dir: "data/haupt_stim_activ/damaged/vgg16_c/"
+      damage_layers: ["block1","block2","block3","block4","block5"]
+      activations_layers: ["features_30"]
+      damage_type: "noise"
+      categories: ["total"]
+      metric: "observed_difference"
+      verbose: 0
+      percentage: False
+      ylim: [-0.05,0.25]
+      data_type: "selectivity"
+      selectivity_fraction: 0.05
+      selection_mode: percentage
+      model_tag: vgg16
+      save_mode: "png+svg"
+      side_summary: True
+      side_summary_metric: "auc_loss"
+      side_summary_errorbars: false
+      error_shading: true
+      line_colours:
+        block1: "#4477AA"
+        block2: "#EE6677"
+        block3: "#228833"
+        block4: "#AA3377"
+        block5: "#55A087"
+      point_markers:
+        block1: "o"
+        block2: "s"
+        block3: "^"
+        block4: "D"
+        block5: "*"
