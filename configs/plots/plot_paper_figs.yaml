@@ -537,7 +537,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: False
-      ylim: [-0.05,0.25]
+      ylim: [-0.05,0.40]
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
@@ -568,7 +568,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: False
-      ylim: [-0.05,0.25]
+      ylim: [-0.05,0.40]
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
@@ -598,7 +598,7 @@ tasks:
       metric: "observed_difference"
       verbose: 0
       percentage: False
-      ylim: [-0.05,0.25]
+      ylim: [-0.05,0.40]
       data_type: "selectivity"
       selectivity_fraction: 0.01
       selection_mode: percentage
