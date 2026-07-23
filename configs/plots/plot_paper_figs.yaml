@@ -629,6 +629,7 @@ tasks:
       verbose: 0
       percentage: True
       data_type: "selectivity"
+      model_tag: cornet_rt
       flip_x_axis: False
       save_mode: "png+svg"
       selectivity_fraction: 0.01
@@ -657,6 +658,7 @@ tasks:
       verbose: 0
       percentage: True
       data_type: "selectivity"
+      model_tag: cornet_rt
       flip_x_axis: False
       selectivity_fraction: 0.01
       save_mode: "png+svg"
@@ -777,6 +779,7 @@ tasks:
       verbose: 0
       percentage: True
       data_type: "selectivity"
+      model_tag: cornet_rt
       flip_x_axis: False
       save_mode: "png+svg"
       selectivity_fraction: 0.1
@@ -805,6 +808,7 @@ tasks:
       verbose: 0
       percentage: True
       data_type: "selectivity"
+      model_tag: cornet_rt
       flip_x_axis: False
       selectivity_fraction: 0.1
       save_mode: "png+svg"
