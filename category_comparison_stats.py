@@ -282,6 +282,35 @@ def holm_adjust(p_values) -> np.ndarray:
     return adjusted
 
 
+def bonferroni_adjust(p_values) -> np.ndarray:
+    """Bonferroni family-wise error correction."""
+    p_values = np.asarray(p_values, dtype=float)
+    adjusted = np.full(p_values.shape, np.nan, dtype=float)
+    finite = np.isfinite(p_values)
+    adjusted[finite] = np.minimum(p_values[finite] * np.sum(finite), 1.0)
+    return adjusted
+
+
+def benjamini_hochberg_adjust(p_values) -> np.ndarray:
+    """Benjamini-Hochberg false-discovery-rate correction."""
+    p_values = np.asarray(p_values, dtype=float)
+    adjusted = np.full(p_values.shape, np.nan, dtype=float)
+    finite_indices = np.flatnonzero(np.isfinite(p_values))
+    number_tests = len(finite_indices)
+    if number_tests == 0:
+        return adjusted
+
+    order = finite_indices[np.argsort(p_values[finite_indices])]
+    running_min = 1.0
+    for reverse_rank in range(number_tests - 1, -1, -1):
+        original_index = order[reverse_rank]
+        rank = reverse_rank + 1
+        candidate = p_values[original_index] * number_tests / rank
+        running_min = min(running_min, candidate)
+        adjusted[original_index] = min(running_min, 1.0)
+    return adjusted
+
+
 def paired_sign_flip_test(
     differences: np.ndarray,
     n_permutations: int,
@@ -376,8 +405,30 @@ def pairwise_tests(
     results = pd.DataFrame(rows)
     results["paired_t_p_holm"] = holm_adjust(results["paired_t_p"])
     results["paired_t_significant"] = results["paired_t_p_holm"] < alpha
+    results["paired_t_p_bonferroni"] = bonferroni_adjust(results["paired_t_p"])
+    results["paired_t_significant_bonferroni"] = (
+        results["paired_t_p_bonferroni"] < alpha
+    )
+    results["paired_t_p_fdr_bh"] = benjamini_hochberg_adjust(
+        results["paired_t_p"]
+    )
+    results["paired_t_significant_fdr_bh"] = (
+        results["paired_t_p_fdr_bh"] < alpha
+    )
     results["sign_flip_p_holm"] = holm_adjust(results["sign_flip_p"])
     results["sign_flip_significant"] = results["sign_flip_p_holm"] < alpha
+    results["sign_flip_p_bonferroni"] = bonferroni_adjust(
+        results["sign_flip_p"]
+    )
+    results["sign_flip_significant_bonferroni"] = (
+        results["sign_flip_p_bonferroni"] < alpha
+    )
+    results["sign_flip_p_fdr_bh"] = benjamini_hochberg_adjust(
+        results["sign_flip_p"]
+    )
+    results["sign_flip_significant_fdr_bh"] = (
+        results["sign_flip_p_fdr_bh"] < alpha
+    )
     return results
 
 
@@ -461,7 +512,10 @@ def run_analysis(args) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     print("Omnibus comparison")
     print(pd.DataFrame([omnibus]).to_string(index=False))
     print()
-    print("Pairwise comparisons (two-sided, paired; Holm-corrected)")
+    print(
+        "Pairwise comparisons (two-sided, paired; "
+        "Holm, Bonferroni, and Benjamini-Hochberg FDR corrected)"
+    )
     print(pairwise.to_string(index=False))
     print()
     print(f"Saved CSV files to: {output_dir}")
